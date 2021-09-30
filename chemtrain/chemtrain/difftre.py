@@ -430,7 +430,7 @@ def init_step_optimizer(optimizer, neighbor_fn):
         if error_code == 1:
             warnings.warn('Neighborlist buffer overflowed. '
                           'Initializing larger neighborlist.')
-            last_sim_snapshot, _ = state.trajectory.sim_state
+            last_sim_snapshot, _ = state.traj_state.sim_state
             enlarged_nbrs = neighbor_fn(last_sim_snapshot.position)
             new_traj_state = TrajectoryState((last_sim_snapshot, enlarged_nbrs),
                                              state.traj_state.trajectory,
