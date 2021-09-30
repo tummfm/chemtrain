@@ -5,7 +5,7 @@ import time
 import warnings
 
 from jax_md import util, dataclasses
-from cg.util import TrainerTemplate
+from chemtrain.util import TrainerTemplate
 
 
 DifftreState = namedtuple(
