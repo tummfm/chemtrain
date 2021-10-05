@@ -49,8 +49,8 @@ n_updates = 20
 
 #############################################
 
-R, v, box = io.load_configuration(file)  # initial configuration
-simulation_data = Initialization.InitializationClass(R, v, box, kbT, mass, time_step)
+R, box = io.load_box(file)  # initial configuration
+simulation_data = Initialization.InitializationClass(R, box, kbT, mass, time_step)
 rdf_struct = Initialization.select_target_RDF(target_rdf, bin_width_multiplier=1.)
 timings_struct = difftre.process_printouts(time_step, total_time, t_equilib, print_every)
 
