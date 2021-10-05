@@ -21,7 +21,7 @@ from jax import tree_util
 import time
 
 from jax_md import util
-from jax_md_mod import io, custom_simulator
+from chemtrain.jax_md_mod import io
 from chemtrain import ibi, difftre
 
 from util import Postprocessing, Initialization

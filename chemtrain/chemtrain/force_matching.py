@@ -11,7 +11,7 @@ import time
 import numpy as onp
 from jax_sgmc.data import NumpyDataLoader, random_reference_data
 from chemtrain.util import TrainerTemplate
-from jax_md_mod import custom_quantity
+from chemtrain.jax_md_mod import custom_quantity
 
 # TODO add parallelization over multiple GPU
 

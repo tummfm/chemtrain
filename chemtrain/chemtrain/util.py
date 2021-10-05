@@ -3,7 +3,7 @@ import numpy as onp
 from pathlib import Path
 import pickle
 from jax import lax, tree_map, numpy as jnp
-from jax_md_mod import custom_space
+from chemtrain.jax_md_mod import custom_space
 
 
 def get_dataset(configuration_str, retain=None, subsampling=1):
