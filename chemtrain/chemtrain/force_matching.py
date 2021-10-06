@@ -64,7 +64,7 @@ def init_force_loss_fn(energy_fn_template, neighbor_fn, nbrs_init,
 
         if virial_fn is not None:
             # Note:
-            # maybe more efficient to combine both preditions, bur XLA
+            # maybe more efficient to combine both preditions, but XLA
             # might just optimize such that neighbors computed above
             # are re-used
 
@@ -88,12 +88,12 @@ def init_update_fn(energy_fn_template, neighbor_fn, nbrs_init, optimizer,
                    box_tensor=None, include_virial=False):
 
     if include_virial:
-        pressure_fn = custom_quantity.init_pressure(energy_fn_template,
-                                                    box_tensor,
-                                                    include_kinetic=False)
+        virial_fn = custom_quantity.init_pressure(energy_fn_template,
+                                                  box_tensor,
+                                                  include_kinetic=False)
 
         loss_fn = init_force_loss_fn(energy_fn_template, neighbor_fn, nbrs_init,
-                                     pressure_fn, gamma_p=gamma_p)
+                                     virial_fn, gamma_p=gamma_p)
     else:
         loss_fn = init_force_loss_fn(energy_fn_template, neighbor_fn, nbrs_init)
 
@@ -125,8 +125,8 @@ def init_update_fn(energy_fn_template, neighbor_fn, nbrs_init, optimizer,
 class Trainer(TrainerTemplate):
     def __init__(self, init_params, energy_fn_template, neighbor_fn, nbrs_init,
                  optimizer, position_data, force_data, virial_data=None,
-                 gamma_p=1.e-6, box_tensor=None, batch_size=1, batch_cache=100, train_ratio=0.875,
-                 checkpoint_folder='Checkpoints'):
+                 box_tensor=None, gamma_p=1.e-6, batch_size=1, batch_cache=100,
+                 train_ratio=0.875, checkpoint_folder='Checkpoints'):
         """
         Default training percentage represents 70-10-20 split, when 20 % test
         data was already deducted
@@ -146,9 +146,10 @@ class Trainer(TrainerTemplate):
         val_dict = {'R': R_val, 'F': F_val}
         include_virial = virial_data is not None
         if include_virial:
+            # TODO: test virial matching! Predicted pressure should match
             assert box_tensor is not None, "If the virial is to be matched, " \
                                            "box_tensor is a mandatory input."
-            p_train, p_val = onp.split(position_data, [self.train_size])
+            p_train, p_val = onp.split(virial_data, [self.train_size])
             train_dict['p'] = p_train
             val_dict['p'] = p_val
         train_loader = NumpyDataLoader(batch_size, R=R_train, F=F_train)
