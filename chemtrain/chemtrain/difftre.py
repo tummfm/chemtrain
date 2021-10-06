@@ -573,6 +573,10 @@ class Trainer(TrainerTemplate):
         checkpoint_path = 'output/difftre/' + str(checkpoint_folder)
         super().__init__(checkpoint_path=checkpoint_path)
 
+        # TODO implement optimization on multiple state points serial and
+        #  in parallel
+        # https://jax.readthedocs.io/en/latest/faq.html#controlling-data-and-computation-placement-on-devices
+
         self.epoch = 0
         self.losses, self.preditions, self.update_times = [], [], []
         opt_state = optimizer.init(init_params)
