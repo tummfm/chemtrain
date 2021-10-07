@@ -2,8 +2,31 @@ from abc import ABC, abstractmethod
 import numpy as onp
 from pathlib import Path
 import pickle
-from jax import lax, tree_map, numpy as jnp
+from jax import lax, tree_map, tree_leaves, numpy as jnp
 from chemtrain.jax_md_mod import custom_space
+import h5py
+from functools import partial
+
+
+def tree_get_single(tree):
+    """Returns the first tree of a tree-replica, e.g. from pmap and and moves
+    it to the default device.
+    """
+    single_tree = tree_map(lambda x: jnp.array(x[0]), tree)
+    return single_tree
+
+
+def tree_replicate(tree, n_devices):
+    """Replicates a pytree along the first axis for pmap."""
+    return tree_map(lambda x: jnp.array([x] * n_devices), tree)
+
+
+def tree_split(tree, n_devices):
+    """Splits the first axis of `tree` evenly across the number of devices."""
+    assert tree_leaves(tree)[0].shape[0] % n_devices == 0, \
+        "First dimension needs to be multiple of number of devices."
+    return tree_map(lambda x: jnp.reshape(x, (n_devices, x.shape[0]//n_devices,
+                                              *x.shape[1:])), tree)
 
 
 def get_dataset(configuration_str, retain=None, subsampling=1):
