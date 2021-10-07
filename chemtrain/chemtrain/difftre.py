@@ -568,16 +568,16 @@ class Trainer(TrainerTemplate):
     def __init__(self, init_params, quantities, simulator_template,
                  energy_fn_template, neighbor_fn, reference_state,
                  timings_struct, optimizer, kbT, loss_fn=None,
-                 reweight_ratio=0.9, checkpoint_folder='Checkpoints'):
+                 reweight_ratio=0.9, checkpoint_folder='Checkpoints',
+                 checkpoint_format='pkl'):
 
         checkpoint_path = 'output/difftre/' + str(checkpoint_folder)
-        super().__init__(energy_fn_template, checkpoint_path=checkpoint_path)
+        super().__init__(energy_fn_template, checkpoint_format, checkpoint_path)
 
         # TODO implement optimization on multiple state points serial and
         #  in parallel
         # https://jax.readthedocs.io/en/latest/faq.html#controlling-data-and-computation-placement-on-devices
 
-        self.epoch = 0
         self.losses, self.preditions, self.update_times = [], [], []
         opt_state = optimizer.init(init_params)
 
@@ -607,7 +607,7 @@ class Trainer(TrainerTemplate):
     def params(self):
         return self.__state.params
 
-    def train(self, epochs, checkpoints=None):
+    def train(self, epochs, checkpoint_freq=None):
         start_epoch = self.epoch
         end_epoch = self.epoch = start_epoch + epochs
 
@@ -628,5 +628,5 @@ class Trainer(TrainerTemplate):
                               'model setup causing a NaN trajectory.')
                 break
 
-            self.dump_checkpoint_occasionally(epoch, frequency=checkpoints)
+            self.dump_checkpoint_occasionally(epoch, frequency=checkpoint_freq)
         return

@@ -141,15 +141,16 @@ def init_update_fn(energy_fn_template, neighbor_fn, nbrs_init, optimizer,
 class Trainer(TrainerTemplate):
     def __init__(self, init_params, energy_fn_template, neighbor_fn, nbrs_init,
                  optimizer, position_data, force_data, virial_data=None,
-                 box_tensor=None, gamma_p=1.e-6, batch_per_device=1, batch_cache=100,
-                 train_ratio=0.875, checkpoint_folder='Checkpoints'):
+                 box_tensor=None, gamma_p=1.e-6, batch_per_device=1,
+                 batch_cache=100, train_ratio=0.875,
+                 checkpoint_folder='Checkpoints', checkpoint_format='pkl'):
         """
         Default training percentage represents 70-10-20 split, when 20 % test
         data was already deducted
         """
 
         checkpoint_path = 'output/force_matching/' + str(checkpoint_folder)
-        super().__init__(energy_fn_template, checkpoint_path=checkpoint_path)
+        super().__init__(energy_fn_template, checkpoint_format, checkpoint_path)
 
         # split dataset and initialize dataloader
         n_devices = jax.device_count()
@@ -180,14 +181,13 @@ class Trainer(TrainerTemplate):
         val_batch_state = init_val_batch()
         opt_state = optimizer.init(init_params)  # initialize optimizer state
         self.train_losses, self.val_losses = [], []
-        self.epoch = 0
 
         # replicate params and optimizer states for pmap
         init_params = tree_replicate(init_params, n_devices)
         opt_state = tree_replicate(opt_state, n_devices)
 
-        self.train_state = FMState(init_params, opt_state, train_data_state,
-                                   val_batch_state)
+        self.__state = FMState(init_params, opt_state, train_data_state,
+                               val_batch_state)
         self.update = init_update_fn(energy_fn_template, neighbor_fn, nbrs_init,
                                      optimizer, get_train_batch, get_val_batch,
                                      gamma_p=gamma_p, box_tensor=box_tensor,
@@ -196,18 +196,19 @@ class Trainer(TrainerTemplate):
 
     @property
     def state(self):
-        return self.train_state
+        return self.__state
 
     @property
     def params(self):
-        single_params = tree_get_single(self.train_state.params)
+        single_params = tree_get_single(self.__state.params)
         return single_params
 
     @state.setter
     def state(self, loaded_state):
-        self.train_state = loaded_state
+        self.__state = loaded_state
 
-    def train(self, epochs, checkpoints=None):
+    def train(self, epochs, checkpoint_freq=None):
+        """Continue training for a number of epochs."""
         start_epoch = self.epoch
         end_epoch = self.epoch = start_epoch + epochs
 
@@ -216,7 +217,7 @@ class Trainer(TrainerTemplate):
             start_time = time.time()
             train_losses, val_losses = [], []
             for i in range(self.batches_per_epoch):
-                self.train_state, train_loss, val_loss = self.update(self.train_state)
+                self.__state, train_loss, val_loss = self.update(self.__state)
                 train_losses.append(train_loss)
                 val_losses.append(val_loss)
             end_time = (time.time() - start_time) / 60.
@@ -229,5 +230,5 @@ class Trainer(TrainerTemplate):
                   'min, average train loss:', mean_train_loss,
                   'average val loss:', mean_val_loss)
 
-            self.dump_checkpoint_occasionally(epoch, frequency=checkpoints)
+            self.dump_checkpoint_occasionally(epoch, frequency=checkpoint_freq)
         return
