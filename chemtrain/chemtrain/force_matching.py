@@ -210,10 +210,11 @@ class Trainer(TrainerTemplate):
     def train(self, epochs, checkpoint_freq=None):
         """Continue training for a number of epochs."""
         start_epoch = self.epoch
-        end_epoch = self.epoch = start_epoch + epochs
+        end_epoch = start_epoch + epochs
 
         for epoch in range(start_epoch, end_epoch):
             # training
+            self.epoch = epoch
             start_time = time.time()
             train_losses, val_losses = [], []
             for i in range(self.batches_per_epoch):
@@ -230,5 +231,5 @@ class Trainer(TrainerTemplate):
                   'min, average train loss:', mean_train_loss,
                   'average val loss:', mean_val_loss)
 
-            self.dump_checkpoint_occasionally(epoch, frequency=checkpoint_freq)
+            self.dump_checkpoint_occasionally(frequency=checkpoint_freq)
         return

@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 import numpy as onp
 from pathlib import Path
-import pickle
+import dill as pickle
 from jax import lax, tree_map, tree_leaves, numpy as jnp
 from chemtrain.jax_md_mod import custom_space
 from functools import partial

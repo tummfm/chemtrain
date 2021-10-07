@@ -173,10 +173,11 @@ class Trainer(TrainerTemplate):
 
     def train(self, epochs, checkpoint_freq=None):
         start_epoch = self.epoch
-        end_epoch = self.epoch = start_epoch + epochs
+        end_epoch = start_epoch + epochs
 
         for epoch in range(start_epoch, end_epoch):
             # training
+            self.epoch = epoch
             start_time = time.time()
             self.__state = self.update_fn(self.__state)
             end_time = (time.time() - start_time) / 60.
@@ -188,5 +189,5 @@ class Trainer(TrainerTemplate):
                               'model setup causing a NaN trajectory.')
                 break
 
-            self.dump_checkpoint_occasionally(epoch, frequency=checkpoint_freq)
+            self.dump_checkpoint_occasionally(frequency=checkpoint_freq)
         return
