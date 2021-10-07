@@ -133,7 +133,7 @@ class Trainer(TrainerTemplate):
                  checkpoint_folder='Checkpoints'):
 
         checkpoint_path = 'output/rel_entropy/' + str(checkpoint_folder)
-        super().__init__(checkpoint_path)
+        super().__init__(energy_fn_template, checkpoint_path)
 
         # use same amount of printouts as generated in trajectory by default
         if n_AA is None:
@@ -162,6 +162,10 @@ class Trainer(TrainerTemplate):
     @property
     def state(self):
         return self.__state
+
+    @property
+    def params(self):
+        return self.__state.params
 
     @state.setter
     def state(self, loaded_state):

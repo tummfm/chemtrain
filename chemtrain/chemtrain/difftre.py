@@ -571,7 +571,7 @@ class Trainer(TrainerTemplate):
                  reweight_ratio=0.9, checkpoint_folder='Checkpoints'):
 
         checkpoint_path = 'output/difftre/' + str(checkpoint_folder)
-        super().__init__(checkpoint_path=checkpoint_path)
+        super().__init__(energy_fn_template, checkpoint_path=checkpoint_path)
 
         # TODO implement optimization on multiple state points serial and
         #  in parallel
@@ -602,6 +602,10 @@ class Trainer(TrainerTemplate):
     @state.setter
     def state(self, loaded_state):
         self.__state = loaded_state
+
+    @property
+    def params(self):
+        return self.__state.params
 
     def train(self, epochs, checkpoints=None):
         start_epoch = self.epoch

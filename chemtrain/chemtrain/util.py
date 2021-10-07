@@ -62,12 +62,13 @@ def load_params(state_file_path):
 class TrainerTemplate(ABC):
     """Abstract class to define common properties  methods of Trainers."""
 
-    def __init__(self, checkpoint_path):
+    def __init__(self, energy_fn_template, checkpoint_path):
         """Forces implementation of checkpointing routines and
-        optimization state.
+        energy_fn_template.
         """
         self.checkpoint_path = checkpoint_path
         self.create_checkpoint_directory(checkpoint_path)
+        self.energy_fn_template = energy_fn_template
 
     @staticmethod
     def create_checkpoint_directory(checkpoint_path):
@@ -116,5 +117,12 @@ class TrainerTemplate(ABC):
         self.state = loaded_state
 
     @property
+    @abstractmethod
     def params(self):
-        return self.state.params
+        raise NotImplementedError()
+
+    @property
+    def energy_fn(self):
+        return self.energy_fn_template(self.params)
+
+
