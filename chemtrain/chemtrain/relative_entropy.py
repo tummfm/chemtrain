@@ -130,10 +130,11 @@ class Trainer(TrainerTemplate):
     def __init__(self, init_params, AA_traj, simulator_template,
                  energy_fn_template, neighbor_fn, reference_state, timings_struct,
                  optimizer, kbT, reweight_ratio=0.9, n_AA=None, batch_cache=10,
-                 checkpoint_folder='Checkpoints'):
+                 checkpoint_folder='Checkpoints', checkpoint_format='pkl'):
 
         checkpoint_path = 'output/rel_entropy/' + str(checkpoint_folder)
-        super().__init__(checkpoint_path)
+        super().__init__(energy_fn_template, checkpoint_format,
+                         checkpoint_path)
 
         # use same amount of printouts as generated in trajectory by default
         if n_AA is None:
@@ -144,7 +145,6 @@ class Trainer(TrainerTemplate):
         init_AA_batch_state = init_AA_batch()
 
         opt_state = optimizer.init(init_params)
-        self.epoch = 0
         self.update_fn, init_traj = init_update_fn(simulator_template,
                                                    energy_fn_template,
                                                    neighbor_fn,
@@ -163,16 +163,21 @@ class Trainer(TrainerTemplate):
     def state(self):
         return self.__state
 
+    @property
+    def params(self):
+        return self.__state.params
+
     @state.setter
     def state(self, loaded_state):
         self.__state = loaded_state
 
-    def train(self, epochs, checkpoints=None):
+    def train(self, epochs, checkpoint_freq=None):
         start_epoch = self.epoch
-        end_epoch = self.epoch = start_epoch + epochs
+        end_epoch = start_epoch + epochs
 
         for epoch in range(start_epoch, end_epoch):
             # training
+            self.epoch = epoch
             start_time = time.time()
             self.__state = self.update_fn(self.__state)
             end_time = (time.time() - start_time) / 60.
@@ -184,5 +189,5 @@ class Trainer(TrainerTemplate):
                               'model setup causing a NaN trajectory.')
                 break
 
-            self.dump_checkpoint_occasionally(epoch, frequency=checkpoints)
+            self.dump_checkpoint_occasionally(frequency=checkpoint_freq)
         return

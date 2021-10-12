@@ -3,15 +3,17 @@ from collections import namedtuple
 import jax
 from jax import jit, vmap, lax
 import optax
-from jax import value_and_grad
+from jax import value_and_grad, pmap
 import jax.numpy as jnp
 from jax_md import quantity
 from chemtrain.difftre import mse_loss
 import time
 import numpy as onp
 from jax_sgmc.data import NumpyDataLoader, random_reference_data
-from chemtrain.util import TrainerTemplate
+from chemtrain.util import TrainerTemplate, tree_split, tree_get_single, \
+    tree_replicate
 from chemtrain.jax_md_mod import custom_quantity
+from functools import partial
 
 # TODO add parallelization over multiple GPU
 
@@ -64,7 +66,7 @@ def init_force_loss_fn(energy_fn_template, neighbor_fn, nbrs_init,
 
         if virial_fn is not None:
             # Note:
-            # maybe more efficient to combine both preditions, bur XLA
+            # maybe more efficient to combine both preditions, but XLA
             # might just optimize such that neighbors computed above
             # are re-used
 
@@ -85,39 +87,53 @@ def init_force_loss_fn(energy_fn_template, neighbor_fn, nbrs_init,
 
 def init_update_fn(energy_fn_template, neighbor_fn, nbrs_init, optimizer,
                    get_train_batch, get_val_batch, gamma_p=1.e-6,
-                   box_tensor=None, include_virial=False):
+                   box_tensor=None, include_virial=False, n_devices=1):
 
     if include_virial:
-        pressure_fn = custom_quantity.init_pressure(energy_fn_template,
-                                                    box_tensor,
-                                                    include_kinetic=False)
+        virial_fn = custom_quantity.init_pressure(energy_fn_template,
+                                                  box_tensor,
+                                                  include_kinetic=False)
 
         loss_fn = init_force_loss_fn(energy_fn_template, neighbor_fn, nbrs_init,
-                                     pressure_fn, gamma_p=gamma_p)
+                                     virial_fn, gamma_p=gamma_p)
     else:
         loss_fn = init_force_loss_fn(energy_fn_template, neighbor_fn, nbrs_init)
 
-    def batch_update(params, opt_state, loss_inputs):
-        loss, grad = value_and_grad(loss_fn)(params, loss_inputs)
+    @partial(pmap, axis_name='devices')
+    def batched_loss_fn(params, batch):
+        loss = loss_fn(params, batch)
+        loss = lax.pmean(loss, axis_name='devices')
+        return loss
+
+    @partial(pmap, axis_name='devices')
+    def batch_update(params, opt_state, batch):
+        loss, grad = value_and_grad(loss_fn)(params, batch)
+        grad = lax.pmean(grad, axis_name='devices')
+        loss = lax.pmean(loss, axis_name='devices')
         updates, opt_state = optimizer.update(grad, opt_state)
         new_params = optax.apply_updates(params, updates)
         return new_params, opt_state, loss
 
-    @jit
-    def update(train_state, dummy):
+    def update(train_state):
         """Function to scan over, optimizing parameters and returning
         training and validation loss values.
         """
         train_batch_state, train_batch = get_train_batch(
             train_state.train_batch_state)
         val_batch_state, val_batch = get_val_batch(train_state.val_batch_state)
+
+        train_batch = tree_split(train_batch, n_devices)
+        val_batch = tree_split(val_batch, n_devices)
+
         params, opt_state, train_loss = batch_update(train_state.params,
                                                      train_state.opt_state,
                                                      train_batch)
-        val_loss = loss_fn(params, val_batch)
+
+        val_loss = batched_loss_fn(params, val_batch)
         new_train_state = FMState(params, opt_state, train_batch_state,
                                   val_batch_state)
-        return new_train_state, (train_loss, val_loss)
+        # only need loss_val from single device
+        return new_train_state, train_loss[0], val_loss[0]
 
     return update
 
@@ -125,30 +141,33 @@ def init_update_fn(energy_fn_template, neighbor_fn, nbrs_init, optimizer,
 class Trainer(TrainerTemplate):
     def __init__(self, init_params, energy_fn_template, neighbor_fn, nbrs_init,
                  optimizer, position_data, force_data, virial_data=None,
-                 gamma_p=1.e-6, box_tensor=None, batch_size=1, batch_cache=100, train_ratio=0.875,
-                 checkpoint_folder='Checkpoints'):
+                 box_tensor=None, gamma_p=1.e-6, batch_per_device=1,
+                 batch_cache=100, train_ratio=0.875,
+                 checkpoint_folder='Checkpoints', checkpoint_format='pkl'):
         """
         Default training percentage represents 70-10-20 split, when 20 % test
         data was already deducted
         """
 
         checkpoint_path = 'output/force_matching/' + str(checkpoint_folder)
-        super().__init__(checkpoint_path=checkpoint_path)
+        super().__init__(energy_fn_template, checkpoint_format, checkpoint_path)
 
         # split dataset and initialize dataloader
-        n_gpu = jax.device_count()
-        self.epoch = 0
+        n_devices = jax.device_count()
+        batch_size = n_devices * batch_per_device
         train_set_size = position_data.shape[0]
-        self.train_size = int(train_set_size * train_ratio)
-        R_train, R_val = onp.split(position_data, [self.train_size])
-        F_train, F_val = onp.split(force_data, [self.train_size])
+        train_size = int(train_set_size * train_ratio)
+        self.batches_per_epoch = train_size // batch_size
+        R_train, R_val = onp.split(position_data, [train_size])
+        F_train, F_val = onp.split(force_data, [train_size])
         train_dict = {'R': R_train, 'F': F_train}
         val_dict = {'R': R_val, 'F': F_val}
         include_virial = virial_data is not None
         if include_virial:
+            # TODO: test virial matching! Predicted pressure should match
             assert box_tensor is not None, "If the virial is to be matched, " \
                                            "box_tensor is a mandatory input."
-            p_train, p_val = onp.split(position_data, [self.train_size])
+            p_train, p_val = onp.split(virial_data, [train_size])
             train_dict['p'] = p_train
             val_dict['p'] = p_val
         train_loader = NumpyDataLoader(batch_size, R=R_train, F=F_train)
@@ -162,33 +181,48 @@ class Trainer(TrainerTemplate):
         val_batch_state = init_val_batch()
         opt_state = optimizer.init(init_params)  # initialize optimizer state
         self.train_losses, self.val_losses = [], []
-        self.train_state = FMState(init_params, opt_state, train_data_state,
-                                   val_batch_state)
+
+        # replicate params and optimizer states for pmap
+        init_params = tree_replicate(init_params, n_devices)
+        opt_state = tree_replicate(opt_state, n_devices)
+
+        self.__state = FMState(init_params, opt_state, train_data_state,
+                               val_batch_state)
         self.update = init_update_fn(energy_fn_template, neighbor_fn, nbrs_init,
                                      optimizer, get_train_batch, get_val_batch,
                                      gamma_p=gamma_p, box_tensor=box_tensor,
-                                     include_virial=include_virial)
+                                     include_virial=include_virial,
+                                     n_devices=n_devices)
 
     @property
     def state(self):
-        return self.train_state
+        return self.__state
+
+    @property
+    def params(self):
+        single_params = tree_get_single(self.__state.params)
+        return single_params
 
     @state.setter
     def state(self, loaded_state):
-        self.train_state = loaded_state
+        self.__state = loaded_state
 
-    def train(self, epochs, checkpoints=None):
+    def train(self, epochs, checkpoint_freq=None):
+        """Continue training for a number of epochs."""
         start_epoch = self.epoch
-        end_epoch = self.epoch = start_epoch + epochs
+        end_epoch = start_epoch + epochs
 
         for epoch in range(start_epoch, end_epoch):
             # training
+            self.epoch = epoch
             start_time = time.time()
-            self.train_state, losses = lax.scan(self.update,
-                                                self.train_state,
-                                                jnp.arange(self.train_size))
+            train_losses, val_losses = [], []
+            for i in range(self.batches_per_epoch):
+                self.__state, train_loss, val_loss = self.update(self.__state)
+                train_losses.append(train_loss)
+                val_losses.append(val_loss)
             end_time = (time.time() - start_time) / 60.
-            train_losses, val_losses = losses
+
             self.train_losses.extend(train_losses)
             self.val_losses.extend(val_losses)
             mean_train_loss = sum(train_losses) / len(train_losses)
@@ -197,5 +231,5 @@ class Trainer(TrainerTemplate):
                   'min, average train loss:', mean_train_loss,
                   'average val loss:', mean_val_loss)
 
-            self.dump_checkpoint_occasionally(epoch, frequency=checkpoints)
+            self.dump_checkpoint_occasionally(frequency=checkpoint_freq)
         return

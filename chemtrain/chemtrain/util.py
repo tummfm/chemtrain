@@ -1,9 +1,32 @@
 from abc import ABC, abstractmethod
 import numpy as onp
 from pathlib import Path
-import pickle
-from jax import lax, tree_map, numpy as jnp
+import dill as pickle
+from jax import lax, tree_map, tree_leaves, numpy as jnp
 from chemtrain.jax_md_mod import custom_space
+from functools import partial
+# import h5py
+
+
+def tree_get_single(tree):
+    """Returns the first tree of a tree-replica, e.g. from pmap and and moves
+    it to the default device.
+    """
+    single_tree = tree_map(lambda x: jnp.array(x[0]), tree)
+    return single_tree
+
+
+def tree_replicate(tree, n_devices):
+    """Replicates a pytree along the first axis for pmap."""
+    return tree_map(lambda x: jnp.array([x] * n_devices), tree)
+
+
+def tree_split(tree, n_devices):
+    """Splits the first axis of `tree` evenly across the number of devices."""
+    assert tree_leaves(tree)[0].shape[0] % n_devices == 0, \
+        "First dimension needs to be multiple of number of devices."
+    return tree_map(lambda x: jnp.reshape(x, (n_devices, x.shape[0]//n_devices,
+                                              *x.shape[1:])), tree)
 
 
 def get_dataset(configuration_str, retain=None, subsampling=1):
@@ -24,10 +47,11 @@ def load_state(state_file_path):
             state = pickle.load(pickle_file)
     elif state_file_path.endswith('.hdf5'):
         raise NotImplementedError
+        # state = dict_to_pytree(as_dict['b'], some_tree['b'])
     else:
         raise ValueError('Filetype not recognized. '
                          'Expected pickle .pkl or .hdf5')
-    state = tree_map(jnp.array, state)  # pickle saving converts to ordinary np
+    state = tree_map(jnp.array, state)  # move loaded state on device
     return state
 
 
@@ -39,12 +63,18 @@ def load_params(state_file_path):
 class TrainerTemplate(ABC):
     """Abstract class to define common properties  methods of Trainers."""
 
-    def __init__(self, checkpoint_path):
+    def __init__(self, energy_fn_template, checkpoint_format, checkpoint_path):
         """Forces implementation of checkpointing routines and
-        optimization state.
+        energy_fn_template.
         """
+        self.energy_fn_template = energy_fn_template
         self.checkpoint_path = checkpoint_path
         self.create_checkpoint_directory(checkpoint_path)
+        self.check_format = checkpoint_format
+        self.epoch = 0
+        if checkpoint_format == 'hdf5':
+            pass
+
 
     @staticmethod
     def create_checkpoint_directory(checkpoint_path):
@@ -57,14 +87,25 @@ class TrainerTemplate(ABC):
                 pickle.dump(self.state, output, pickle.HIGHEST_PROTOCOL)
         elif file_path.endswith('hdf5'):  # TODO
             raise NotImplementedError
+            # from jax_sgmc.io import pytree_dict_keys, dict_to_pytree
+            # leaf_names = pytree_dict_keys(self.state)
+            # leafes = tree_leaves(self.state)
+            # with h5py.File(file_path, "w") as file:
+            #     for leaf_name, value in zip(leaf_names, leafes):
+            #         file[leaf_name] = value
+
         else:
             raise ValueError('File path needs to end with .pkl or .hdf5.')
 
-    def dump_checkpoint_occasionally(self, epoch, frequency=None,
-                                     file_format='pkl'):
+    def dump_checkpoint_occasionally(self, frequency=None):
         if frequency is not None:
-            if epoch % frequency == 0:  # checkpoint model
-                file_path = self.checkpoint_path + f'/state{epoch}.{file_format}'
+            if self.epoch % frequency == 0:  # checkpoint model
+                if self.check_format == 'pkl':
+                    file_path = self.checkpoint_path + f'/epoch{self.epoch}.pkl'
+                elif self.check_format == 'hdf5':
+                    file_path = self.checkpoint_path + f'/checkpoints.hdf5'
+                else:
+                    raise ValueError('File format needs to be pkl or hdf5.')
                 self.save_state(file_path)
 
     @abstractmethod
@@ -93,5 +134,12 @@ class TrainerTemplate(ABC):
         self.state = loaded_state
 
     @property
+    @abstractmethod
     def params(self):
-        return self.state.params
+        raise NotImplementedError()
+
+    @property
+    def energy_fn(self):
+        return self.energy_fn_template(self.params)
+
+
