@@ -6,6 +6,8 @@ import warnings
 
 from jax_md import util, dataclasses
 from chemtrain.util import TrainerTemplate
+from chemtrain.jax_md_mod.dropout_nn_util import next_dropout_params, \
+    dropout_is_used
 
 
 DifftreState = namedtuple(
@@ -327,16 +329,16 @@ def propagation_fn_init(trajectory_generatior, compute_weights, reweight_ratio):
         generation.
     """
 
-    def trajectory_identity_mapping(input):
+    def trajectory_identity_mapping(inputs):
         """Re-uses trajectory if no recomputation needed."""
-        traj_state = input[1]
+        traj_state = inputs[1]
         return traj_state, 0
 
-    def recompute_trajectory(input):
+    def recompute_trajectory(inputs):
         """Recomputes the reference trajectory, starting from the last
         state of the previous trajectory to save equilibration time.
         """
-        params, traj_state = input
+        params, traj_state = inputs
         updated_traj = trajectory_generatior(params,
                                              traj_state.sim_state)
         _, nbrs = updated_traj.sim_state
@@ -578,7 +580,7 @@ class Trainer(TrainerTemplate):
         #  in parallel
         # https://jax.readthedocs.io/en/latest/faq.html#controlling-data-and-computation-placement-on-devices
 
-        self.losses, self.preditions, self.update_times = [], [], []
+        self.losses, self.predictions, self.update_times = [], [], []
         opt_state = optimizer.init(init_params)
 
         self.update_fn, init_traj_state = difftre_init(simulator_template,
@@ -615,12 +617,19 @@ class Trainer(TrainerTemplate):
             self.epoch = epoch
             # training
             start_time = time.time()
-            self.__state, loss, predictions = self.update_fn(self.__state)
+
+            if dropout_is_used(self.__state.params):  # get next dropout key
+                new_params = next_dropout_params(self.__state.params)
+                self.__state = DifftreState(new_params, self.__state.traj_state,
+                                            self.__state.opt_state)
+
+            self.__state, loss, prediction = self.update_fn(self.__state)
+
             duration = (time.time() - start_time) / 60.
-            print('Update', str(epoch), ': Loss =', str(loss),'Elapsed time =',
-                  str(duration), 'min')
+            print('Update', str(epoch) + '/' + str(end_epoch), ': Loss =',
+                  str(loss), 'Elapsed time =', str(duration), 'min')
             self.losses.append(loss)
-            self.preditions.append(predictions)
+            self.predictions.append(prediction)
             self.update_times.append(duration)
 
             if jnp.isnan(loss):
