@@ -14,6 +14,7 @@ from jax_md import util
 import haiku as hk
 from chemtrain.jax_md_mod import custom_quantity, dimenet_basis_util, \
     custom_util
+import chemtrain.jax_md_mod.dropout_nn_util as drop
 from typing import Dict, Any
 
 # sparse representation utility functions
@@ -252,13 +253,17 @@ class SphericalBesselLayer(hk.Module):
 class ResidualLayer(hk.Module):
     def __init__(self, layer_size, activation=jax.nn.swish, init_kwargs=None, name='ResLayer'):
         super().__init__(name=name)
-        self.residual = hk.Sequential([
-            hk.Linear(layer_size, name='ResidualFirstLinear', **init_kwargs), activation,
-            hk.Linear(layer_size, name='ResidualSecondLinear', **init_kwargs), activation
-        ])
 
-    def __call__(self, inputs):
-        out = inputs + self.residual(inputs)
+        self.residual = []
+        for _ in range(2):
+            self.residual.append(hk.Sequential([drop.Linear(
+                layer_size, name='ResidualSubLayer', **init_kwargs), activation]))
+
+    def __call__(self, inputs, dropout_dict):
+        non_linear = inputs
+        for residual_sub_layer in self.residual:
+            non_linear = residual_sub_layer(non_linear, dropout_dict)
+        out = inputs + non_linear
         return out
 
 
@@ -276,12 +281,12 @@ class EmbeddingBlock(hk.Module):
 
         # unlike the original DimeNet implementation, there is no activation and bias in RBF_Dense as shown in the
         # network sketch. This is consistent with other Layers processing rbf values throughout the network
-        self.rbf_dense = hk.Linear(embed_size, name='RBF_Dense', with_bias=False, **init_kwargs)
-        self.dense_after_concat = hk.Sequential([hk.Linear(embed_size, name='Concat_Dense', **init_kwargs), activation])
+        self.rbf_dense = drop.Linear(embed_size, name='RBF_Dense', with_bias=False, **init_kwargs)
+        self.dense_after_concat = hk.Sequential([drop.Linear(embed_size, name='Concat_Dense', **init_kwargs), activation])
 
-    def __call__(self, rbf, species, pair_connectivity):
+    def __call__(self, rbf, species, pair_connectivity, dropout_dict):
         idx_i, idx_j, _ = pair_connectivity
-        transformed_rbf = self.rbf_dense(rbf)
+        transformed_rbf = self.rbf_dense(rbf, dropout_dict)
 
         type_i = species[idx_i]
         type_j = species[idx_j]
@@ -290,7 +295,7 @@ class EmbeddingBlock(hk.Module):
         h_j = self.embedding_vect[type_j]
 
         edge_embedding = jnp.concatenate([h_i, h_j, transformed_rbf], axis=-1)
-        embedded_messages = self.dense_after_concat(edge_embedding)
+        embedded_messages = self.dense_after_concat(edge_embedding, dropout_dict)
         return embedded_messages
 
 
@@ -303,28 +308,28 @@ class OutputBlock(hk.Module):
             out_embed_size = int(2 * embed_size)
 
         self.n_particles = n_particles
-        self.rbf_dense = hk.Linear(embed_size, with_bias=False, name='RBF_Dense', **init_kwargs)
-        self.upprojection = hk.Linear(out_embed_size, with_bias=False, name='Upprojection', **init_kwargs)
+        self.rbf_dense = drop.Linear(embed_size, with_bias=False, name='RBF_Dense', **init_kwargs)
+        self.upprojection = drop.Linear(out_embed_size, with_bias=False, name='Upprojection', **init_kwargs)
 
         # transform summed messages over multiple dense layers before predicting output
         self.dense_layers = []
         for _ in range(num_dense):
-            self.dense_layers.append(hk.Sequential([hk.Linear(
+            self.dense_layers.append(hk.Sequential([drop.Linear(
                 out_embed_size, with_bias=True, name='Dense_Series', **init_kwargs), activation]))
 
         self.dense_final = hk.Linear(num_targets, with_bias=False, name='Final_output', **init_kwargs)
 
-    def __call__(self, messages, rbf, connectivity):
+    def __call__(self, messages, rbf, connectivity, dropout_dict):
         idx_i, _, _ = connectivity
-        transformed_rbf = self.rbf_dense(rbf)
+        transformed_rbf = self.rbf_dense(rbf, dropout_dict)
         messages *= transformed_rbf  # rbf is masked correctly, transformation only via weights --> rbf acts as mask
 
         # sum incoming messages for each atom: becomes a per-atom quantity
         summed_messages = custom_util.high_precision_segment_sum(messages, idx_i, num_segments=self.n_particles)
 
-        upsampled_messages = self.upprojection(summed_messages)
+        upsampled_messages = self.upprojection(summed_messages, dropout_dict)
         for dense_layer in self.dense_layers:
-            upsampled_messages = dense_layer(upsampled_messages)
+            upsampled_messages = dense_layer(upsampled_messages, dropout_dict)
 
         per_atom_targets = self.dense_final(upsampled_messages)
         return per_atom_targets
@@ -339,61 +344,61 @@ class InteractionBlock(hk.Module):
             angle_int_embed_size = int(embed_size / 2)
 
         # directional message passing block
-        self.rbf1 = hk.Linear(basis_int_embed_size, name='rbf1', with_bias=False,  **init_kwargs)
-        self.rbf2 = hk.Linear(embed_size, name='rbf2', with_bias=False, **init_kwargs)
-        self.sbf1 = hk.Linear(basis_int_embed_size, name='sbf1', with_bias=False,  **init_kwargs)
-        self.sbf2 = hk.Linear(angle_int_embed_size, name='sbf2', with_bias=False, **init_kwargs)
+        self.rbf1 = drop.Linear(basis_int_embed_size, name='rbf1', with_bias=False,  **init_kwargs)
+        self.rbf2 = drop.Linear(embed_size, name='rbf2', with_bias=False, **init_kwargs)
+        self.sbf1 = drop.Linear(basis_int_embed_size, name='sbf1', with_bias=False,  **init_kwargs)
+        self.sbf2 = drop.Linear(angle_int_embed_size, name='sbf2', with_bias=False, **init_kwargs)
 
-        self.dense_kj = hk.Sequential([hk.Linear(embed_size, name='Dense_kj', **init_kwargs), activation])
+        self.dense_kj = hk.Sequential([drop.Linear(embed_size, name='Dense_kj', **init_kwargs), activation])
         self.down_projection = hk.Sequential([
-            hk.Linear(angle_int_embed_size, name='Downprojection', with_bias=False, **init_kwargs), activation])
+            drop.Linear(angle_int_embed_size, name='Downprojection', with_bias=False, **init_kwargs), activation])
         self.up_projection = hk.Sequential([
-            hk.Linear(embed_size, name='Upprojection', with_bias=False, **init_kwargs), activation])
+            drop.Linear(embed_size, name='Upprojection', with_bias=False, **init_kwargs), activation])
 
         # propagation block:
-        self.dense_ji = hk.Sequential([hk.Linear(embed_size, name='Dense_ji', **init_kwargs), activation])
+        self.dense_ji = hk.Sequential([drop.Linear(embed_size, name='Dense_ji', **init_kwargs), activation])
 
         self.res_before_skip = []
         for _ in range(num_res_before_skip):
             self.res_before_skip.append(ResidualLayer(embed_size, activation, init_kwargs, name='ResLayerBeforeSkip'))
-        self.final_before_skip = hk.Sequential([hk.Linear(
+        self.final_before_skip = hk.Sequential([drop.Linear(
             embed_size, name='FinalBeforeSkip', **init_kwargs), activation])
 
         self.res_after_skip = []
         for _ in range(num_res_after_skip):
             self.res_after_skip.append(ResidualLayer(embed_size, activation, init_kwargs, name='ResLayerAfterSkip'))
 
-    def __call__(self, m_input, rbf, sbf, angular_connectivity):
+    def __call__(self, m_input, rbf, sbf, angular_connectivity, dropout_dict):
         # directional message passing block:
         _, reduce_to_ji, expand_to_kj = angular_connectivity
-        m_ji_angular = self.dense_kj(m_input)  # transformed messages for expansion to k -> j
-        rbf = self.rbf1(rbf)
-        rbf = self.rbf2(rbf)
+        m_ji_angular = self.dense_kj(m_input, dropout_dict) # transformed messages for expansion to k -> j
+        rbf = self.rbf1(rbf, dropout_dict)
+        rbf = self.rbf2(rbf, dropout_dict)
         m_ji_angular *= rbf
 
-        m_ji_angular = self.down_projection(m_ji_angular)
+        m_ji_angular = self.down_projection(m_ji_angular, dropout_dict)
         m_kj = m_ji_angular[expand_to_kj]  # expand to nodes k connecting to j
 
-        sbf = self.sbf1(sbf)
-        sbf = self.sbf2(sbf)
+        sbf = self.sbf1(sbf, dropout_dict)
+        sbf = self.sbf2(sbf, dropout_dict)
         m_kj *= sbf  # automatic mask: sbf was masked during initial computation. Sbf1 and 2 only weights, no biases
 
         aggregated_m_ji = custom_util.high_precision_segment_sum(m_kj, reduce_to_ji, num_segments=m_input.shape[0])
-        propagated_messages = self.up_projection(aggregated_m_ji)
+        propagated_messages = self.up_projection(aggregated_m_ji, dropout_dict)
 
         # add directional messages to original ones; afterwards only independent edge transformations
         # masking is lost, but rbf masks in output layer before aggregation
-        m_ji = self.dense_ji(m_input)
+        m_ji = self.dense_ji(m_input, dropout_dict)
         m_combined = m_ji + propagated_messages
 
         for layer in self.res_before_skip:
-            m_combined = layer(m_combined)
-        m_combined = self.final_before_skip(m_combined)
+            m_combined = layer(m_combined, dropout_dict)
+        m_combined = self.final_before_skip(m_combined, dropout_dict)
 
         m_ji_with_skip = m_combined + m_input
 
         for layer in self.res_after_skip:
-            m_ji_with_skip = layer(m_ji_with_skip)
+            m_ji_with_skip = layer(m_ji_with_skip, dropout_dict)
         return m_ji_with_skip
 
 
@@ -426,9 +431,11 @@ class DimeNetPPEnergy(hk.Module):
                  activation=jax.nn.swish,
                  envelope_p: int = 6,
                  init_kwargs: Dict[str, Any] = None,
+                 dropout_setup = None,
                  name: str = 'Energy'):
         super(DimeNetPPEnergy, self).__init__(name=name)
 
+        self.dropout_setup = dropout_setup
         # input representation:
         self.rbf_layer = RadialBesselLayer(r_cutoff, num_radial=num_RBF, envelope_p=envelope_p)
         self.sbf_layer = SphericalBesselLayer(r_cutoff, num_radial=num_RBF, num_spherical=num_SBF, envelope_p=envelope_p)
@@ -449,16 +456,20 @@ class DimeNetPPEnergy(hk.Module):
             self.output_blocks.append(OutputBlock(embed_size, n_particles, out_embed_size, num_dense=num_dense_out,
                                                   num_targets=1, activation=activation, init_kwargs=init_kwargs))
 
-    def __call__(self, distances, angles, species, pair_connections, angular_connections) -> jnp.ndarray:
+    def __call__(self, distances, angles, species, pair_connections, angular_connections,
+                 dropout_key) -> jnp.ndarray:
+        dropout_key_dict = drop.construct_dropout_dict(dropout_key,
+                                                       self.dropout_setup)
+
         rbf = self.rbf_layer(distances)  # correctly masked by construction: masked distances are 2 * cut-off --> rbf=0
         sbf = self.sbf_layer(distances, angles, angular_connections)  # is masked too
 
-        messages = self.embedding_layer(rbf, species, pair_connections)
-        per_atom_quantities = self.output_blocks[0](messages, rbf, pair_connections)
+        messages = self.embedding_layer(rbf, species, pair_connections, dropout_key_dict)
+        per_atom_quantities = self.output_blocks[0](messages, rbf, pair_connections, dropout_key_dict)
 
         for i in range(self.n_interactions):
-            messages = self.int_blocks[i](messages, rbf, sbf, angular_connections)
-            per_atom_quantities += self.output_blocks[i + 1](messages, rbf, pair_connections)
+            messages = self.int_blocks[i](messages, rbf, sbf, angular_connections, dropout_key_dict)
+            per_atom_quantities += self.output_blocks[i + 1](messages, rbf, pair_connections, dropout_key_dict)
 
         predicted_quantities = util.high_precision_sum(per_atom_quantities, axis=0)  # sum over all atoms
         return predicted_quantities

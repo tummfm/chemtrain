@@ -5,7 +5,7 @@ import haiku as hk
 from jax_md import space, partition, nn, util, energy, smap
 from jax_md.energy import multiplicative_isotropic_cutoff, _sw_radial_interaction, _sw_angle_interaction
 from chemtrain.jax_md_mod import custom_interpolate, custom_nn
-from chemtrain.jax_md_mod.dropout_nn_util import dimenetpp_dropout_setup, DimeNetPPEnergy_Dropout
+from chemtrain.jax_md_mod.dropout_nn_util import dimenetpp_dropout_setup
 from functools import partial
 
 from typing import Callable, Tuple, Dict, Any
@@ -489,49 +489,26 @@ def DimeNetPP_neighborlist(displacement: DisplacementFn,
         pair_distances_sparse = jnp.where(pair_mask[:, 0], pair_distances_sparse, 2. * r_cutoff)
         angles = custom_nn.angles_triplets(R, dynamic_displacement, angle_idxs, angular_connectivity)
 
-        # TODO merge together at some point
-        if dropout_key is None:
-            net = custom_nn.DimeNetPPEnergy(r_cutoff,
-                                            n_particles=N,
-                                            n_species=n_species,
-                                            embed_size=embed_size,
-                                            n_interaction_blocks=n_interaction_blocks,
-                                            num_residual_before_skip=num_residual_before_skip,
-                                            num_residual_after_skip=num_residual_after_skip,
-                                            out_embed_size=out_embed_size,
-                                            type_embed_size=type_embed_size,
-                                            angle_int_embed_size=angle_int_embed_size,
-                                            basis_int_embed_size=basis_int_embed_size,
-                                            num_dense_out=num_dense_out,
-                                            num_RBF=num_RBF,
-                                            num_SBF=num_SBF,
-                                            activation=activation,
-                                            envelope_p=envelope_p,
-                                            init_kwargs=init_kwargs,
-                                            dropout_hp=dropout_setup)
-            gnn_energy = net(pair_distances_sparse, angles, species,
-                             pair_connections, angular_connectivity)
-        else:
-            net = DimeNetPPEnergy_Dropout(r_cutoff,
-                                          n_particles=N,
-                                          n_species=n_species,
-                                          embed_size=embed_size,
-                                          n_interaction_blocks=n_interaction_blocks,
-                                          num_residual_before_skip=num_residual_before_skip,
-                                          num_residual_after_skip=num_residual_after_skip,
-                                          out_embed_size=out_embed_size,
-                                          type_embed_size=type_embed_size,
-                                          angle_int_embed_size=angle_int_embed_size,
-                                          basis_int_embed_size=basis_int_embed_size,
-                                          num_dense_out=num_dense_out,
-                                          num_RBF=num_RBF,
-                                          num_SBF=num_SBF,
-                                          activation=activation,
-                                          envelope_p=envelope_p,
-                                          init_kwargs=init_kwargs,
-                                          dropout_setup=dropout_setup)
-            gnn_energy = net(pair_distances_sparse, angles, species,
-                             pair_connections, angular_connectivity, dropout_key)
+        net = custom_nn.DimeNetPPEnergy(r_cutoff,
+                                        n_particles=N,
+                                        n_species=n_species,
+                                        embed_size=embed_size,
+                                        n_interaction_blocks=n_interaction_blocks,
+                                        num_residual_before_skip=num_residual_before_skip,
+                                        num_residual_after_skip=num_residual_after_skip,
+                                        out_embed_size=out_embed_size,
+                                        type_embed_size=type_embed_size,
+                                        angle_int_embed_size=angle_int_embed_size,
+                                        basis_int_embed_size=basis_int_embed_size,
+                                        num_dense_out=num_dense_out,
+                                        num_RBF=num_RBF,
+                                        num_SBF=num_SBF,
+                                        activation=activation,
+                                        envelope_p=envelope_p,
+                                        init_kwargs=init_kwargs,
+                                        dropout_setup=dropout_setup)
+        gnn_energy = net(pair_distances_sparse, angles, species,
+                         pair_connections, angular_connectivity, dropout_key)
         gnn_energy = gnn_energy[0]  # the net returns a 1D array as output, but grad needs a scalar for differentiation
         return gnn_energy
 
