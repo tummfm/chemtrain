@@ -428,7 +428,8 @@ def DimeNetPP_neighborlist(displacement: DisplacementFn,
         n_species: Number of species
         max_angle_multiplier: Multiplier for initial estimate of maximum triplets
         max_edge_multiplier: Multiplier for initial estimate of maximum edges
-        dropout_mode: A dict defining which fully connected layers to apply dropout (see dimenetpp_dropout_setup)
+        dropout_mode: A dict defining which fully connected layers to apply
+                       dropout and at which rate(see dimenetpp_dropout_setup)
     Returns:
         A tuple of 2 functions: A init_fn that initializes the model parameters 
         and an energy function that computes the energy for a particular state 
@@ -454,7 +455,11 @@ def DimeNetPP_neighborlist(displacement: DisplacementFn,
           'b_init': hk.initializers.Constant(0.),
         }
 
-    dropout_hp = dimenetpp_dropout_setup(dropout_mode, overall_dropout_rate=0.2)
+    dropout_setup = dimenetpp_dropout_setup(dropout_mode,
+                                            num_dense_out,
+                                            n_interaction_blocks,
+                                            num_residual_before_skip,
+                                            num_residual_after_skip)
 
     @hk.without_apply_rng
     @hk.transform
@@ -503,7 +508,7 @@ def DimeNetPP_neighborlist(displacement: DisplacementFn,
                                             activation=activation,
                                             envelope_p=envelope_p,
                                             init_kwargs=init_kwargs,
-                                            dropout_hp=dropout_hp)
+                                            dropout_hp=dropout_setup)
             gnn_energy = net(pair_distances_sparse, angles, species,
                              pair_connections, angular_connectivity)
         else:
@@ -524,7 +529,7 @@ def DimeNetPP_neighborlist(displacement: DisplacementFn,
                                           activation=activation,
                                           envelope_p=envelope_p,
                                           init_kwargs=init_kwargs,
-                                          dropout_hp=dropout_hp)
+                                          dropout_setup=dropout_setup)
             gnn_energy = net(pair_distances_sparse, angles, species,
                              pair_connections, angular_connectivity, dropout_key)
         gnn_energy = gnn_energy[0]  # the net returns a 1D array as output, but grad needs a scalar for differentiation

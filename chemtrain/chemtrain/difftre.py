@@ -618,12 +618,12 @@ class Trainer(TrainerTemplate):
             # training
             start_time = time.time()
 
+            self.__state, loss, prediction = self.update_fn(self.__state)
+
             if dropout_is_used(self.__state.params):  # get next dropout key
                 new_params = next_dropout_params(self.__state.params)
                 self.__state = DifftreState(new_params, self.__state.traj_state,
                                             self.__state.opt_state)
-
-            self.__state, loss, prediction = self.update_fn(self.__state)
 
             duration = (time.time() - start_time) / 60.
             print('Update', str(epoch) + '/' + str(end_epoch), ': Loss =',
