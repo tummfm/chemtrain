@@ -69,11 +69,8 @@ class TrainerTemplate(ABC):
         """
         self.energy_fn_template = energy_fn_template
         self.checkpoint_path = checkpoint_path
-        self.create_checkpoint_directory(checkpoint_path)
         self.check_format = checkpoint_format
         self.epoch = 0
-        if checkpoint_format == 'hdf5':
-            pass
 
 
     @staticmethod
@@ -99,6 +96,7 @@ class TrainerTemplate(ABC):
 
     def dump_checkpoint_occasionally(self, frequency=None):
         if frequency is not None:
+            self.create_checkpoint_directory(self.checkpoint_path)
             if self.epoch % frequency == 0:  # checkpoint model
                 if self.check_format == 'pkl':
                     file_path = self.checkpoint_path + f'/epoch{self.epoch}.pkl'
