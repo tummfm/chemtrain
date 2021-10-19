@@ -67,7 +67,8 @@ def process_printouts(time_step, total_time, t_equilib, print_every):
     return timings_struct
 
 
-def run_to_next_printout_neighbors(apply_fn, neighbor_fn, steps_per_printout):
+def run_to_next_printout_neighbors(apply_fn, neighbor_fn, steps_per_printout,
+                                   dt=1., kt_schedule=None):
     """Initializes a function that runs simulation to next printout 
     state and returns that state.
 
@@ -85,15 +86,20 @@ def run_to_next_printout_neighbors(apply_fn, neighbor_fn, steps_per_printout):
     """
     def do_step(cur_state, t):
         state, nbrs = cur_state
-        new_state = apply_fn(state, neighbor=nbrs)
+        if kt_schedule is None:
+            new_state = apply_fn(state, neighbor=nbrs)
+        else:
+            new_state = apply_fn(state, neighbor=nbrs, kT=kt_schedule(t))
         nbrs = neighbor_fn(new_state.position, nbrs)
         new_sim_state = (new_state, nbrs)
         return new_sim_state, t
 
     @jit
-    def run_small_simulation(start_state, dummy=None):
-        printout_state, _ = lax.scan(do_step, start_state,
-                                     xs=jnp.arange(steps_per_printout))
+    def run_small_simulation(start_state, t_start=0.):
+        times = jnp.arange(steps_per_printout) * dt + t_start
+        printout_state, _ = lax.scan(do_step,
+                                     start_state,
+                                     xs=times)
         cur_state, _ = printout_state
         return printout_state, cur_state
     return run_small_simulation
