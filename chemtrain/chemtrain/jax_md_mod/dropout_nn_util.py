@@ -2,7 +2,8 @@
 
 import haiku as hk
 import jax.nn
-from jax import random, numpy as jnp
+from jax import random, vmap, pmap, lax, numpy as jnp
+from jax_md import quantity
 
 
 # Note: This implementation currently stores the RNG key as float32
@@ -19,7 +20,8 @@ def split_dropout_params(meta_params):
     """Splitting up meta params, built up by energy_params and
     dropout_key.
     """
-    return meta_params['energy_params'], jnp.uint32(meta_params['Dropout_RNG_key'])
+    return (meta_params['energy_params'],
+            jnp.uint32(meta_params['Dropout_RNG_key']))
 
 
 def next_dropout_params(meta_params):
@@ -181,3 +183,31 @@ def dimenetpp_dropout_setup(setup_dict,
             dropout_setup[layer] = overall_dropout_rate
 
     return dropout_setup
+
+
+def init_force_uq(energy_fn_template, n_splits=16):
+    # TODO test on whole trajectory for trained and untrained temperature
+    n_devies = jax.device_count()
+
+    @vmap
+    def batched_forces(key, energy_params, sim_state):
+        state, nbrs = sim_state  # assumes state and nbrs to be in sync
+        dropout_params = build_dropout_params(energy_params, key)
+        energy_fn = energy_fn_template(dropout_params)
+        force_fn = quantity.canonicalize_force(energy_fn)
+        return force_fn(state.position, neighbor=nbrs)
+
+    # TODO add pmap
+    def force_std(keys, energy_params, sim_state):
+        forces = batched_forces(keys, energy_params, sim_state)
+        f_std_per_atom = jnp.std(forces, axis=0)
+        mean_std = jnp.mean(f_std_per_atom)
+        return mean_std
+
+    def force_uq(params, sim_state):
+        energy_params, key = split_dropout_params(params)
+        keys = random.split(key, n_splits)
+        std = force_std(keys, energy_params, sim_state)
+        return std
+
+    return force_uq
