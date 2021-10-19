@@ -89,7 +89,7 @@ def run_to_next_printout_neighbors(apply_fn, neighbor_fn, steps_per_printout):
         return new_sim_state, t
 
     @jit
-    def run_small_simulation(start_state, dummy):
+    def run_small_simulation(start_state, dummy=None):
         printout_state, _ = lax.scan(do_step, start_state,
                                      xs=jnp.arange(steps_per_printout))
         cur_state, _ = printout_state
