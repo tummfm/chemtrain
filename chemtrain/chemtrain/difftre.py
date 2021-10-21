@@ -573,6 +573,13 @@ def difftre_init(simulator_template, energy_fn_template, neighbor_fn,
 
 
 class Trainer(TrainerTemplate):
+    # TODO implement optimization on multiple state points serial and
+    #  in parallel
+    # https://jax.readthedocs.io/en/latest/faq.html#controlling-data-and-computation-placement-on-devices
+
+    # TODO save params that generated best loss on not reweighted trajectory
+
+    # TODO adaptively increase trajectory length based on expected noise
     def __init__(self, init_params, quantities, simulator_template,
                  energy_fn_template, neighbor_fn, reference_state,
                  timings_struct, optimizer, kbT, loss_fn=None,
@@ -582,24 +589,20 @@ class Trainer(TrainerTemplate):
         checkpoint_path = 'output/difftre/' + str(checkpoint_folder)
         super().__init__(energy_fn_template, checkpoint_format, checkpoint_path)
 
-        # TODO implement optimization on multiple state points serial and
-        #  in parallel
-        # https://jax.readthedocs.io/en/latest/faq.html#controlling-data-and-computation-placement-on-devices
-
         self.losses, self.predictions, self.update_times = [], [], []
         opt_state = optimizer.init(init_params)
 
-        self.update_fn, init_traj_state = difftre_init(simulator_template,
-                                                       energy_fn_template,
-                                                       neighbor_fn,
-                                                       timings_struct,
-                                                       quantities,
-                                                       kbT,
-                                                       init_params,
-                                                       reference_state,
-                                                       optimizer,
-                                                       loss_fn,
-                                                       reweight_ratio)
+        self.update, init_traj_state = difftre_init(simulator_template,
+                                                    energy_fn_template,
+                                                    neighbor_fn,
+                                                    timings_struct,
+                                                    quantities,
+                                                    kbT,
+                                                    init_params,
+                                                    reference_state,
+                                                    optimizer,
+                                                    loss_fn,
+                                                    reweight_ratio)
 
         self.__state = DifftreState(init_params, init_traj_state, opt_state)
 
@@ -620,11 +623,8 @@ class Trainer(TrainerTemplate):
         end_epoch = start_epoch + epochs
 
         for epoch in range(start_epoch, end_epoch):
-            self.epoch = epoch
-            # training
             start_time = time.time()
-
-            self.__state, loss, prediction = self.update_fn(self.__state)
+            self.__state, loss, prediction = self.update(self.__state)
 
             if dropout_is_used(self.__state.params):  # get next dropout key
                 new_params = next_dropout_params(self.__state.params)
@@ -644,5 +644,6 @@ class Trainer(TrainerTemplate):
                               'model setup causing a NaN trajectory.')
                 break
 
+            self.epoch += 1
             self.dump_checkpoint_occasionally(frequency=checkpoint_freq)
         return
