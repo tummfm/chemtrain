@@ -73,13 +73,13 @@ def init_update_fn(simulator_template, energy_fn_template, neighbor_fn,
                    reference_state, init_params, kbT, optimizer, timings_struct,
                    get_AA_batch, reweight_ratio=0.9):
 
-    trajectory_generatior = trajectory_generator_init(simulator_template,
+    trajectory_generator = trajectory_generator_init(simulator_template,
                                                       energy_fn_template,
                                                       neighbor_fn,
                                                       timings_struct)
     compute_weights = weight_computation_init(energy_fn_template,
                                               neighbor_fn, kbT)
-    propagation_fn = propagation_fn_init(trajectory_generatior, compute_weights,
+    propagation_fn = propagation_fn_init(trajectory_generator, compute_weights,
                                          reweight_ratio)
     grad_fn = init_rel_entropy_gradient(energy_fn_template, neighbor_fn,
                                         reference_state, compute_weights, kbT)
@@ -116,7 +116,7 @@ def init_update_fn(simulator_template, energy_fn_template, neighbor_fn,
         return new_state
 
     t_start = time.time()
-    init_trajectory = trajectory_generatior(init_params, reference_state)
+    init_trajectory = trajectory_generator(init_params, reference_state)
     runtime = (time.time() - t_start) / 60.
     print('Time for a single trajectory generation:', runtime, 'mins')
     return update, init_trajectory
@@ -145,16 +145,16 @@ class Trainer(TrainerTemplate):
         init_AA_batch_state = init_AA_batch()
 
         opt_state = optimizer.init(init_params)
-        self.update_fn, init_traj = init_update_fn(simulator_template,
-                                                   energy_fn_template,
-                                                   neighbor_fn,
-                                                   reference_state,
-                                                   init_params,
-                                                   kbT,
-                                                   optimizer,
-                                                   timings_struct,
-                                                   get_AA_batch,
-                                                   reweight_ratio)
+        self.update, init_traj = init_update_fn(simulator_template,
+                                                energy_fn_template,
+                                                neighbor_fn,
+                                                reference_state,
+                                                init_params,
+                                                kbT,
+                                                optimizer,
+                                                timings_struct,
+                                                get_AA_batch,
+                                                reweight_ratio)
 
         self.__state = EntropyState(init_params, init_traj, opt_state,
                                     init_AA_batch_state)
@@ -176,10 +176,8 @@ class Trainer(TrainerTemplate):
         end_epoch = start_epoch + epochs
 
         for epoch in range(start_epoch, end_epoch):
-            # training
-            self.epoch = epoch
             start_time = time.time()
-            self.__state = self.update_fn(self.__state)
+            self.__state = self.update(self.__state)
             end_time = (time.time() - start_time) / 60.
             print('Time for update ' + str(epoch) + ':', str(end_time), 'min')
 
@@ -189,5 +187,6 @@ class Trainer(TrainerTemplate):
                               'model setup causing a NaN trajectory.')
                 break
 
+            self.epoch += 1
             self.dump_checkpoint_occasionally(frequency=checkpoint_freq)
         return

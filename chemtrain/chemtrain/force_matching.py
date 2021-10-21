@@ -15,17 +15,13 @@ from chemtrain.util import TrainerTemplate, tree_split, tree_get_single, \
 from chemtrain.jax_md_mod import custom_quantity
 from functools import partial
 
-# TODO add parallelization over multiple GPU
-
-"""
-Note:
-Computing the neighborlist in each snapshot is not efficient for DimeNet++,
-which constructs a sparse graph representation afterwards. However, other 
-models such as the tabulated potential are inefficient if used without neighbor 
-list as many cut-off interactions are otherwise computed.
-For the sake of a simpler implementation, the slight inefficiency
-in the case of DimeNet++ is accepeted for now.
-"""
+# Note:
+#  Computing the neighborlist in each snapshot is not efficient for DimeNet++,
+#  which constructs a sparse graph representation afterwards. However, other
+#  models such as the tabulated potential are inefficient if used without
+#  neighbor list as many cut-off interactions are otherwise computed.
+#  For the sake of a simpler implementation, the slight inefficiency
+#  in the case of DimeNet++ is accepeted for now.
 
 
 FMState = namedtuple(
@@ -139,6 +135,10 @@ def init_update_fn(energy_fn_template, neighbor_fn, nbrs_init, optimizer,
 
 
 class Trainer(TrainerTemplate):
+    # TODO save best params during training based on val loss
+
+    # TODO end training when val loss does not decrease for certain
+    #  number of epochs / update steps
     def __init__(self, init_params, energy_fn_template, neighbor_fn, nbrs_init,
                  optimizer, position_data, force_data, virial_data=None,
                  box_tensor=None, gamma_p=1.e-6, batch_per_device=1,
@@ -163,6 +163,8 @@ class Trainer(TrainerTemplate):
         train_dict = {'R': R_train, 'F': F_train}
         val_dict = {'R': R_val, 'F': F_val}
         include_virial = virial_data is not None
+        # TODO include energy data - maybe build more flexible datset setup:
+        #  not 3 dfferent inputs
         if include_virial:
             # TODO: test virial matching! Predicted pressure should match
             assert box_tensor is not None, "If the virial is to be matched, " \
@@ -213,8 +215,6 @@ class Trainer(TrainerTemplate):
         end_epoch = start_epoch + epochs
 
         for epoch in range(start_epoch, end_epoch):
-            # training
-            self.epoch = epoch
             start_time = time.time()
             train_losses, val_losses = [], []
             for i in range(self.batches_per_epoch):
@@ -231,5 +231,6 @@ class Trainer(TrainerTemplate):
                   'min, average train loss:', mean_train_loss,
                   'average val loss:', mean_val_loss)
 
+            self.epoch += 1
             self.dump_checkpoint_occasionally(frequency=checkpoint_freq)
         return
