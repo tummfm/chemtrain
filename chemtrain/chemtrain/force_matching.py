@@ -1,19 +1,17 @@
 from collections import namedtuple
-
-import jax
-from jax import jit, vmap, lax
+from jax import jit, vmap, lax, device_count, value_and_grad, pmap
 import optax
-from jax import value_and_grad, pmap
-import jax.numpy as jnp
 from jax_md import quantity
 from chemtrain.difftre import mse_loss
 import time
 import numpy as onp
 from jax_sgmc.data import NumpyDataLoader, random_reference_data
-from chemtrain.util import TrainerTemplate, tree_split, tree_get_single, \
-    tree_replicate
+from chemtrain.util import TrainerTemplate, TrainerStateTemplate, \
+    tree_split, tree_get_single, tree_replicate
 from chemtrain.jax_md_mod import custom_quantity
 from functools import partial
+from typing import Any
+from chex import dataclass
 
 # Note:
 #  Computing the neighborlist in each snapshot is not efficient for DimeNet++,
@@ -24,13 +22,11 @@ from functools import partial
 #  in the case of DimeNet++ is accepeted for now.
 
 
-FMState = namedtuple(
-    "FMState",
-    ["params",
-     "opt_state",
-     "train_batch_state",
-     "val_batch_state"]
-)
+@partial(dataclass, frozen=True)
+class FMState(TrainerStateTemplate):
+    train_batch_state: Any
+    val_batch_state: Any
+
 
 State = namedtuple(
     "State",
@@ -126,8 +122,10 @@ def init_update_fn(energy_fn_template, neighbor_fn, nbrs_init, optimizer,
                                                      train_batch)
 
         val_loss = batched_loss_fn(params, val_batch)
-        new_train_state = FMState(params, opt_state, train_batch_state,
-                                  val_batch_state)
+        new_train_state = FMState(params=params,
+                                  opt_state=opt_state,
+                                  train_batch_state=train_batch_state,
+                                  val_batch_state=val_batch_state)
         # only need loss_val from single device
         return new_train_state, train_loss[0], val_loss[0]
 
@@ -153,7 +151,7 @@ class Trainer(TrainerTemplate):
         super().__init__(energy_fn_template, checkpoint_format, checkpoint_path)
 
         # split dataset and initialize dataloader
-        n_devices = jax.device_count()
+        n_devices = device_count()
         batch_size = n_devices * batch_per_device
         train_set_size = position_data.shape[0]
         train_size = int(train_set_size * train_ratio)
@@ -188,8 +186,11 @@ class Trainer(TrainerTemplate):
         init_params = tree_replicate(init_params, n_devices)
         opt_state = tree_replicate(opt_state, n_devices)
 
-        self.__state = FMState(init_params, opt_state, train_data_state,
-                               val_batch_state)
+        self.__state = FMState(params=init_params,
+                               opt_state=opt_state,
+                               train_batch_state=train_data_state,
+                               val_batch_state=val_batch_state)
+
         self.update = init_update_fn(energy_fn_template, neighbor_fn, nbrs_init,
                                      optimizer, get_train_batch, get_val_batch,
                                      gamma_p=gamma_p, box_tensor=box_tensor,
