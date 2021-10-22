@@ -1,108 +1,63 @@
-from collections import namedtuple
 from jax import value_and_grad, checkpoint, jit, lax, numpy as jnp
 import optax
 import time
 import warnings
-
-from jax_md import util, dataclasses
-from chemtrain.util import TrainerTemplate
+from chex import dataclass
+from functools import partial
+from typing import Any
+from jax_md import util
+from chemtrain.jax_md_mod.custom_simulator import trajectory_generator_init
+from chemtrain.util import TrainerTemplate, TrainerStateTemplate
 from chemtrain.jax_md_mod.dropout_nn_util import next_dropout_params, \
     dropout_is_used
 
 
-DifftreState = namedtuple(
-    "DifftreState",
-    ["params",
-     "traj_state",
-     "opt_state"]
-)
-
-TrajectoryState = namedtuple(
-    "TrajectoryState",
-    ["sim_state",
-     "trajectory",
-     "energies"]
-)
+@partial(dataclass, frozen=True)
+class DifftreState(TrainerStateTemplate):
+    traj_state: Any
 
 
-@dataclasses.dataclass
-class TimingClass:
-    """A dataclass containing runtimes of simulation
-
-    Attributes:
-    num_printouts_production: Number of states to save during production run
-    num_dumped: Number of states to drop for equilibration
-    timesteps_per_printout: Number of simulation timesteps to run for
-                            each for each printout
-    """
-    num_printouts_production: int
-    num_dumped: int
-    timesteps_per_printout: int
-
-
-def process_printouts(time_step, total_time, t_equilib, print_every):
-    """Initializes a dataclass containing information for the simulator
-    on saving states.
+def init_trajectory_with_energy(simulator_template, energy_fn_template,
+                                neighbor_fn, timings_struct):
+    """Customization of trajectory generator for DiffTRe purposes:
+    Generates constant temperature trajectories and additionally
+    computes energy values for each state used during reweighting.
 
     Args:
-        time_step: Time step size
-        total_time: Total simulation time
-        t_equilib: Equilibration time
-        print_every: Time after which a state is saved
+        simulator_template: Function returning new simulator given
+                            current energy function
+        energy_fn_template: Energy function template
+        neighbor_fn: neighbor_fn
+        timings_struct: Instance of TimingClass containing information
+                        about which states to retain
 
     Returns:
-        A class containing information for the simulator
-        on which states to save.
+        A function taking energy params and the current state (including
+        neighbor list) that runs the simulation forward generating the
+        next DiffTRe TrajectoryState.
     """
-    assert total_time > 0. and t_equilib > 0., "Times need to be positive."
-    assert total_time > t_equilib, "Totoal time needs to exceed " \
-                                   "equilibration time, otherwise no " \
-                                   "trajectory will be sampled."
-    timesteps_per_printout = int(print_every / time_step)
-    num_printouts_production = int((total_time - t_equilib) / print_every)
-    num_dumped = int(t_equilib / print_every)
-    timings_struct = TimingClass(num_printouts_production,
-                                 num_dumped,
-                                 timesteps_per_printout)
-    return timings_struct
+    trajectory_generator = trajectory_generator_init(simulator_template,
+                                                     energy_fn_template,
+                                                     neighbor_fn,
+                                                     timings_struct)
 
+    def generate_trajectory_state_with_energy(params, sim_state):
+        new_traj = trajectory_generator(params, sim_state)
 
-def run_to_next_printout_neighbors(apply_fn, neighbor_fn, steps_per_printout,
-                                   dt=1., kt_schedule=None):
-    """Initializes a function that runs simulation to next printout 
-    state and returns that state.
-
-    Run simulation forward to each printout point and return state.
-    Used to sample a specified number of states
-
-    Args:
-      apply_fn: Apply function from initialization of simulator
-      neighbor_fn: Neighbor function
-      steps_per_printout: Time steps to run for each printout state
-
-    Returns:
-      A function that takes the current simulation state, runs the 
-      simulation forward to the next printout state and returns it.
-    """
-    def do_step(cur_state, t):
-        state, nbrs = cur_state
-        if kt_schedule is None:
-            new_state = apply_fn(state, neighbor=nbrs)
-        else:
-            new_state = apply_fn(state, neighbor=nbrs, kT=kt_schedule(t))
-        nbrs = neighbor_fn(new_state.position, nbrs)
-        new_sim_state = (new_state, nbrs)
-        return new_sim_state, t
-
-    @jit
-    def run_small_simulation(start_state, t_start=0.):
-        times = jnp.arange(steps_per_printout) * dt + t_start
-        printout_state, _ = lax.scan(do_step,
-                                     start_state,
-                                     xs=times)
-        cur_state, _ = printout_state
-        return printout_state, cur_state
-    return run_small_simulation
+        # always recompute neighbor list from last, fixed neighbor list.
+        # Note:
+        # one could save all the neighbor lists at the printout times,
+        # if memory permits. In principle, this energy computation
+        # could be omitted altogether if ones saves the energy  from
+        # the simulator for each printout state. We did not opt for
+        # this optimization to keep compatibility with Jax MD simulators.
+        final_state, nbrs = new_traj.sim_state
+        energy_fn = energy_fn_template(params)
+        energies = energy_trajectory(new_traj.trajectory, nbrs,
+                                     neighbor_fn, energy_fn)
+        traj_with_energies = new_traj.replace(energies=energies)
+        return traj_with_energies
+    return generate_trajectory_state_with_energy
 
 
 def energy_trajectory(trajectory, init_nbrs, neighbor_fn, energy_fn):
@@ -141,7 +96,7 @@ def quantity_traj(traj_state, quantities, neighbor_fn, energy_params=None):
     a dict under the same key as the input quantity function.
 
     Args:
-        traj_state: DiifftreState as output from trajectoty generator
+        traj_state: DifftreState as output from trajectory generator
         quantities: The quantity dict containing for each target quantity 
                     a dict containing the quantity function under 'compute_fn'
         neighbor_fn: Neighbor function
@@ -168,66 +123,6 @@ def quantity_traj(traj_state, quantities, neighbor_fn, energy_params=None):
 
     _, quantity_trajs = lax.scan(quantity_trajectory, 0., traj_state.trajectory)
     return quantity_trajs
-
-
-def trajectory_generator_init(simulator_template, energy_fn_template,
-                              neighbor_fn, timings_struct):
-    """Initializes a trajectory_generator function that computes a new
-    trajectory stating at the last state. Additionally computes energy
-    values for each state used during the reweighting step.
-
-    Args:
-        simulator_template: Function returning new simulator given
-                            current energy function
-        energy_fn_template: Energy function template
-        neighbor_fn: neighbor_fn
-        timings_struct: Instance of TimingClass containing information
-                        about which states to retain
-        dt: Simulation time step. Only needed in case of varying
-            temperature as defined in kt_schedule
-        kt_schedule: A function mapping simulation time within the
-                     trajectory to target kbT as enforced by thermostat
-
-    Returns:
-        A function taking energy params and the current state (including
-        neighbor list) that runs the simulation forward generating the
-        next TrajectoryState.
-    """
-    num_printouts_production, num_dumped, timesteps_per_printout = \
-        dataclasses.astuple(timings_struct)
-
-    def generate_reference_trajectory(params, sim_state, dt=1.,
-                                      kt_schedule=None):
-        # TODO write simplified function that generates trajectory (possibly
-        #  with variable temperature) that is called here as often the energies
-        #  are not needed and in case of difftre, only constant temperature is
-        #  applicable
-        energy_fn = energy_fn_template(params)
-        _, apply_fn = simulator_template(energy_fn)
-        run_to_printout = run_to_next_printout_neighbors(apply_fn,
-                                                         neighbor_fn,
-                                                         timesteps_per_printout,
-                                                         dt,
-                                                         kt_schedule)
-        sim_state, _ = lax.scan(run_to_printout,
-                                sim_state,
-                                xs=jnp.arange(num_dumped))  # equilibrate
-        new_sim_state, traj = lax.scan(run_to_printout,
-                                       sim_state,
-                                       xs=jnp.arange(num_printouts_production))
-        final_state, nbrs = new_sim_state
-
-        # always recompute neighbor list from last, fixed neighbor list.
-        # Note:
-        # one could save all the neighbor lists at the printout times,
-        # if memory permits. In principle, this energy computation
-        # could be omitted altogether if ones saves the energy  from
-        # the simulator for each printout state. We did not opt for
-        # this optimization to keep compatibility with Jax MD simulators.
-        energies = energy_trajectory(traj, nbrs, neighbor_fn, energy_fn)
-        return TrajectoryState(new_sim_state, traj, energies)
-
-    return generate_reference_trajectory
 
 
 def weight_computation_init(energy_fn_template, neighbor_fn, kbT):
@@ -332,7 +227,7 @@ def propagation_fn_init(trajectory_generatior, compute_weights, reweight_ratio):
 
     Args:
         trajectory_generatior: Initialized trajectory generator function
-                               from trajectory_generator_init
+                               from init_generate_trajectory_state
         compute_weights: Initialized weight compute function from
                          weight_computation_init
         reweight_ratio: Ratio of reference samples required for n_eff to
@@ -386,7 +281,7 @@ def difftre_gradient_init(compute_weights, trajectory_generation_fn,
         compute_weights: Initialized weight compute function from
                          weight_computation_init
         trajectory_generation_fn: Initialized trajectory generator
-                                  function from trajectory_generator_init
+                                  function from init_generate_trajectory_state
         loss_fn: Loss function, e.g. from init_independent_mse_loss_fn
                  or custom implementation
         quantities: The quantity dict containing for each target quantity
@@ -450,9 +345,8 @@ def init_step_optimizer(optimizer, neighbor_fn):
                           'Initializing larger neighborlist.')
             last_sim_snapshot, _ = state.traj_state.sim_state
             enlarged_nbrs = neighbor_fn(last_sim_snapshot.position)
-            new_traj_state = TrajectoryState((last_sim_snapshot, enlarged_nbrs),
-                                             state.traj_state.trajectory,
-                                             state.traj_state.energies)
+            new_traj_state = state.traj_state.replace(
+                sim_state=(last_sim_snapshot, enlarged_nbrs))
             new_params = state.params
             new_opt_state = state.opt_state
         else:  # only use gradient if neighbor list did not overflowed
@@ -461,7 +355,9 @@ def init_step_optimizer(optimizer, neighbor_fn):
                                                           state.params)
             new_params = optax.apply_updates(state.params, scaled_grad)
 
-        return DifftreState(new_params, new_traj_state, new_opt_state)
+        return DifftreState(params=new_params,
+                            traj_state=new_traj_state,
+                            opt_state=new_opt_state)
     return step_optimizer
 
 
@@ -560,14 +456,14 @@ def difftre_init(simulator_template, energy_fn_template, neighbor_fn,
         print('Using custom loss function. '
               'Ignoring \'gamma\' and \'target\' in  \"quantities\".')
 
-    trajectory_generation_fn = trajectory_generator_init(simulator_template,
-                                                         energy_fn_template,
-                                                         neighbor_fn,
-                                                         timings_struct)
+    trajectory_generator = init_trajectory_with_energy(simulator_template,
+                                                       energy_fn_template,
+                                                       neighbor_fn,
+                                                       timings_struct)
     compute_weights = weight_computation_init(energy_fn_template, neighbor_fn,
                                               kbT)
     propagation_fn = difftre_gradient_init(compute_weights,
-                                           trajectory_generation_fn,
+                                           trajectory_generator,
                                            loss_fn,
                                            quantities,
                                            neighbor_fn,
@@ -575,7 +471,7 @@ def difftre_init(simulator_template, energy_fn_template, neighbor_fn,
     update_fn = difftre_update_init(propagation_fn, optimizer, neighbor_fn)
 
     t_start = time.time()
-    traj_initstate = trajectory_generation_fn(init_params, reference_state)
+    traj_initstate = trajectory_generator(init_params, reference_state)
     runtime = (time.time() - t_start) / 60.
     print('Time for a single trajectory generation:', runtime, 'mins')
 
@@ -613,8 +509,9 @@ class Trainer(TrainerTemplate):
                                                     optimizer,
                                                     loss_fn,
                                                     reweight_ratio)
-
-        self.__state = DifftreState(init_params, init_traj_state, opt_state)
+        self.__state = DifftreState(params=init_params,
+                                    traj_state=init_traj_state,
+                                    opt_state=opt_state)
 
     @property
     def state(self):

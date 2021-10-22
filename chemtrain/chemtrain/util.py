@@ -1,11 +1,25 @@
 from abc import ABC, abstractmethod
+from typing import Any
 import numpy as onp
 from pathlib import Path
 import dill as pickle
 from jax import lax, tree_map, tree_leaves, numpy as jnp
 from chemtrain.jax_md_mod import custom_space
 import copy
+from chex import dataclass
+from functools import partial
 # import h5py
+
+
+# freezing seems to give slight performance improvement
+@partial(dataclass, frozen=True)
+class TrainerStateTemplate:
+    """Each trainer at least contains the state of parameter and
+    optimizer. For consistency, we therefore include these parameters
+    here.
+    """
+    params: Any
+    opt_state: Any
 
 
 def tree_get_single(tree):

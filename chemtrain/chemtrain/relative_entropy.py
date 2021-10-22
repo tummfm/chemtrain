@@ -1,22 +1,25 @@
-from collections import namedtuple
+from chex import dataclass
+from functools import partial
+from typing import Any
+
 from jax import jit, tree_map, tree_multimap, grad, lax, numpy as jnp
 from jax_sgmc.data import NumpyDataLoader, random_reference_data
 import time
 import warnings
 
 from chemtrain.util import TrainerTemplate
-from chemtrain.difftre import propagation_fn_init, trajectory_generator_init, \
-    weight_computation_init, DifftreState, init_step_optimizer
-
+from chemtrain.difftre import propagation_fn_init, weight_computation_init, \
+     DifftreState, init_step_optimizer, init_trajectory_with_energy
 
 # The relative entropy implementation builds on the functionalities
 # implemented in DIffTRe. We therefore enforce a consistent interface
 # with the DifftreState. Here, we additionally need a batch_state that
 # keeps track of the reference data.
-EntropyState = namedtuple(
-    "EntropyState",
-    DifftreState._fields + ('batch_state',)
-)
+
+
+@partial(dataclass, frozen=True)
+class EntropyState(DifftreState):
+    batch_state: Any
 
 
 def init_rel_entropy_gradient(energy_fn_template, neighbor_fn, init_state,
@@ -73,10 +76,10 @@ def init_update_fn(simulator_template, energy_fn_template, neighbor_fn,
                    reference_state, init_params, kbT, optimizer, timings_struct,
                    get_AA_batch, reweight_ratio=0.9):
 
-    trajectory_generator = trajectory_generator_init(simulator_template,
-                                                      energy_fn_template,
-                                                      neighbor_fn,
-                                                      timings_struct)
+    trajectory_generator = init_trajectory_with_energy(simulator_template,
+                                                       energy_fn_template,
+                                                       neighbor_fn,
+                                                       timings_struct)
     compute_weights = weight_computation_init(energy_fn_template,
                                               neighbor_fn, kbT)
     propagation_fn = propagation_fn_init(trajectory_generator, compute_weights,
@@ -104,15 +107,15 @@ def init_update_fn(simulator_template, energy_fn_template, neighbor_fn,
         """
         new_traj_state, new_batch_state, curr_grad, error_code = \
             propagation_and_grad(entropy_state)
-        optimization_state = step_optimizer(entropy_state,
+        optimization_state = step_optimizer(entropy_state,  # is a DifftreState
                                             curr_grad,
                                             error_code,
                                             new_traj_state)
 
-        new_state = EntropyState(optimization_state.params,
-                                 optimization_state.traj_state,
-                                 optimization_state.opt_state,
-                                 new_batch_state)
+        new_state = EntropyState(params=optimization_state.params,
+                                 traj_state=optimization_state.traj_state,
+                                 opt_state=optimization_state.opt_state,
+                                 batch_state=new_batch_state)
         return new_state
 
     t_start = time.time()
@@ -128,7 +131,7 @@ class Trainer(TrainerTemplate):
     ensemble.
     """
     def __init__(self, init_params, AA_traj, simulator_template,
-                 energy_fn_template, neighbor_fn, reference_state, timings_struct,
+                 energy_fn_template, neighbor_fn, reference_state, timings,
                  optimizer, kbT, reweight_ratio=0.9, n_AA=None, batch_cache=10,
                  checkpoint_folder='Checkpoints', checkpoint_format='pkl'):
 
@@ -138,7 +141,7 @@ class Trainer(TrainerTemplate):
 
         # use same amount of printouts as generated in trajectory by default
         if n_AA is None:
-            n_AA = timings_struct.num_printouts_production
+            n_AA = jnp.size(timings.t_production_start)
         AA_loader = NumpyDataLoader(n_AA, R=AA_traj)
         init_AA_batch, get_AA_batch = random_reference_data(
             AA_loader, batch_cache * n_AA)
@@ -152,12 +155,14 @@ class Trainer(TrainerTemplate):
                                                 init_params,
                                                 kbT,
                                                 optimizer,
-                                                timings_struct,
+                                                timings,
                                                 get_AA_batch,
                                                 reweight_ratio)
 
-        self.__state = EntropyState(init_params, init_traj, opt_state,
-                                    init_AA_batch_state)
+        self.__state = EntropyState(params=init_params,
+                                    traj_state=init_traj,
+                                    opt_state=opt_state,
+                                    batch_state=init_AA_batch_state)
 
     @property
     def state(self):

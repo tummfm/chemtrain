@@ -1,9 +1,8 @@
+from chex import dataclass
+from functools import partial
+from typing import Callable, TypeVar, Union, Tuple, Any
 
-import jax.numpy as jnp
-from jax import lax, ops, random
-
-from typing import Callable, TypeVar, Union, Tuple
-
+from jax import lax, ops, random, jit, numpy as jnp
 from jax_md import quantity, util, space, dataclasses
 from jax_md.simulate import NVTNoseHooverState, NVEState, SUZUKI_YOSHIDA_WEIGHTS
 
@@ -13,8 +12,6 @@ static_cast = util.static_cast
 
 
 # Types
-
-
 Array = util.Array
 f32 = util.f32
 f64 = util.f64
@@ -27,6 +24,148 @@ ApplyFn = Callable[[T], T]
 Simulator = Tuple[InitFn, ApplyFn]
 
 Schedule = Union[Callable[..., float], float]
+
+
+@partial(dataclass, frozen=True)
+class TimingClass:
+    """A dataclass containing run-times for the simulation.
+
+    Attributes:
+    t_equilib_start: Starting time of all printouts that will be dumped
+                     for equilibration
+    t_production_start: Starting time of all runs that result in a printout
+    timesteps_per_printout: Number of simulation timesteps to run forward
+                            from each starting time
+    time_step: Simulation time step
+    """
+    t_equilib_start: Array
+    t_production_start: Array
+    timesteps_per_printout: int
+    time_step: float
+
+
+@partial(dataclass, frozen=True)
+class TrajectoryState:
+    """A dataclass storing information of a generated trajectory.
+
+    Attributes:
+    sim_state: Last simulation state, a tuple of last state and nbrs
+    trajectory: Generated trajectory
+    energies: Potential energy value for each snapshot in trajectory
+    """
+    sim_state: Any
+    trajectory: Any
+    energies: Array = None
+
+
+def process_printouts(time_step, total_time, t_equilib, print_every):
+    """Initializes a dataclass containing information for the simulator
+    on simulation time and saving states.
+
+    Args:
+        time_step: Time step size
+        total_time: Total simulation time
+        t_equilib: Equilibration time
+        print_every: Time after which a state is saved
+
+    Returns:
+        A class containing information for the simulator
+        on which states to save.
+    """
+    assert total_time > 0. and t_equilib > 0., "Times need to be positive."
+    assert total_time > t_equilib, "Total time needs to exceed " \
+                                   "equilibration time, otherwise no " \
+                                   "trajectory will be sampled."
+    timesteps_per_printout = int(print_every / time_step)
+    n_production = int((total_time - t_equilib) / print_every)
+    n_dumped = int(t_equilib / print_every)
+    equilibration_t_start = jnp.arange(n_dumped) * print_every
+    production_t_start = jnp.arange(n_production) * print_every + t_equilib
+    timings = TimingClass(t_equilib_start=equilibration_t_start,
+                          t_production_start=production_t_start,
+                          timesteps_per_printout=timesteps_per_printout,
+                          time_step=time_step)
+    return timings
+
+
+def run_to_next_printout_neighbors(apply_fn, neighbor_fn, timings,
+                                   kt_schedule=None):
+    """Initializes a function that runs simulation to next printout
+    state and returns that state.
+
+    Run simulation forward to each printout point and return state.
+    Used to sample a specified number of states
+
+    Args:
+      apply_fn: Apply function from initialization of simulator
+      neighbor_fn: Neighbor function
+      timings: Instance of TimingClass containing information
+               about which states to retain and simulation time
+      kt_schedule: A function mapping simulation time within the
+             trajectory to target kbT as enforced by thermostat
+
+    Returns:
+      A function that takes the current simulation state, runs the
+      simulation forward to the next printout state and returns it.
+    """
+    def do_step(cur_state, t):
+        state, nbrs = cur_state
+        if kt_schedule is None:
+            new_state = apply_fn(state, neighbor=nbrs)
+        else:
+            new_state = apply_fn(state, neighbor=nbrs, kT=kt_schedule(t))
+        nbrs = neighbor_fn(new_state.position, nbrs)
+        new_sim_state = (new_state, nbrs)
+        return new_sim_state, t
+
+    @jit
+    def run_small_simulation(start_state, t_start=0.):
+        simulation_time_points = jnp.arange(timings.timesteps_per_printout) \
+                                 * timings.time_step + t_start
+        printout_state, _ = lax.scan(do_step,
+                                     start_state,
+                                     xs=simulation_time_points)
+        cur_state, _ = printout_state
+        return printout_state, cur_state
+    return run_small_simulation
+
+
+def trajectory_generator_init(simulator_template, energy_fn_template,
+                              neighbor_fn, timings):
+    """Initializes a trajectory_generator function that computes a new
+    trajectory stating at the last state.
+
+    Args:
+        simulator_template: Function returning new simulator given
+                            current energy function
+        energy_fn_template: Energy function template
+        neighbor_fn: neighbor_fn
+        timings: Instance of TimingClass containing information
+                 about which states to retain
+
+    Returns:
+        A function taking energy params and the current state (including
+        neighbor list) that runs the simulation forward generating the
+        next TrajectoryState.
+    """
+    def generate_reference_trajectory(params, sim_state, kt_schedule=None):
+        energy_fn = energy_fn_template(params)
+        _, apply_fn = simulator_template(energy_fn)
+        run_to_printout = run_to_next_printout_neighbors(apply_fn,
+                                                         neighbor_fn,
+                                                         timings,
+                                                         kt_schedule)
+
+        sim_state, _ = lax.scan(run_to_printout,  # equilibrate
+                                sim_state,
+                                xs=timings.t_equilib_start)
+        new_sim_state, traj = lax.scan(run_to_printout,  # production
+                                       sim_state,
+                                       xs=timings.t_production_start)
+        return TrajectoryState(sim_state=new_sim_state,
+                               trajectory=traj)
+
+    return generate_reference_trajectory
 
 
 def nvt_nose_hoover_gradient_stop(energy_or_force: Callable[..., Array],
