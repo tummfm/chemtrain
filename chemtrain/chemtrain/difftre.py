@@ -183,6 +183,10 @@ def trajectory_generator_init(simulator_template, energy_fn_template,
         neighbor_fn: neighbor_fn
         timings_struct: Instance of TimingClass containing information
                         about which states to retain
+        dt: Simulation time step. Only needed in case of varying
+            temperature as defined in kt_schedule
+        kt_schedule: A function mapping simulation time within the
+                     trajectory to target kbT as enforced by thermostat
 
     Returns:
         A function taking energy params and the current state (including
@@ -192,13 +196,19 @@ def trajectory_generator_init(simulator_template, energy_fn_template,
     num_printouts_production, num_dumped, timesteps_per_printout = \
         dataclasses.astuple(timings_struct)
 
-    def generate_reference_trajectory(params, sim_state):
+    def generate_reference_trajectory(params, sim_state, dt=1.,
+                                      kt_schedule=None):
+        # TODO write simplified function that generates trajectory (possibly
+        #  with variable temperature) that is called here as often the energies
+        #  are not needed and in case of difftre, only constant temperature is
+        #  applicable
         energy_fn = energy_fn_template(params)
         _, apply_fn = simulator_template(energy_fn)
         run_to_printout = run_to_next_printout_neighbors(apply_fn,
                                                          neighbor_fn,
-                                                         timesteps_per_printout)
-
+                                                         timesteps_per_printout,
+                                                         dt,
+                                                         kt_schedule)
         sim_state, _ = lax.scan(run_to_printout,
                                 sim_state,
                                 xs=jnp.arange(num_dumped))  # equilibrate
