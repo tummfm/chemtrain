@@ -535,8 +535,7 @@ class Trainer(TrainerTemplate):
 
             if dropout_is_used(self.__state.params):  # get next dropout key
                 new_params = next_dropout_params(self.__state.params)
-                self.__state = DifftreState(new_params, self.__state.traj_state,
-                                            self.__state.opt_state)
+                self.__state = self.__state.replace(params=new_params)
 
             duration = (time.time() - start_time) / 60.
             print('Update', str(epoch) + '/' + str(end_epoch), ': Loss =',
