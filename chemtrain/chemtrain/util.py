@@ -62,6 +62,12 @@ def update_not_found_error():
                           "pickled.")
 
 
+def assert_distribuatable(total_samples, n_devies, vmap_per_device):
+    assert total_samples % (n_devies * vmap_per_device) == 0, \
+        "For parallelization, the samples need to be evenly distributed " \
+        "over the devices and vmap, i.e. be a multiple of n_devices * n_vmap."
+
+
 class TrainerTemplate(ABC):
     """Abstract class to define common properties and methods of Trainers."""
 
