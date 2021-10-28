@@ -2,9 +2,10 @@ from chex import dataclass
 from functools import partial
 from typing import Callable, TypeVar, Union, Tuple, Any
 
-from jax import lax, ops, random, jit, numpy as jnp
+from jax import lax, ops, random, jit, tree_util, numpy as jnp
 from jax_md import quantity, util, space, dataclasses
-from jax_md.simulate import NVTNoseHooverState, NVEState, SUZUKI_YOSHIDA_WEIGHTS
+from jax_md.simulate import NVTNoseHooverState, NVEState, \
+    SUZUKI_YOSHIDA_WEIGHTS, velocity_verlet
 
 from Legacy_files import adjoint_ode as ode
 
@@ -353,16 +354,22 @@ def nvt_nose_hoover_gradient_stop(energy_or_force: Callable[..., Array],
   return init_fn, apply_fn, gradient_stop
 
 
+def gradient_stop(state, stop_ratio):
+    non_stop = 1. - stop_ratio
+    stop_component = lambda x: non_stop * x + stop_ratio * lax.stop_gradient(x)
+    stopped_state = tree_util.tree_map(stop_component, state)
+    return stopped_state
 
 
-def nve_gradient_stop(energy_or_force: Callable[..., Array],
+def nve_gradstop(energy_or_force_fn: Callable[..., Array],
         shift_fn: ShiftFn,
-        dt_: float, stop_ratio: float=0.02) -> Simulator:
+        dt: float,
+        stopratio: float) -> Simulator:
   """Simulates a system in the NVE ensemble.
 
-  Samples from the microcanonical ensemble in which the number of particles (N),
-  the system volume (V), and the energy (E) are held constant. We use a standard
-  velocity verlet integration scheme.
+  Samples from the microcanonical ensemble in which the number of particles
+  (N), the system volume (V), and the energy (E) are held constant. We use a
+  standard velocity verlet integration scheme.
 
   Args:
     energy_or_force: A function that produces either an energy or a force from
@@ -377,35 +384,22 @@ def nve_gradient_stop(energy_or_force: Callable[..., Array],
   Returns:
     See above.
   """
-  force = quantity.canonicalize_force(energy_or_force)
+  force_fn = quantity.canonicalize_force(energy_or_force_fn)
 
-  dt, = static_cast(dt_)
-  dt_2, = static_cast(0.5 * dt_ ** 2)
-  def init_fun(key: Array,
-               R: Array,
-               velocity_scale: float=f32(1.0),
-               mass=f32(1.0),
-               **kwargs) -> NVEState:
-    V = jnp.sqrt(velocity_scale) * random.normal(key, R.shape, dtype=R.dtype)
+  def init_fn(key, R, kT, mass=f32(1.0), **kwargs):
     mass = quantity.canonicalize_mass(mass)
-    return NVEState(R, V, force(R, **kwargs) / mass, mass)  # pytype: disable=wrong-arg-count
-  def apply_fun(state: NVEState, t: float=f32(0), **kwargs) -> NVEState:
-    R, V, A, mass = dataclasses.astuple(state)
-    R = shift_fn(R, V * dt + A * dt_2, t=t, **kwargs)
-    A_prime = force(R, t=t, **kwargs) / mass
-    V = V + f32(0.5) * (A + A_prime) * dt
-    return NVEState(R, V, A_prime, mass)  # pytype: disable=wrong-arg-count
+    V = jnp.sqrt(kT / mass) * random.normal(key, R.shape, dtype=R.dtype)
+    V = V - jnp.mean(V, axis=0, keepdims=True)
+    return NVEState(R, V, force_fn(R, **kwargs), mass)  # pytype: disable=wrong-arg-count
 
-  def gradient_stop(state, **kwargs):
-    R, V, A, mass = dataclasses.astuple(state)
-    non_stop = 1. - stop_ratio
+  def step_fn(state, **kwargs):
+    # TODO reduce copy-paste code by implementing gradient-stop as a
+    #  wrapper around step_fn
+    stepped = velocity_verlet(force_fn, shift_fn, dt, state, **kwargs)
+    stopped_state = gradient_stop(stepped, stopratio)
+    return stopped_state
 
-    R_new = non_stop * R + stop_ratio * lax.stop_gradient(R)
-    V_new = non_stop * V + stop_ratio * lax.stop_gradient(V)
-    A_new = non_stop * A + stop_ratio * lax.stop_gradient(A)
-    return NVEState(R_new, V_new, A_new, mass)
-  return init_fun, apply_fun, gradient_stop
-
+  return init_fn, step_fn
 
 
 @dataclasses.dataclass

@@ -170,12 +170,12 @@ class Trainer(TrainerTemplate):
             p_train, p_val = onp.split(virial_data, [train_size])
             train_dict['p'] = p_train
             val_dict['p'] = p_val
-        train_loader = NumpyDataLoader(batch_size, R=R_train, F=F_train)
-        val_loader = NumpyDataLoader(batch_size, R=R_val, F=F_val)
+        train_loader = NumpyDataLoader(R=R_train, F=F_train)
+        val_loader = NumpyDataLoader(R=R_val, F=F_val)
         init_train_batch, get_train_batch = random_reference_data(
-            train_loader, batch_cache)
+            train_loader, batch_cache, batch_size)
         init_val_batch, get_val_batch = random_reference_data(
-            val_loader, batch_cache)
+            val_loader, batch_cache, batch_size)
 
         train_data_state = init_train_batch()
         val_batch_state = init_val_batch()
