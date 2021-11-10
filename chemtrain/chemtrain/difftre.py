@@ -2,7 +2,8 @@ from jax import value_and_grad, checkpoint, jit, lax, random, \
     numpy as jnp
 import optax
 from jax_md import util
-from chemtrain.jax_md_mod.custom_simulator import trajectory_generator_init
+from chemtrain.traj_util import trajectory_generator_init, energy_trajectory, \
+    quantity_traj
 from chemtrain.util import TrainerTemplate, TrainerState, tree_mean
 import time
 import warnings
@@ -14,71 +15,6 @@ def mse_loss(predictions, targets):
     mean_of_squares = util.high_precision_sum(squared_difference) \
                       / predictions.size
     return mean_of_squares
-
-
-def energy_trajectory(trajectory, init_nbrs, neighbor_fn, energy_fn):
-    """Computes potential energy values for all states in a trajectory.
-
-    Args:
-        trajectory: Trajectory of states from simulation
-        init_nbrs: A reference neighbor list to recompute neighbors
-                   for each snapshot allowing jit
-        neighbor_fn: Neighbor function
-        energy_fn: Energy function
-
-    Returns:
-        An array of potential energy values containing the energy of
-        each state in a trajectory.
-    """
-    def energy_snapshot(dummy_carry, state):
-        R = state.position
-        nbrs = neighbor_fn(R, init_nbrs)
-        energy = energy_fn(R, neighbor=nbrs)
-        return dummy_carry, energy
-
-    _, U_traj = lax.scan(energy_snapshot,
-                         jnp.array(0., dtype=jnp.float32),
-                         trajectory)
-    return U_traj
-
-
-def quantity_traj(traj_state, quantities, neighbor_fn, energy_params=None):
-    """Computes quantities of interest for all states in a trajectory.
-
-    Arbitrary quantity functions can be provided via the quantities dict.
-    The quantities dict should provide each quantity function via its own 
-    key that contains another dict containing the function under the 
-    'compute_fn' key. The resulting quantity trajectory will be saved in 
-    a dict under the same key as the input quantity function.
-
-    Args:
-        traj_state: DifftreState as output from trajectory generator
-        quantities: The quantity dict containing for each target quantity 
-                    a dict containing the quantity function under 'compute_fn'
-        neighbor_fn: Neighbor function
-        energy_params: Energy params for energy_fn_template to initialize 
-                       the current energy_fn
-
-    Returns:
-        A dict of quantity trajectories saved under the same key as the 
-        input quantity function.
-    """
-
-    _, fixed_reference_nbrs = traj_state.sim_state
-
-    @jit
-    def quantity_trajectory(dummy_carry, state):
-        R = state.position
-        nbrs = neighbor_fn(R, fixed_reference_nbrs)
-        computed_quantities = {quantity_fn_key: quantities[quantity_fn_key]
-                               ['compute_fn'](state,
-                                              neighbor=nbrs,
-                                              energy_params=energy_params)
-                               for quantity_fn_key in quantities}
-        return dummy_carry, computed_quantities
-
-    _, quantity_trajs = lax.scan(quantity_trajectory, 0., traj_state.trajectory)
-    return quantity_trajs
 
 
 def independent_mse_loss_fn_init(quantities):

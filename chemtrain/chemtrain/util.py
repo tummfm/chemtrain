@@ -217,4 +217,4 @@ class TrainerTemplate(ABC):
 
     @property
     def energy_fn(self):
-        return self.energy_fn_template(self.params)
+        return self.reference_energy_fn_template(self.params)
