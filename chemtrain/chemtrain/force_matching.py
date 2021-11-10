@@ -6,7 +6,7 @@ from chemtrain.difftre import mse_loss
 import time
 import numpy as onp
 from jax_sgmc.data import NumpyDataLoader, random_reference_data
-from chemtrain.util import TrainerTemplate, TrainerStateTemplate, \
+from chemtrain.util import TrainerTemplate, TrainerState, \
     tree_split, tree_get_single, tree_replicate
 from chemtrain.jax_md_mod import custom_quantity
 from functools import partial
@@ -23,7 +23,8 @@ from chex import dataclass
 
 
 @partial(dataclass, frozen=True)
-class FMState(TrainerStateTemplate):
+class FMState(TrainerState):
+    """Extend trainer class with batch states."""
     train_batch_state: Any
     val_batch_state: Any
 
@@ -136,7 +137,7 @@ class Trainer(TrainerTemplate):
     # TODO save best params during training based on val loss
 
     # TODO end training when val loss does not decrease for certain
-    #  number of epochs / update steps
+    #  number of epochs / update steps; maybe exponentially moving average?
     def __init__(self, init_params, energy_fn_template, neighbor_fn, nbrs_init,
                  optimizer, position_data, force_data, virial_data=None,
                  box_tensor=None, gamma_p=1.e-6, batch_per_device=1,
@@ -148,11 +149,14 @@ class Trainer(TrainerTemplate):
         """
 
         checkpoint_path = 'output/force_matching/' + str(checkpoint_folder)
-        super().__init__(energy_fn_template, checkpoint_format, checkpoint_path)
+        super().__init__(checkpoint_path, checkpoint_format, energy_fn_template)
 
         # split dataset and initialize dataloader
         n_devices = device_count()
         batch_size = n_devices * batch_per_device
+
+        # TODO make more flexible to change dataset on the fly for
+        #  active learning?
         train_set_size = position_data.shape[0]
         train_size = int(train_set_size * train_ratio)
         self.batches_per_epoch = train_size // batch_size

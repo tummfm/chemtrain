@@ -53,10 +53,12 @@ class TrajectoryState:
     sim_state: Last simulation state, a tuple of last state and nbrs
     trajectory: Generated trajectory
     energies: Potential energy value for each snapshot in trajectory
+    overflow: True if neighbor list overflowed during trajectory generation
     """
     sim_state: Any
     trajectory: Any
     energies: Array = None
+    overflow: Array = False
 
 
 def process_printouts(time_step, total_time, t_equilib, print_every):
@@ -164,7 +166,8 @@ def trajectory_generator_init(simulator_template, energy_fn_template,
                                        sim_state,
                                        xs=timings.t_production_start)
         return TrajectoryState(sim_state=new_sim_state,
-                               trajectory=traj)
+                               trajectory=traj,
+                               overflow=new_sim_state[1].did_buffer_overflow)
 
     return generate_reference_trajectory
 

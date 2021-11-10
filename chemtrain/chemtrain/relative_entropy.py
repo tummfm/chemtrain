@@ -18,7 +18,8 @@ from chemtrain.difftre import propagation_fn_init, weight_computation_init, \
 
 
 @partial(dataclass, frozen=True)
-class EntropyState(DifftreState):
+class EntropyState(TrainerState):
+    """Extend trainer state with batch state."""
     batch_state: Any
 
 
@@ -130,14 +131,16 @@ class Trainer(TrainerTemplate):
     networks. Both reweighting and the gradient formula assume a NVT
     ensemble.
     """
+    # TODO can we inherit from difftre and override all unnecessray?
+    # TODO is there a stopping criterion available?
+    #  --> maybe based on exponential average of N_eff?
     def __init__(self, init_params, AA_traj, simulator_template,
                  energy_fn_template, neighbor_fn, reference_state, timings,
                  optimizer, kbT, reweight_ratio=0.9, n_AA=None, batch_cache=10,
                  checkpoint_folder='Checkpoints', checkpoint_format='pkl'):
 
         checkpoint_path = 'output/rel_entropy/' + str(checkpoint_folder)
-        super().__init__(energy_fn_template, checkpoint_format,
-                         checkpoint_path)
+        super().__init__(checkpoint_path, checkpoint_format, energy_fn_template)
 
         # use same amount of printouts as generated in trajectory by default
         if n_AA is None:

@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Any
 import numpy as onp
 from pathlib import Path
-import dill as pickle
+import cloudpickle as pickle
 from jax import lax, tree_map, tree_leaves, numpy as jnp
 from chemtrain.jax_md_mod import custom_space
 import copy
@@ -13,10 +13,9 @@ from functools import partial
 
 # freezing seems to give slight performance improvement
 @partial(dataclass, frozen=True)
-class TrainerStateTemplate:
+class TrainerState:
     """Each trainer at least contains the state of parameter and
-    optimizer. For consistency, we therefore include these parameters
-    here.
+    optimizer.
     """
     params: Any
     opt_state: Any
@@ -43,6 +42,15 @@ def tree_split(tree, n_devices):
                                               *x.shape[1:])), tree)
 
 
+def tree_mean(tree_list):
+    """Computes the mean a list of equal-shaped pytrees."""
+    @partial(partial, tree_map)
+    def tree_add_imp(*leafs):
+        return jnp.mean(jnp.stack(leafs), axis=0)
+
+    return tree_add_imp(*tree_list)
+
+
 def get_dataset(configuration_str, retain=None, subsampling=1):
     data = onp.load(configuration_str)
     data = data[:retain:subsampling]
@@ -55,24 +63,38 @@ def scale_dataset_fractional(traj, box):
     return scaled_traj
 
 
-def update_not_found_error():
-    return AttributeError("Please store the (jit-compiled) update "
-                          "function under 'self.update', such that it "
-                          "can be deleted here as it cannot be "
-                          "pickled.")
+def jit_fn_not_found_error():
+    raise AttributeError("Please store the (jit-compiled) function under "
+                         "'self.update' or 'self.grad_fns', such that it "
+                         "can be deleted here as it cannot be pickled.")
+
+
+def format_not_recognized_error(format):
+    raise ValueError(f"File format {format} not recognized. "
+                     f"Expected '.hdf5' or '.pkl'.")
 
 
 class TrainerTemplate(ABC):
     """Abstract class to define common properties and methods of Trainers."""
 
-    def __init__(self, energy_fn_template, checkpoint_format, checkpoint_path):
-        """Forces implementation of checkpointing routines and
-        energy_fn_template.
+    def __init__(self, checkpoint_path, checkpoint_format='.pkl',
+                 reference_energy_fn_template=None):
+        """Forces implementation of checkpointing routines. A reference
+        energy_fn_template can be provided, but is not mandatory due to
+        the dependence of the template on the box via the displacement
+        function.
         """
-        self.energy_fn_template = energy_fn_template
         self.checkpoint_path = checkpoint_path
         self.check_format = checkpoint_format
         self.epoch = 0
+        self.reference_energy_fn_template = reference_energy_fn_template
+
+        if checkpoint_format == '.pkl':
+            print('Pickle is useful for checkpointing as the whole trainer '
+                  '(except for jitted functions) can be saved. However, using'
+                  '(cloud-)pickle for long-term storage is highly discouraged. '
+                  'Consider saving learned energy_params in a different '
+                  'format, e.g. using the save_energy_params function.')
 
     def dump_checkpoint_occasionally(self, frequency=None):
         """Dumps a checkpoint during training, from which training can
@@ -85,13 +107,16 @@ class TrainerTemplate(ABC):
                     file_path = self.checkpoint_path + \
                                 f'/epoch{self.epoch - 1}.pkl'
                     save_dict = self.__dict__.copy()
+                    # jitted function cannot be pickled
                     try:
-                        # jitted function cannot be pickled
-                        save_dict.pop('update')
-                    except AttributeError:
-                        raise update_not_found_error()
+                        save_dict.pop('grad_fns')  # for difftre / rel_entropy
+                    except KeyError:
+                        try:
+                            save_dict.pop('update')  # for force matching  # TODO unique interface?
+                        except KeyError:
+                            raise jit_fn_not_found_error()
                     with open(file_path, 'wb') as f:
-                        pickle.dump(save_dict, f, pickle.HIGHEST_PROTOCOL)
+                        pickle.dump(save_dict, f)
 
                 elif self.check_format == 'hdf5':
                     file_path = self.checkpoint_path + f'/checkpoints.hdf5'
@@ -103,7 +128,7 @@ class TrainerTemplate(ABC):
                     #     for leaf_name, value in zip(leaf_names, leafes):
                     #         file[leaf_name] = value
                 else:
-                    raise ValueError('File format needs to be pkl or hdf5.')
+                    format_not_recognized_error(self.check_format)
 
     def load_checkpoint(self, file_path):
         """Loads a saved checkpoint, if trainer was already initialized.
@@ -116,19 +141,21 @@ class TrainerTemplate(ABC):
             raise NotImplementedError
             # state = dict_to_pytree(as_dict['b'], some_tree['b'])
         else:
-            raise ValueError('Filetype not recognized. '
-                             'Expected pickle .pkl or .hdf5')
+            format_not_recognized_error(file_path[-4:])
         self.state = tree_map(jnp.array, self.state)  # move state on device
 
     def save_trainer(self, save_path):
         """Saves whole trainer, e.g. for production after training."""
-        with open(save_path, 'wb') as pickle_file:
-            trainer_copy = copy.copy(self)
+        trainer_copy = copy.copy(self)
+        try:
+            trainer_copy.__delattr__('grad_fns')
+        except KeyError:
             try:
                 trainer_copy.__delattr__('update')
-            except AttributeError:
-                raise update_not_found_error()
-            pickle.dump(trainer_copy, pickle_file, pickle.HIGHEST_PROTOCOL)
+            except KeyError:
+                raise jit_fn_not_found_error()
+        with open(save_path, 'wb') as pickle_file:
+            pickle.dump(trainer_copy, pickle_file)
 
     @classmethod
     def load_trainer(cls, file_path):
@@ -142,6 +169,25 @@ class TrainerTemplate(ABC):
             trainer = pickle.load(pickle_file)
         trainer.state = tree_map(jnp.array, trainer.state)  # move on device
         return trainer
+
+    def save_energy_params(self, file_path, save_format='.hdf5'):
+        if save_format == '.hdf5':
+            raise NotImplementedError  # TODO implement hdf5
+        elif save_format == '.pkl':
+            with open(file_path, 'wb') as pickle_file:
+                pickle.dump(self.params, pickle_file)
+        else:
+            format_not_recognized_error(save_format)
+
+    def load_energy_params(self, file_path):
+        if file_path.endswith('.hdf5'):
+            raise NotImplementedError
+        elif file_path.endswith('.pkl'):
+            with open(file_path, 'rb') as pickle_file:
+                params = pickle.load(pickle_file)
+        else:
+            format_not_recognized_error(file_path[-4:])
+        self.params = tree_map(jnp.array, params)  # move state on device
 
     @abstractmethod
     def train(self, epochs, checkpoints=None):

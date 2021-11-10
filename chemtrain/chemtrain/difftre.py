@@ -1,61 +1,19 @@
-from jax import value_and_grad, checkpoint, jit, lax, numpy as jnp
+from jax import value_and_grad, checkpoint, jit, lax, random, \
+    numpy as jnp
 import optax
-import time
-import warnings
-from chex import dataclass
-from functools import partial
-from typing import Any
 from jax_md import util
 from chemtrain.jax_md_mod.custom_simulator import trajectory_generator_init
-from chemtrain.util import TrainerTemplate, TrainerStateTemplate
+from chemtrain.util import TrainerTemplate, TrainerState, tree_mean
+import time
+import warnings
 
 
-@partial(dataclass, frozen=True)
-class DifftreState(TrainerStateTemplate):
-    traj_state: Any
-
-
-def init_trajectory_with_energy(simulator_template, energy_fn_template,
-                                neighbor_fn, timings_struct):
-    """Customization of trajectory generator for DiffTRe purposes:
-    Generates constant temperature trajectories and additionally
-    computes energy values for each state used during reweighting.
-
-    Args:
-        simulator_template: Function returning new simulator given
-                            current energy function
-        energy_fn_template: Energy function template
-        neighbor_fn: neighbor_fn
-        timings_struct: Instance of TimingClass containing information
-                        about which states to retain
-
-    Returns:
-        A function taking energy params and the current state (including
-        neighbor list) that runs the simulation forward generating the
-        next DiffTRe TrajectoryState.
-    """
-    trajectory_generator = trajectory_generator_init(simulator_template,
-                                                     energy_fn_template,
-                                                     neighbor_fn,
-                                                     timings_struct)
-
-    def generate_trajectory_state_with_energy(params, sim_state):
-        new_traj = trajectory_generator(params, sim_state)
-
-        # always recompute neighbor list from last, fixed neighbor list.
-        # Note:
-        # one could save all the neighbor lists at the printout times,
-        # if memory permits. In principle, this energy computation
-        # could be omitted altogether if ones saves the energy  from
-        # the simulator for each printout state. We did not opt for
-        # this optimization to keep compatibility with Jax MD simulators.
-        final_state, nbrs = new_traj.sim_state
-        energy_fn = energy_fn_template(params)
-        energies = energy_trajectory(new_traj.trajectory, nbrs,
-                                     neighbor_fn, energy_fn)
-        traj_with_energies = new_traj.replace(energies=energies)
-        return traj_with_energies
-    return generate_trajectory_state_with_energy
+def mse_loss(predictions, targets):
+    """Computes mean squared error loss for given predictions and targets."""
+    squared_difference = jnp.square(targets - predictions)
+    mean_of_squares = util.high_precision_sum(squared_difference) \
+                      / predictions.size
+    return mean_of_squares
 
 
 def energy_trajectory(trajectory, init_nbrs, neighbor_fn, energy_fn):
@@ -123,60 +81,6 @@ def quantity_traj(traj_state, quantities, neighbor_fn, energy_params=None):
     return quantity_trajs
 
 
-def weight_computation_init(energy_fn_template, neighbor_fn, kbT):
-    """Initializes a function that computes weights for the
-    reweighting approach in the NVT ensemble.
-
-    Args:
-        energy_fn_template: Energy function template
-        neighbor_fn: Neighbor function
-        kbT: Temperature in kbT
-
-    Returns:
-        A function computing weights and the effective sample size
-        given current energy params and TrajectoryState.
-    """
-
-    def estimate_effective_samples(weights):
-        # mask to avoid NaN from log(0) if a few weights are 0.
-        weights = jnp.where(weights > 1.e-10, weights, 1.e-10)
-        exponent = - jnp.sum(weights * jnp.log(weights))
-        return jnp.exp(exponent)
-
-    def compute_weights(params, traj_state):
-        _, nbrs = traj_state.sim_state
-
-        # checkpointing: whole backward pass too memory consuming
-        energy_fn = checkpoint(energy_fn_template(params))
-        energies_new = energy_trajectory(traj_state.trajectory, nbrs,
-                                         neighbor_fn, energy_fn)
-
-        # Difference in pot. Energy is difference in total energy
-        # as kinetic energy is the same and cancels
-        exponent = -(1. / kbT) * (energies_new - traj_state.energies)
-        # The reweighting scheme is a softmax, where the exponent above
-        # represents the logits. To improve numerical stability and
-        # guard against overflow it is good practice to subtract the
-        # max of the exponent using the identity softmax(x + c) =
-        # softmax(x). With all values in the exponent <=0, this
-        # rules out overflow and the 0 value guarantees a denominator >=1.
-        exponent -= jnp.max(exponent)
-        prob_ratios = jnp.exp(exponent)
-        weights = prob_ratios / util.high_precision_sum(prob_ratios)
-        n_eff = estimate_effective_samples(weights)
-        return weights, n_eff
-
-    return compute_weights
-
-
-def mse_loss(predictions, targets):
-    """Computes mean squared error loss for given predictions and targets."""
-    squared_difference = jnp.square(targets - predictions)
-    mean_of_squares = util.high_precision_sum(squared_difference) \
-                      / predictions.size
-    return mean_of_squares
-
-
 def independent_mse_loss_fn_init(quantities):
     """Initializes the default loss function, where MSE errors of
     destinct quantities are added.
@@ -218,298 +122,326 @@ def independent_mse_loss_fn_init(quantities):
     return loss_fn
 
 
-def propagation_fn_init(trajectory_generatior, compute_weights, reweight_ratio):
-    """Initialize a function that checks if a trajectory can be re-used.
-    If not, a new trajectory is generated ensuring trajectories are always
-    valid.
+def step_optimizer(state, curr_grad, optimizer):
+    """Step optimizer and returns state with updated parameters."""
+    scaled_grad, new_opt_state = optimizer.update(curr_grad,
+                                                  state.opt_state,
+                                                  state.params)
+    new_params = optax.apply_updates(state.params, scaled_grad)
+    return state.replace(params=new_params, opt_state=new_opt_state)
 
-    Args:
-        trajectory_generatior: Initialized trajectory generator function
-                               from init_generate_trajectory_state
-        compute_weights: Initialized weight compute function from
-                         weight_computation_init
-        reweight_ratio: Ratio of reference samples required for n_eff to
-                        surpass to allow re-use of previous trajectory state
 
-    Returns:
-        A function that takes params and the traj_state and returns a
-        trajectory valid for reweighting as well as an error code
-        indicating if the neighborlist buffer overflowed during trajectory
-        generation.
+def init_reweighting_propagation_fns(energy_fn_template, simulator_template,
+                                     neighbor_fn, timings, kbT,
+                                     reweight_ratio=0.9):
     """
+    Initializes all functions necessary for trajectory reweighting for
+    a single state point.
+
+    Initialized functions include a function that computes weights for a
+    given trajectory and a function that propagates the trajectory forward
+    if the statistical error does not allow a re-use of the trajectory.
+    The propagation function also ensures that generated trajectories
+    did not encounter any neighbor list overflow.
+    """
+    trajectory_generator = trajectory_generator_init(simulator_template,
+                                                     energy_fn_template,
+                                                     neighbor_fn,
+                                                     timings)
+
+    def full_trajectory_generator(params, sim_state):
+        # TODO if energy becomes default, this function is unnecessary
+        """Customization of trajectory generator for DiffTRe purposes:
+        Generates constant temperature trajectories and additionally
+        computes energy values for each state used during reweighting.
+        """
+        new_traj = trajectory_generator(params, sim_state)
+
+        # always recompute neighbor list from last, fixed neighbor list.
+        # Note:
+        # one could save all the neighbor lists at the printout times,
+        # if memory permits. In principle, this energy computation
+        # could be omitted altogether if ones saves the energy  from
+        # the simulator for each printout state. We did not opt for
+        # this optimization to keep compatibility with Jax MD simulators.
+        final_state, nbrs = new_traj.sim_state
+        energy_fn = energy_fn_template(params)
+        energies = energy_trajectory(new_traj.trajectory, nbrs,
+                                     neighbor_fn, energy_fn)
+        traj_with_energies = new_traj.replace(energies=energies)
+        return traj_with_energies
+
+    def estimate_effective_samples(weights):
+        # mask to avoid NaN from log(0) if a few weights are 0.
+        weights = jnp.where(weights > 1.e-10, weights, 1.e-10)
+        exponent = - jnp.sum(weights * jnp.log(weights))
+        return jnp.exp(exponent)
+
+    def compute_weights(params, traj_state):
+        """Computes weights for the reweighting approach in the NVT ensemble."""
+        _, nbrs = traj_state.sim_state
+
+        # checkpointing: whole backward pass too memory consuming
+        energy_fn = checkpoint(energy_fn_template(params))
+        energies_new = energy_trajectory(traj_state.trajectory, nbrs,
+                                         neighbor_fn, energy_fn)
+
+        # Difference in pot. Energy is difference in total energy
+        # as kinetic energy is the same and cancels
+        exponent = -(1. / kbT) * (energies_new - traj_state.energies)
+        # The reweighting scheme is a softmax, where the exponent above
+        # represents the logits. To improve numerical stability and
+        # guard against overflow it is good practice to subtract the
+        # max of the exponent using the identity softmax(x + c) =
+        # softmax(x). With all values in the exponent <=0, this
+        # rules out overflow and the 0 value guarantees a denominator >=1.
+        exponent -= jnp.max(exponent)
+        prob_ratios = jnp.exp(exponent)
+        weights = prob_ratios / util.high_precision_sum(prob_ratios)
+        n_eff = estimate_effective_samples(weights)
+        return weights, n_eff
 
     def trajectory_identity_mapping(inputs):
         """Re-uses trajectory if no recomputation needed."""
         traj_state = inputs[1]
-        return traj_state, 0
+        return traj_state
 
     def recompute_trajectory(inputs):
         """Recomputes the reference trajectory, starting from the last
         state of the previous trajectory to save equilibration time.
         """
         params, traj_state = inputs
-        updated_traj = trajectory_generatior(params,
-                                             traj_state.sim_state)
-        _, nbrs = updated_traj.sim_state
-        error_code = lax.cond(nbrs.did_buffer_overflow,
-                              lambda _: 1, lambda _: 0, None)
-        return updated_traj, error_code
+        updated_traj = full_trajectory_generator(params, traj_state.sim_state)
+        return updated_traj
 
-    def propagation(params, traj_state):
+    @jit
+    def propagation_fn(params, traj_state):
+        """Checks if a trajectory can be re-used. If not, a new trajectory
+        is generated ensuring trajectories are always valid.
+        Takes params and the traj_state as input and returns a
+        trajectory valid for reweighting as well as an error code
+        indicating if the neighborlist buffer overflowed during trajectory
+        generation.
+        """
         weights, n_eff = compute_weights(params, traj_state)
         n_snapshots = traj_state.energies.size
         recompute = n_eff < reweight_ratio * n_snapshots
-        propagated_state, error_code = lax.cond(recompute,
-                                                recompute_trajectory,
-                                                trajectory_identity_mapping,
-                                                (params, traj_state))
-        return propagated_state, error_code
-    return propagation
+        propagated_state = lax.cond(recompute,
+                                    recompute_trajectory,
+                                    trajectory_identity_mapping,
+                                    (params, traj_state))
+        return propagated_state
 
-
-def difftre_gradient_init(compute_weights, trajectory_generation_fn,
-                          loss_fn, quantities, neighbor_fn,
-                          reweight_ratio=0.9):
-    """
-    Initializes the main DiffTRe function that recomputes trajectories
-    when needed and computes gradients of the loss wrt. energy function
-    parameters.
-    
-    Args:
-        compute_weights: Initialized weight compute function from
-                         weight_computation_init
-        trajectory_generation_fn: Initialized trajectory generator
-                                  function from init_generate_trajectory_state
-        loss_fn: Loss function, e.g. from init_independent_mse_loss_fn
-                 or custom implementation
-        quantities: The quantity dict containing for each target quantity
-                    a dict containing at least the quantity compute function
-                    under 'compute_fn'.
-        neighbor_fn: Neighbor function
-        reweight_ratio: Ratio of reference samples required for n_eff to
-                        surpass to allow re-use of previous reference
-                        trajectory state
-
-    Returns:
-        A function that takes current DiffTReState and returns the new
-       DifftreState, the gradient of the loss wrt. energy parameters,
-       the loss value, an error code indicating neighbor list buffer
-       overflow and predicted quantities of the current model state.
-    """
-    def reweighting_loss(params, traj_state):
-        """Computes the loss using the DiffTRe formalism and additionally
-        returns predictions of the current model.
+    def propagate(params, old_traj_state):
+        """Wrapper around jitted propagation function that ensures that
+        if neighbor list buffer overflowed, the trajectory is recomputed and
+        the neighbor list size is increased until valid trajectory was obtained.
+        Due to the recomputation of the neighbor list, this function cannot be
+        jit.
         """
-        weights, _ = compute_weights(params, traj_state)
-        quantity_trajs = quantity_traj(traj_state,
-                                       quantities,
-                                       neighbor_fn,
-                                       params)
-        loss, predictions = loss_fn(quantity_trajs, weights)
-        return loss, predictions
+        new_traj_state = propagation_fn(params, old_traj_state)
 
-    # initialize function to recompute trajectory when necessary
-    propagation_fn = propagation_fn_init(trajectory_generation_fn,
-                                         compute_weights, reweight_ratio)
-
-    @jit
-    def difftre_grad(state):
-        traj_state, error_code = propagation_fn(state.params, state.traj_state)
-        outputs, curr_grad = value_and_grad(reweighting_loss, has_aux=True)(
-            state.params, traj_state)
-        loss_val, predictions = outputs
-        return traj_state, curr_grad, loss_val, error_code, predictions
-
-    return difftre_grad
-
-
-def init_step_optimizer(optimizer, neighbor_fn):
-    """
-    Helper function to only update parameters if simulation did not result
-    in neighbor list overflow. Otherise increases neighborlist for next
-    iteration. This function cannot be jit therefore! This function is
-    re-used in relative entropy optimization.
-
-    Args:
-        optimizer: Optimizer from optax
-        neighbor_fn: Neighbor function
-
-    Returns:
-        Function updating params if neighborlist did not overflow
-    """
-    def step_optimizer(state, curr_grad, error_code, new_traj_state):
-        if error_code == 1:
+        reset_counter = 0
+        while new_traj_state.overflow:
             warnings.warn('Neighborlist buffer overflowed. '
                           'Initializing larger neighborlist.')
-            last_sim_snapshot, _ = state.traj_state.sim_state
+            if reset_counter == 3:  # still overflow after multiple resets
+                raise RuntimeError('Multiple neighbor list re-computations did '
+                                   'not yield a trajectory without overflow. '
+                                   'Consider increasing the neighbor list '
+                                   'capacity multiplier.')
+            last_sim_snapshot, _ = new_traj_state.sim_state
             enlarged_nbrs = neighbor_fn(last_sim_snapshot.position)
-            new_traj_state = state.traj_state.replace(
+            reset_traj_state = old_traj_state.replace(
                 sim_state=(last_sim_snapshot, enlarged_nbrs))
-            new_params = state.params
-            new_opt_state = state.opt_state
-        else:  # only use gradient if neighbor list did not overflowed
-            scaled_grad, new_opt_state = optimizer.update(curr_grad,
-                                                          state.opt_state,
-                                                          state.params)
-            new_params = optax.apply_updates(state.params, scaled_grad)
+            new_traj_state = recompute_trajectory((params, reset_traj_state))
+            reset_counter += 1
+        return new_traj_state
 
-        return DifftreState(params=new_params,
-                            traj_state=new_traj_state,
-                            opt_state=new_opt_state)
-    return step_optimizer
-
-
-def difftre_update_init(propagation_fn, optimizer, neighbor_fn):
-    """Initializes the update function that is called iteratively to
-    updates the energy parameters.
-
-    The returned function computes the gradient used by the optimizer
-    to update the energy parameters and the opt_state and returns loss
-    and predictions at the current step. Additionally it handles the
-    case of neighborlist buffer overflow by recomputing the neighborlist
-    from the last state of the new reference trajectory and resets the
-    trajectoty state such that the update is only performed with a proper
-    neighbor list. The update function is not jittable for this reason.
-
-    Args:
-        propagation_fn: DiffTRe gradient and propagation function as
-                        initialized from gradient_and_propagation_init
-        optimizer: Optimizer from optax
-        neighbor_fn: Neighbor function
-
-    Returns:
-        A function that will be called iteratively by the user to update
-        energy params via the optimizer and output model predictions at
-        the current state.
-    """
-    step_optimizer = init_step_optimizer(optimizer, neighbor_fn)
-
-    def update(state):
-        new_traj_state, curr_grad, loss_val, error_code, predictions = \
-            propagation_fn(state)
-
-        new_state = step_optimizer(state, curr_grad, error_code, new_traj_state)
-        return new_state, loss_val, predictions
-    return update
-
-
-def difftre_init(simulator_template, energy_fn_template, neighbor_fn,
-                 timings_struct, quantities, kbT, init_params, reference_state,
-                 optimizer, loss_fn=None, reweight_ratio=0.9):
-    """Initializes all functions for DiffTRe and returns an update
-    function and the first reference trajectory.
-
-    The current implementation assumes a NVT ensemble in weight computation.
-    This function needs definition of all parameters of the simulation
-    and DiffTRe. The quantity dict defines the way target observations
-    contribute to the loss function. Each target observable needs to be
-    saved in the quantity dict via a unique key. Model predictions will
-    be output under the same key. Each unique observable needs to provide
-    another dict containing a function computing the observable under
-    'compute_fn', a multiplier controlling the weight of the observable
-    in the loss function under 'gamma' as well as the prediction target
-    under 'target'.
-
-    In many applications, the default loss function will be sufficient.
-    If a target observable cannot be described directly as an average
-    over instantaneous quantities (e.g. stiffness in the diamond example),
-    a custom loss_fn needs to be defined. The signature of the loss_fn
-    needs to be the following: It takes the trajectory of computed
-    instantaneous quantities saved in a dict under its respective key of
-    the quantities_dict. Additionally, it receives corresponding weights
-    w_i to perform ensemble averages under the reweighting scheme. With
-    these components, ensemble averages of more complex observables can
-    be computed. The output of the function is (loss value, predicted
-    ensemble averages). The latter is only necessary for post-processing
-    the optimization process. See 'init_independent_mse_loss_fn' for
-    an example implementation.
-
-    Args:
-        simulator_template: Function that takes an energy function and
-                            returns a simulator function.
-        energy_fn_template: Function that takes energy parameters and
-                            initializes an new energy function.
-        neighbor_fn: Neighbor function
-        timings_struct: Instance of TimingClass containing information
-                        about which states to retain
-        quantities: The quantity dict with 'compute_fn', 'gamma' and
-                    'target' for each observable
-        kbT: Temperature in kbT
-        init_params: Initial energy parameters
-        reference_state: Tuple of initial siumlation state and neighbor list
-        optimizer: Optimizer from optax
-        loss_fn: Custom loss function taking the trajectory of quantities
-                 and weights and returning the loss and predictions;
-                 Default None initializes independent MSE loss
-        reweight_ratio: Ratio of reference samples required for n_eff to
-                        surpass to allow re-use of previous reference
-                        trajectory state
-
-    Returns:
-        An update function and the first reference trajectory
-    """
-    if loss_fn is None:
-        loss_fn = independent_mse_loss_fn_init(quantities)
-    else:
-        print('Using custom loss function. '
-              'Ignoring \'gamma\' and \'target\' in  \"quantities\".')
-
-    trajectory_generator = init_trajectory_with_energy(simulator_template,
-                                                       energy_fn_template,
-                                                       neighbor_fn,
-                                                       timings_struct)
-    compute_weights = weight_computation_init(energy_fn_template, neighbor_fn,
-                                              kbT)
-    propagation_fn = difftre_gradient_init(compute_weights,
-                                           trajectory_generator,
-                                           loss_fn,
-                                           quantities,
-                                           neighbor_fn,
-                                           reweight_ratio)
-    update_fn = difftre_update_init(propagation_fn, optimizer, neighbor_fn)
-
-    t_start = time.time()
-    traj_initstate = trajectory_generator(init_params, reference_state)
-    runtime = (time.time() - t_start) / 60.
-    print('Time for a single trajectory generation:', runtime, 'mins')
-
-    return update_fn, traj_initstate
+    return full_trajectory_generator, compute_weights, propagate
 
 
 class Trainer(TrainerTemplate):
-    # TODO implement optimization on multiple state points serial and
-    #  in parallel
-    # https://jax.readthedocs.io/en/latest/faq.html#controlling-data-and-computation-placement-on-devices
-
+    """Trainer class for parametrizing potentials via the DiffTRe method."""
     # TODO save params that generated best loss on not reweighted trajectory
+    # TODO implement stopping criterion based on exponentially decaying loss
 
     # TODO adaptively increase trajectory length based on expected noise
-    def __init__(self, init_params, quantities, simulator_template,
-                 energy_fn_template, neighbor_fn, reference_state,
-                 timings_struct, optimizer, kbT, loss_fn=None,
-                 reweight_ratio=0.9, checkpoint_folder='Checkpoints',
+
+    # TODO enable checkpointing, possibly without recompute of initial
+    #  trajectories for each state
+    # TODO add NpT ensemble; can we re-use energy function template in this case?
+
+    # TODO make reweighting more useful by accumulating useful trajectories?
+    #  Problem is that past snapshots become useless exponentially fast when
+    #  potential changes.
+    def __init__(self, init_params, optimizer, reweight_ratio=0.9, batch_size=1,
+                 energy_fn_template=None, checkpoint_folder='Checkpoints',
                  checkpoint_format='pkl'):
+        """Initializes a DiffTRe trainer instance.
+
+        The implementation assumes a NVT ensemble in weight computation.
+        The trainer initialization only sets the initial trainer state
+        as well as checkpointing and save-functionality. For training,
+        target state points with respective simulations need to be added
+        via 'add_statepoint'.
+
+        Args:
+            init_params: Initial energy parameters
+            optimizer: Optimizer from optax
+            reweight_ratio: Ratio of reference samples required for n_eff to
+                            surpass to allow re-use of previous reference
+                            trajectory state. If trajectories should not be
+                            re-used, a value > 1 can be specified.
+            batch_size: Number of state-points to be processed as a single
+                        batch. Gradients will be averaged over the batch
+                        before stepping the optimizer.
+            energy_fn_template: Function that takes energy parameters and
+                                initializes an new energy function. Here, the
+                                energy_fn_template is only a reference that
+                                will be saved alongside the trainer. Each
+                                state point requires its own due to the
+                                dependence on the box size via the displacement
+                                function, which can vary between state points.
+            checkpoint_folder: Name of folders to store ckeckpoints in.
+            checkpoint_format: Checkpoint format, currently only .pkl supported.
+        """
 
         checkpoint_path = 'output/difftre/' + str(checkpoint_folder)
-        super().__init__(energy_fn_template, checkpoint_format, checkpoint_path)
+        super().__init__(checkpoint_path, checkpoint_format, energy_fn_template)
 
-        self.losses, self.predictions, self.update_times = [], [], []
-        opt_state = optimizer.init(init_params)
+        self.batch_losses, self.epoch_losses, self.update_times = [], [], []
+        self.predictions = {}
+        self.batch_size = batch_size
+        self.optimizer = optimizer
+        self.reweight_ratio = reweight_ratio
 
-        self.update, init_traj_state = difftre_init(simulator_template,
-                                                    energy_fn_template,
-                                                    neighbor_fn,
-                                                    timings_struct,
-                                                    quantities,
-                                                    kbT,
-                                                    init_params,
-                                                    reference_state,
-                                                    optimizer,
-                                                    loss_fn,
-                                                    reweight_ratio)
-        self.__state = DifftreState(params=init_params,
-                                    traj_state=init_traj_state,
-                                    opt_state=opt_state)
+        # store for each state point corresponding traj_state and grad_fn
+        # save in distinct dicts as grad_fns need to be deleted for checkpoint
+        self.grad_fns, self.trajectory_states = {}, {}
+        self.n_statepoints = 0
+        self.shuffle_key = random.PRNGKey(0)
+
+        # store shared parameters for all state points
+        self.__state = TrainerState(params=init_params,
+                                    opt_state=optimizer.init(init_params))
+
+    def add_statepoint(self, energy_fn_template, simulator_template,
+                       neighbor_fn, timings, kbT, quantities,
+                       reference_state=None, loss_fn=None,
+                       initialize_traj=True):
+        """
+        Adds a state point to the pool of simulations with respective targets.
+
+        Requires own energy_fn_template and simulator_template to allow
+        maximum flexibility for state points: Allows different ensembles
+        (NVT vs NpT), box sizes and target quantities per state point.
+        The quantity dict defines the way target observations
+        contribute to the loss function. Each target observable needs to be
+        saved in the quantity dict via a unique key. Model predictions will
+        be output under the same key. Each unique observable needs to provide
+        another dict containing a function computing the observable under
+        'compute_fn', a multiplier controlling the weight of the observable
+        in the loss function under 'gamma' as well as the prediction target
+        under 'target'. The later 2 entries are not requires in case of a
+        custom loss_fn.
+
+        In many applications, the default loss function will be sufficient.
+        If a target observable cannot be described directly as an average
+        over instantaneous quantities (e.g. stiffness in the diamond example),
+        a custom loss_fn needs to be defined. The signature of the loss_fn
+        needs to be the following: It takes the trajectory of computed
+        instantaneous quantities saved in a dict under its respective key of
+        the quantities_dict. Additionally, it receives corresponding weights
+        w_i to perform ensemble averages under the reweighting scheme. With
+        these components, ensemble averages of more complex observables can
+        be computed. The output of the function is (loss value, predicted
+        ensemble averages). The latter is only necessary for post-processing
+        the optimization process. See 'init_independent_mse_loss_fn' for
+        an example implementation.
+
+        Args:
+            energy_fn_template: Function that takes energy parameters and
+                                initializes an new energy function.
+            simulator_template: Function that takes an energy function and
+                                returns a simulator function.
+            neighbor_fn: Neighbor function
+            timings: Instance of TimingClass containing information
+                     about the trajectory length and which states to retain
+            kbT: Temperature in kbT
+            quantities: The quantity dict with 'compute_fn', 'gamma' and
+                        'target' for each observable
+            reference_state: Tuple of initial simulation state and neighbor list
+            loss_fn: Custom loss function taking the trajectory of quantities
+                     and weights and returning the loss and predictions;
+                     Default None initializes an independent MSE loss, which
+                     computes reweighting averages from snapshot-based
+                     observables.
+            initialize_traj: True, if an initial trajectory should be generated.
+                             Should only be set to False if a checkpoint is
+                             loaded before starting any training.
+        """
+
+        # is there a better differentiator? kbT could be same for 2 simulations
+        key = self.n_statepoints
+
+        if loss_fn is None:
+            loss_fn = independent_mse_loss_fn_init(quantities)
+        else:
+            print('Using custom loss function. '
+                  'Ignoring \'gamma\' and \'target\' in  \"quantities\".')
+
+        initial_traj_generator, compute_weights, propagate = \
+            init_reweighting_propagation_fns(energy_fn_template,
+                                             simulator_template,
+                                             neighbor_fn,
+                                             timings,
+                                             kbT,
+                                             self.reweight_ratio)
+
+        def difftre_loss(params, traj_state):
+            """Computes the loss using the DiffTRe formalism and
+            additionally returns predictions of the current model.
+            """
+            weights, _ = compute_weights(params, traj_state)
+            quantity_trajs = quantity_traj(traj_state,
+                                           quantities,
+                                           neighbor_fn,
+                                           params)
+            loss, predictions = loss_fn(quantity_trajs, weights)
+            return loss, predictions
+
+        statepoint_grad_fn = jit(value_and_grad(difftre_loss, has_aux=True))
+
+        def difftre_grad_and_propagation(params, traj_state):
+            """The main DiffTRe function that recomputes trajectories
+            when needed and computes gradients of the loss wrt. energy function
+            parameters for a single state point.
+            """
+            traj_state = propagate(params, traj_state)
+            outputs, grad = statepoint_grad_fn(params, traj_state)
+            loss_val, predictions = outputs
+            return traj_state, grad, loss_val, predictions
+
+        self.grad_fns[key] = difftre_grad_and_propagation
+        self.predictions[key] = {}  # init saving predictions for this point
+
+        if initialize_traj:
+            assert reference_state is not None, "If a new trajectory needs " \
+                                                "to be generated, an initial " \
+                                                "state needs to be provided."
+            t_start = time.time()
+            init_traj = initial_traj_generator(self.params, reference_state)
+            runtime = (time.time() - t_start) / 60.
+            print(f'Time for trajectory initialization {key}: {runtime} mins')
+            self.trajectory_states[key] = init_traj
+        else:
+            print('Not initializing the initial trajectory is only valid if '
+                  'a checkpoint is loaded. In this case, please be use to add '
+                  'state points in the same sequence, otherwise loaded '
+                  'trajectories will not match its respective simulations.')
+
+        self.n_statepoints += 1
 
     @property
     def state(self):
@@ -523,25 +455,64 @@ class Trainer(TrainerTemplate):
     def params(self):
         return self.__state.params
 
+    def simulation_batches(self):
+        """Helper function to re-shuffle simulations and split into batches."""
+        self.shuffle_key, used_key = random.split(self.shuffle_key, 2)
+        shuffled_indices = random.permutation(used_key, self.n_statepoints)
+        if self.batch_size == 1:
+            batch_list = jnp.split(shuffled_indices, shuffled_indices.size)
+        elif self.batch_size == -1:
+            batch_list = jnp.split(shuffled_indices, 1)
+        else:
+            raise NotImplementedError('Only batch_size = 1 or -1 implemented. '
+                                      'Unclear how to deal with case, where '
+                                      'batch_size > n_state_points.')
+        return batch_list
+
+    def update(self, batch):
+        # TODO parallelization? Maybe lift batch requirement and only sync sporadically?
+        # https://jax.readthedocs.io/en/latest/faq.html#controlling-data-and-computation-placement-on-devices
+        grads, losses = [], []
+        for sim_key in batch:
+            grad_fn = self.grad_fns[sim_key]
+            new_traj_state, curr_grad, loss_val, state_point_predictions = \
+                grad_fn(self.params, self.trajectory_states[sim_key])
+
+            self.trajectory_states[sim_key] = new_traj_state
+            self.predictions[sim_key][self.epoch] = state_point_predictions
+            grads.append(curr_grad)
+            losses.append(loss_val)
+            if jnp.isnan(loss_val):
+                warnings.warn(f'Loss of state point {sim_key} in epoch '
+                              f'{self.epoch} is NaN. This was likely caused by '
+                              f'divergence of the optimization or a bad model '
+                              f'setup causing a NaN trajectory.')
+                break
+
+        self.batch_losses.append(sum(losses) / self.batch_size)
+        batch_grad = tree_mean(grads)
+
+        self.__state = step_optimizer(self.__state, batch_grad, self.optimizer)
+        return
+
     def train(self, epochs, checkpoint_freq=None):
+        assert self.n_statepoints > 0, "Add at least 1 state point via " \
+                                        "'add_statepoint' to start training."
         start_epoch = self.epoch
         end_epoch = start_epoch + epochs
-
         for epoch in range(start_epoch, end_epoch):
             start_time = time.time()
-            self.__state, loss, prediction = self.update(self.__state)
-            duration = (time.time() - start_time) / 60.
-            print('Update', str(epoch) + '/' + str(end_epoch), ': Loss =',
-                  str(loss), 'Elapsed time =', str(duration), 'min')
-            self.losses.append(loss)
-            self.predictions.append(prediction)
-            self.update_times.append(duration)
+            batchlist = self.simulation_batches()
+            n_batches = len(batchlist)
+            for batch in batchlist:
+                self.update(batch)
 
-            if jnp.isnan(loss):
-                warnings.warn('Loss is NaN. This was likely caused by '
-                              'divergence of the optimization or a bad '
-                              'model setup causing a NaN trajectory.')
-                break
+            duration = (time.time() - start_time) / 60.
+            self.update_times.append(duration)
+            epoch_loss = sum(self.batch_losses[-n_batches:]) / n_batches
+            self.epoch_losses.append(epoch_loss)
+            print('Epoch', str(epoch) + '/' + str(end_epoch), ': Epoch loss =',
+                  str(epoch_loss), 'Elapsed time =', str(duration), 'min')
 
             self.epoch += 1
             self.dump_checkpoint_occasionally(frequency=checkpoint_freq)
