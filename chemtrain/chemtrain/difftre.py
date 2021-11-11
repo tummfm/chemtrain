@@ -391,6 +391,10 @@ class Trainer(TrainerTemplate):
     def params(self):
         return self.__state.params
 
+    @params.setter
+    def params(self, loaded_params):
+        self.params = loaded_params
+
     def simulation_batches(self):
         """Helper function to re-shuffle simulations and split into batches."""
         self.shuffle_key, used_key = random.split(self.shuffle_key, 2)

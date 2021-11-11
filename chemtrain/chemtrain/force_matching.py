@@ -152,8 +152,8 @@ class Trainer(TrainerTemplate):
         super().__init__(checkpoint_path, checkpoint_format, energy_fn_template)
 
         # split dataset and initialize dataloader
-        n_devices = device_count()
-        batch_size = n_devices * batch_per_device
+        self.n_devices = device_count()
+        batch_size = self.n_devices * batch_per_device
 
         # TODO make more flexible to change dataset on the fly for
         #  active learning?
@@ -187,8 +187,8 @@ class Trainer(TrainerTemplate):
         self.train_losses, self.val_losses = [], []
 
         # replicate params and optimizer states for pmap
-        init_params = tree_replicate(init_params, n_devices)
-        opt_state = tree_replicate(opt_state, n_devices)
+        init_params = tree_replicate(init_params, self.n_devices)
+        opt_state = tree_replicate(opt_state, self.n_devices)
 
         self.__state = FMState(params=init_params,
                                opt_state=opt_state,
@@ -199,20 +199,25 @@ class Trainer(TrainerTemplate):
                                      optimizer, get_train_batch, get_val_batch,
                                      gamma_p=gamma_p, box_tensor=box_tensor,
                                      include_virial=include_virial,
-                                     n_devices=n_devices)
+                                     n_devices=self.n_devices)
 
     @property
     def state(self):
         return self.__state
+
+    @state.setter
+    def state(self, loaded_state):
+        self.__state = loaded_state
 
     @property
     def params(self):
         single_params = tree_get_single(self.__state.params)
         return single_params
 
-    @state.setter
-    def state(self, loaded_state):
-        self.__state = loaded_state
+    @params.setter
+    def params(self, loaded_params):
+        replicated_params = tree_replicate(loaded_params, self.n_devices)
+        self.params = replicated_params
 
     def train(self, epochs, checkpoint_freq=None):
         """Continue training for a number of epochs."""

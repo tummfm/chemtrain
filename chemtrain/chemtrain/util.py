@@ -213,6 +213,13 @@ class TrainerTemplate(ABC):
     @property
     @abstractmethod
     def params(self):
+        # cannot be implemented here due to different parallelization schemes
+        # for different trainers
+        raise NotImplementedError()
+
+    @params.setter
+    @abstractmethod
+    def params(self, loaded_params):
         raise NotImplementedError()
 
     @property
