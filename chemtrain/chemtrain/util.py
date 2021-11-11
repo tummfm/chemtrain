@@ -3,7 +3,10 @@ from typing import Any
 import numpy as onp
 from pathlib import Path
 import cloudpickle as pickle
+import optax
 from jax import lax, tree_map, tree_leaves, numpy as jnp
+import jax_md.util
+
 from chemtrain.jax_md_mod import custom_space
 import copy
 from chex import dataclass
@@ -19,6 +22,21 @@ class TrainerState:
     """
     params: Any
     opt_state: Any
+
+
+def mse_loss(predictions, targets):
+    """Computes mean squared error loss for given predictions and targets."""
+    squared_difference = jnp.square(targets - predictions)
+    mean_of_squares = jax_md.util.high_precision_sum(squared_difference) \
+                      / predictions.size
+    return mean_of_squares
+
+
+def step_optimizer(params, opt_state, curr_grad, optimizer):
+    """Step optimizer and returns state with updated parameters."""
+    scaled_grad, new_opt_state = optimizer.update(curr_grad, opt_state)
+    new_params = optax.apply_updates(params, scaled_grad)
+    return new_params, new_opt_state
 
 
 def tree_get_single(tree):

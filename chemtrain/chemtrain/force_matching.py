@@ -1,13 +1,11 @@
 from collections import namedtuple
 from jax import jit, vmap, lax, device_count, value_and_grad, pmap
-import optax
 from jax_md import quantity
-from chemtrain.difftre import mse_loss
 import time
 import numpy as onp
 from jax_sgmc.data import NumpyDataLoader, random_reference_data
 from chemtrain.util import TrainerTemplate, TrainerState, \
-    tree_split, tree_get_single, tree_replicate
+    tree_split, tree_get_single, tree_replicate, mse_loss, step_optimizer
 from chemtrain.jax_md_mod import custom_quantity
 from functools import partial
 from typing import Any
@@ -103,8 +101,8 @@ def init_update_fn(energy_fn_template, neighbor_fn, nbrs_init, optimizer,
         loss, grad = value_and_grad(loss_fn)(params, batch)
         grad = lax.pmean(grad, axis_name='devices')
         loss = lax.pmean(loss, axis_name='devices')
-        updates, opt_state = optimizer.update(grad, opt_state)
-        new_params = optax.apply_updates(params, updates)
+        new_params, opt_state = step_optimizer(params, opt_state,
+                                               grad, optimizer)
         return new_params, opt_state, loss
 
     def update(train_state):

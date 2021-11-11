@@ -1,20 +1,12 @@
 from jax import value_and_grad, checkpoint, jit, lax, random, \
     numpy as jnp
-import optax
 from jax_md import util
 from chemtrain.traj_util import trajectory_generator_init, energy_trajectory, \
     quantity_traj
-from chemtrain.util import TrainerTemplate, TrainerState, tree_mean
+from chemtrain.util import TrainerTemplate, TrainerState, tree_mean, mse_loss, \
+    step_optimizer
 import time
 import warnings
-
-
-def mse_loss(predictions, targets):
-    """Computes mean squared error loss for given predictions and targets."""
-    squared_difference = jnp.square(targets - predictions)
-    mean_of_squares = util.high_precision_sum(squared_difference) \
-                      / predictions.size
-    return mean_of_squares
 
 
 def independent_mse_loss_fn_init(quantities):
@@ -53,18 +45,9 @@ def independent_mse_loss_fn_init(quantities):
             average = util.high_precision_sum(weighted_snapshots, axis=0)
             predictions[quantity_key] = average
             loss += quantities[quantity_key]['gamma'] \
-                * mse_loss(average, quantities[quantity_key]['target'])
+                    * mse_loss(average, quantities[quantity_key]['target'])
         return loss, predictions
     return loss_fn
-
-
-def step_optimizer(state, curr_grad, optimizer):
-    """Step optimizer and returns state with updated parameters."""
-    scaled_grad, new_opt_state = optimizer.update(curr_grad,
-                                                  state.opt_state,
-                                                  state.params)
-    new_params = optax.apply_updates(state.params, scaled_grad)
-    return state.replace(params=new_params, opt_state=new_opt_state)
 
 
 def init_reweighting_propagation_fns(energy_fn_template, simulator_template,
@@ -412,6 +395,8 @@ class Trainer(TrainerTemplate):
     def update(self, batch):
         # TODO parallelization? Maybe lift batch requirement and only sync sporadically?
         # https://jax.readthedocs.io/en/latest/faq.html#controlling-data-and-computation-placement-on-devices
+        # TODO split gradient and loss computation from stepping optimizer for
+        #  building hybrid trainers?
         grads, losses = [], []
         for sim_key in batch:
             grad_fn = self.grad_fns[sim_key]
@@ -431,9 +416,12 @@ class Trainer(TrainerTemplate):
 
         self.batch_losses.append(sum(losses) / self.batch_size)
         batch_grad = tree_mean(grads)
+        params, opt_state = step_optimizer(self.state.params,
+                                           self.state.opt_state,
+                                           batch_grad,
+                                           self.optimizer)
 
-        self.__state = step_optimizer(self.__state, batch_grad, self.optimizer)
-        return
+        self.state = self.state.replace(params=params, opt_state=opt_state)
 
     def train(self, epochs, checkpoint_freq=None):
         assert self.n_statepoints > 0, "Add at least 1 state point via " \
