@@ -7,9 +7,8 @@ from jax_sgmc.data import NumpyDataLoader, random_reference_data
 import time
 import warnings
 
-from chemtrain.util import TrainerTemplate
-from chemtrain.difftre import propagation_fn_init, weight_computation_init, \
-     DifftreState, init_step_optimizer, init_trajectory_with_energy
+from chemtrain.util import TrainerTemplate, TrainerState, step_optimizer
+import chemtrain.difftre as difftre
 
 # The relative entropy implementation builds on the functionalities
 # implemented in DIffTRe. We therefore enforce a consistent interface
@@ -25,9 +24,11 @@ class EntropyState(TrainerState):
 
 def init_rel_entropy_gradient(energy_fn_template, neighbor_fn, init_state,
                               compute_weights, kbT):
+    # TODO can be implemented on trainer level
     beta = 1 / kbT
     _, nbrs_init = init_state
 
+    @jit
     def rel_entropy_gradient(params, traj_state, AA_traj):
 
         def energy(params, R):
@@ -76,53 +77,47 @@ def init_rel_entropy_gradient(energy_fn_template, neighbor_fn, init_state,
 def init_update_fn(simulator_template, energy_fn_template, neighbor_fn,
                    reference_state, init_params, kbT, optimizer, timings_struct,
                    get_AA_batch, reweight_ratio=0.9):
+    initial_traj_generator, compute_weights, propagate = \
+        difftre.init_reweighting_propagation_fns(energy_fn_template,
+                                                 simulator_template,
+                                                 neighbor_fn,
+                                                 timings_struct,
+                                                 kbT,
+                                                 reweight_ratio)
 
-    trajectory_generator = init_trajectory_with_energy(simulator_template,
-                                                       energy_fn_template,
-                                                       neighbor_fn,
-                                                       timings_struct)
-    compute_weights = weight_computation_init(energy_fn_template,
-                                              neighbor_fn, kbT)
-    propagation_fn = propagation_fn_init(trajectory_generator, compute_weights,
-                                         reweight_ratio)
+    t_start = time.time()
+    init_trajectory = initial_traj_generator(init_params, reference_state)
+    runtime = (time.time() - t_start) / 60.
+    print('Time for a single trajectory generation:', runtime, 'mins')
+
     grad_fn = init_rel_entropy_gradient(energy_fn_template, neighbor_fn,
                                         reference_state, compute_weights, kbT)
 
-    step_optimizer = init_step_optimizer(optimizer, neighbor_fn)
-
-    @jit
     def propagation_and_grad(entropy_state):
         """Propagates the trajectory, if necessary, and computes the
         gradient via the relative entropy formalism.
         """
-        new_traj_state, error_code = propagation_fn(entropy_state.params,
-                                                    entropy_state.traj_state)
+        traj_state = propagate(entropy_state.params, entropy_state.traj_state)
         new_batch_state, AA_batch = get_AA_batch(entropy_state.batch_state)
         AA_batch = AA_batch['R']
-        grad = grad_fn(entropy_state.params, new_traj_state, AA_batch)
-        return new_traj_state, new_batch_state, grad, error_code
+        grad = grad_fn(entropy_state.params, traj_state, AA_batch)
+        return traj_state, new_batch_state, grad
 
     def update(entropy_state):
         """This function is not jitable as the update checks the
         neighborlist buffer and increases is when needed.
         """
-        new_traj_state, new_batch_state, curr_grad, error_code = \
-            propagation_and_grad(entropy_state)
-        optimization_state = step_optimizer(entropy_state,  # is a DifftreState
-                                            curr_grad,
-                                            error_code,
-                                            new_traj_state)
+        traj_state, new_batch_state, curr_grad = propagation_and_grad(entropy_state)
+        params, opt_state = step_optimizer(entropy_state.params,
+                                           entropy_state.opt_state,
+                                           curr_grad,
+                                           optimizer)
 
-        new_state = EntropyState(params=optimization_state.params,
-                                 traj_state=optimization_state.traj_state,
-                                 opt_state=optimization_state.opt_state,
-                                 batch_state=new_batch_state)
+        new_state = entropy_state.replace(params=params,
+                                          traj_state=traj_state,
+                                          opt_state=opt_state,
+                                          batch_state=new_batch_state)
         return new_state
-
-    t_start = time.time()
-    init_trajectory = trajectory_generator(init_params, reference_state)
-    runtime = (time.time() - t_start) / 60.
-    print('Time for a single trajectory generation:', runtime, 'mins')
     return update, init_trajectory
 
 
