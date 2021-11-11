@@ -140,9 +140,9 @@ class Trainer(TrainerTemplate):
         # use same amount of printouts as generated in trajectory by default
         if n_AA is None:
             n_AA = jnp.size(timings.t_production_start)
-        AA_loader = NumpyDataLoader(n_AA, R=AA_traj)
+        AA_loader = NumpyDataLoader(R=AA_traj)
         init_AA_batch, get_AA_batch = random_reference_data(
-            AA_loader, batch_cache * n_AA)
+            AA_loader, batch_cache * n_AA, n_AA)
         init_AA_batch_state = init_AA_batch()
 
         opt_state = optimizer.init(init_params)
