@@ -4,8 +4,8 @@ from jax_md import quantity
 import time
 import numpy as onp
 from jax_sgmc.data import NumpyDataLoader, random_reference_data
-from chemtrain.util import TrainerTemplate, TrainerState, \
-    tree_split, tree_get_single, tree_replicate, mse_loss, step_optimizer
+from chemtrain.util import MLETrainerTemplate, TrainerState, \
+    tree_split, tree_get_single, tree_replicate, mse_loss
 from chemtrain.jax_md_mod import custom_quantity
 from functools import partial
 from typing import Any
@@ -131,7 +131,7 @@ def init_update_fn(energy_fn_template, neighbor_fn, nbrs_init, optimizer,
     return update
 
 
-class Trainer(TrainerTemplate):
+class Trainer(MLETrainerTemplate):
     # TODO save best params during training based on val loss
 
     # TODO end training when val loss does not decrease for certain
@@ -145,9 +145,6 @@ class Trainer(TrainerTemplate):
         Default training percentage represents 70-10-20 split, when 20 % test
         data was already deducted
         """
-
-        checkpoint_path = 'output/force_matching/' + str(checkpoint_folder)
-        super().__init__(checkpoint_path, checkpoint_format, energy_fn_template)
 
         # split dataset and initialize dataloader
         self.n_devices = device_count()
@@ -188,24 +185,20 @@ class Trainer(TrainerTemplate):
         init_params = tree_replicate(init_params, self.n_devices)
         opt_state = tree_replicate(opt_state, self.n_devices)
 
-        self.__state = FMState(params=init_params,
-                               opt_state=opt_state,
-                               train_batch_state=train_data_state,
-                               val_batch_state=val_batch_state)
+        init_state = FMState(params=init_params,
+                             opt_state=opt_state,
+                             train_batch_state=train_data_state,
+                             val_batch_state=val_batch_state)
+
+        checkpoint_path = 'output/force_matching/' + str(checkpoint_folder)
+        super().__init__(init_state, checkpoint_path, checkpoint_format,
+                         energy_fn_template)
 
         self.update = init_update_fn(energy_fn_template, neighbor_fn, nbrs_init,
                                      optimizer, get_train_batch, get_val_batch,
                                      gamma_p=gamma_p, box_tensor=box_tensor,
                                      include_virial=include_virial,
                                      n_devices=self.n_devices)
-
-    @property
-    def state(self):
-        return self.__state
-
-    @state.setter
-    def state(self, loaded_state):
-        self.__state = loaded_state
 
     @property
     def params(self):
@@ -229,13 +222,14 @@ class Trainer(TrainerTemplate):
                 self.__state, train_loss, val_loss = self.update(self.__state)
                 train_losses.append(train_loss)
                 val_losses.append(val_loss)
-            end_time = (time.time() - start_time) / 60.
+            duration = (time.time() - start_time) / 60.
 
+            self.update_times.append(duration)
             self.train_losses.extend(train_losses)
             self.val_losses.extend(val_losses)
             mean_train_loss = sum(train_losses) / len(train_losses)
             mean_val_loss = sum(val_losses) / len(val_losses)
-            print('Training time for epoch', str(epoch), ',', str(end_time),
+            print('Training time for epoch', str(epoch), ',', str(duration),
                   'min, average train loss:', mean_train_loss,
                   'average val loss:', mean_val_loss)
 

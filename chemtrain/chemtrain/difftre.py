@@ -1,10 +1,10 @@
+from abc import abstractmethod
 from jax import value_and_grad, checkpoint, jit, lax, random, \
     numpy as jnp
 from jax_md import util
 from chemtrain.traj_util import trajectory_generator_init, energy_trajectory, \
     quantity_traj
-from chemtrain.util import TrainerTemplate, TrainerState, tree_mean, mse_loss, \
-    step_optimizer
+from chemtrain.util import MLETrainerTemplate, TrainerState, tree_mean, mse_loss
 import time
 import warnings
 
@@ -180,23 +180,130 @@ def init_reweighting_propagation_fns(energy_fn_template, simulator_template,
     return full_trajectory_generator, compute_weights, propagate
 
 
-class Trainer(TrainerTemplate):
+class PropagationBase(MLETrainerTemplate):
+    """Trainer base class for shared functionality whenever (multiple)
+    simulations are run during training. Can be used as a template to
+    build other trainers. Currently used for DiffTRe and relative entropy.
+
+    We only save the latest generated trajectory for each state point.
+    While accumulating trajectories would enable more frequent reweighting,
+    this effect is likely minor as past trajectories become exponentially
+    less useful with changing potential. Additionally, saving long trajectories
+    for each statepoint would increase memory requirements over the course of
+    the optimization.
+    """
+    def __init__(self, init_trainer_state, optimizer, checkpoint_path,
+                 reweight_ratio=0.9, sim_batch_size=1, checkpoint_format='pkl',
+                 energy_fn_template=None):
+        super().__init__(optimizer, init_trainer_state, checkpoint_path,
+                         checkpoint_format, energy_fn_template)
+        self.sim_batch_size = sim_batch_size
+        self.reweight_ratio = reweight_ratio
+
+        # store for each state point corresponding traj_state and grad_fn
+        # save in distinct dicts as grad_fns need to be deleted for checkpoint
+        self.grad_fns, self.trajectory_states = {}, {}
+        self.n_statepoints = 0
+        self.shuffle_key = random.PRNGKey(0)
+
+    def init_statepoint(self, reference_state, energy_fn_template,
+                        simulator_template, neighbor_fn, timings, kbT,
+                        initialize_traj=True):
+        """Initializes the simulation and reweighting functions as well
+        as the initial trajectory for a statepoint."""
+
+        # is there a better differentiator? kbT could be same for 2 simulations
+        key = self.n_statepoints
+        self.n_statepoints += 1
+
+        initial_traj_generator, compute_weights, propagate = \
+            init_reweighting_propagation_fns(energy_fn_template,
+                                             simulator_template,
+                                             neighbor_fn,
+                                             timings,
+                                             kbT,
+                                             self.reweight_ratio)
+        if initialize_traj:
+            assert reference_state is not None, "If a new trajectory needs " \
+                                                "to be generated, an initial " \
+                                                "state needs to be provided."
+            t_start = time.time()
+            init_traj = initial_traj_generator(self.params, reference_state)
+            runtime = (time.time() - t_start) / 60.
+            print(f'Time for trajectory initialization {key}: {runtime} mins')
+            self.trajectory_states[key] = init_traj
+        else:
+            print('Not initializing the initial trajectory is only valid if '
+                  'a checkpoint is loaded. In this case, please be use to add '
+                  'state points in the same sequence, otherwise loaded '
+                  'trajectories will not match its respective simulations.')
+        return key, compute_weights, propagate
+
+    @abstractmethod
+    def add_statepoint(self, *args, **kwargs):
+        """User interface to add additional state point to train model on."""
+        raise NotImplementedError()
+
+    @property
+    def params(self):
+        return self.state.params
+
+    @params.setter
+    def params(self, loaded_params):
+        self.state.params = loaded_params
+
+    def simulation_batches(self):
+        """Helper function to re-shuffle simulations and split into batches."""
+        self.shuffle_key, used_key = random.split(self.shuffle_key, 2)
+        shuffled_indices = random.permutation(used_key, self.n_statepoints)
+        if self.sim_batch_size == 1:
+            batch_list = jnp.split(shuffled_indices, shuffled_indices.size)
+        elif self.sim_batch_size == -1:
+            batch_list = jnp.split(shuffled_indices, 1)
+        else:
+            raise NotImplementedError('Only batch_size = 1 or -1 implemented. '
+                                      'Unclear how to deal with case, where '
+                                      'batch_size > n_state_points.')
+        return batch_list
+
+    def train(self, epochs, checkpoint_freq=None, thresh=None):
+        assert self.n_statepoints > 0, "Add at least 1 state point via " \
+                                       "'add_statepoint' to start training."
+        start_epoch = self.epoch
+        end_epoch = start_epoch + epochs
+        for epoch in range(start_epoch, end_epoch):
+            start_time = time.time()
+            batchlist = self.simulation_batches()
+            for batch in batchlist:
+                self.update(batch)
+
+            duration = (time.time() - start_time) / 60.
+            self.update_times.append(duration)
+            converged = self.evaluate_convergence(duration)
+            self.epoch += 1
+            self.dump_checkpoint_occasionally(frequency=checkpoint_freq)
+
+            if converged:
+                break
+        if thresh is not None:
+            print('Maximum number of epochs reached without convergence.')
+
+    @abstractmethod
+    def update(self, batch):
+        """Implementation of gradient computation, stepping of the optimizer
+        and logging of auxiliary results."""
+        raise NotImplementedError()
+
+
+class Trainer(PropagationBase):
     """Trainer class for parametrizing potentials via the DiffTRe method."""
     # TODO save params that generated best loss on not reweighted trajectory
     # TODO implement stopping criterion based on exponentially decaying loss
 
-    # TODO adaptively increase trajectory length based on expected noise
-
-    # TODO enable checkpointing, possibly without recompute of initial
-    #  trajectories for each state
     # TODO add NpT ensemble; can we re-use energy function template in this case?
-
-    # TODO make reweighting more useful by accumulating useful trajectories?
-    #  Problem is that past snapshots become useless exponentially fast when
-    #  potential changes.
-    def __init__(self, init_params, optimizer, reweight_ratio=0.9, batch_size=1,
-                 energy_fn_template=None, checkpoint_folder='Checkpoints',
-                 checkpoint_format='pkl'):
+    def __init__(self, init_params, optimizer, reweight_ratio=0.9,
+                 sim_batch_size=1, energy_fn_template=None,
+                 checkpoint_folder='Checkpoints', checkpoint_format='pkl'):
         """Initializes a DiffTRe trainer instance.
 
         The implementation assumes a NVT ensemble in weight computation.
@@ -212,7 +319,7 @@ class Trainer(TrainerTemplate):
                             surpass to allow re-use of previous reference
                             trajectory state. If trajectories should not be
                             re-used, a value > 1 can be specified.
-            batch_size: Number of state-points to be processed as a single
+            sim_batch_size: Number of state-points to be processed as a single
                         batch. Gradients will be averaged over the batch
                         before stepping the optimizer.
             energy_fn_template: Function that takes energy parameters and
@@ -226,24 +333,18 @@ class Trainer(TrainerTemplate):
             checkpoint_format: Checkpoint format, currently only .pkl supported.
         """
 
-        checkpoint_path = 'output/difftre/' + str(checkpoint_folder)
-        super().__init__(checkpoint_path, checkpoint_format, energy_fn_template)
-
-        self.batch_losses, self.epoch_losses, self.update_times = [], [], []
+        self.batch_losses, self.epoch_losses = [], []
         self.predictions = {}
-        self.batch_size = batch_size
-        self.optimizer = optimizer
-        self.reweight_ratio = reweight_ratio
-
-        # store for each state point corresponding traj_state and grad_fn
-        # save in distinct dicts as grad_fns need to be deleted for checkpoint
-        self.grad_fns, self.trajectory_states = {}, {}
-        self.n_statepoints = 0
-        self.shuffle_key = random.PRNGKey(0)
-
-        # store shared parameters for all state points
-        self.__state = TrainerState(params=init_params,
-                                    opt_state=optimizer.init(init_params))
+        checkpoint_path = 'output/difftre/' + str(checkpoint_folder)
+        init_state = TrainerState(params=init_params,
+                                  opt_state=optimizer.init(init_params))
+        super(Trainer, self).__init__(init_state,
+                                      optimizer,
+                                      checkpoint_path,
+                                      reweight_ratio,
+                                      sim_batch_size,
+                                      checkpoint_format,
+                                      energy_fn_template)
 
     def add_statepoint(self, energy_fn_template, simulator_template,
                        neighbor_fn, timings, kbT, quantities,
@@ -301,28 +402,27 @@ class Trainer(TrainerTemplate):
                              loaded before starting any training.
         """
 
-        # is there a better differentiator? kbT could be same for 2 simulations
-        key = self.n_statepoints
+        # init simulation, reweighting functions and initial trajectory
+        key, weights_fn, propagate = self.init_statepoint(reference_state,
+                                                          energy_fn_template,
+                                                          simulator_template,
+                                                          neighbor_fn,
+                                                          timings,
+                                                          kbT,
+                                                          initialize_traj)
 
+        # build loss function for current state point
         if loss_fn is None:
             loss_fn = independent_mse_loss_fn_init(quantities)
         else:
             print('Using custom loss function. '
                   'Ignoring \'gamma\' and \'target\' in  \"quantities\".')
 
-        initial_traj_generator, compute_weights, propagate = \
-            init_reweighting_propagation_fns(energy_fn_template,
-                                             simulator_template,
-                                             neighbor_fn,
-                                             timings,
-                                             kbT,
-                                             self.reweight_ratio)
-
         def difftre_loss(params, traj_state):
             """Computes the loss using the DiffTRe formalism and
             additionally returns predictions of the current model.
             """
-            weights, _ = compute_weights(params, traj_state)
+            weights, _ = weights_fn(params, traj_state)
             quantity_trajs = quantity_traj(traj_state,
                                            quantities,
                                            neighbor_fn,
@@ -345,58 +445,19 @@ class Trainer(TrainerTemplate):
         self.grad_fns[key] = difftre_grad_and_propagation
         self.predictions[key] = {}  # init saving predictions for this point
 
-        if initialize_traj:
-            assert reference_state is not None, "If a new trajectory needs " \
-                                                "to be generated, an initial " \
-                                                "state needs to be provided."
-            t_start = time.time()
-            init_traj = initial_traj_generator(self.params, reference_state)
-            runtime = (time.time() - t_start) / 60.
-            print(f'Time for trajectory initialization {key}: {runtime} mins')
-            self.trajectory_states[key] = init_traj
-        else:
-            print('Not initializing the initial trajectory is only valid if '
-                  'a checkpoint is loaded. In this case, please be use to add '
-                  'state points in the same sequence, otherwise loaded '
-                  'trajectories will not match its respective simulations.')
-
-        self.n_statepoints += 1
-
-    @property
-    def state(self):
-        return self.__state
-
-    @state.setter
-    def state(self, loaded_state):
-        self.__state = loaded_state
-
-    @property
-    def params(self):
-        return self.__state.params
-
-    @params.setter
-    def params(self, loaded_params):
-        self.params = loaded_params
-
-    def simulation_batches(self):
-        """Helper function to re-shuffle simulations and split into batches."""
-        self.shuffle_key, used_key = random.split(self.shuffle_key, 2)
-        shuffled_indices = random.permutation(used_key, self.n_statepoints)
-        if self.batch_size == 1:
-            batch_list = jnp.split(shuffled_indices, shuffled_indices.size)
-        elif self.batch_size == -1:
-            batch_list = jnp.split(shuffled_indices, 1)
-        else:
-            raise NotImplementedError('Only batch_size = 1 or -1 implemented. '
-                                      'Unclear how to deal with case, where '
-                                      'batch_size > n_state_points.')
-        return batch_list
-
     def update(self, batch):
+        """Computes gradient averaged over the sim_batch by propagating
+        respective state points. Additionally saves predictions and loss
+        for postprocessing."""
         # TODO parallelization? Maybe lift batch requirement and only sync sporadically?
         # https://jax.readthedocs.io/en/latest/faq.html#controlling-data-and-computation-placement-on-devices
         # TODO split gradient and loss computation from stepping optimizer for
         #  building hybrid trainers?
+
+        # Note: in principle, we could move all the use of instance attributes
+        # into difftre_grad_and_propagation, which would increase re-usability
+        # with relative_entropy. However, this would probably stop all
+        # parallelization efforts
         grads, losses = [], []
         for sim_key in batch:
             grad_fn = self.grad_fns[sim_key]
@@ -414,34 +475,16 @@ class Trainer(TrainerTemplate):
                               f'setup causing a NaN trajectory.')
                 break
 
-        self.batch_losses.append(sum(losses) / self.batch_size)
+        self.batch_losses.append(sum(losses) / self.sim_batch_size)
         batch_grad = tree_mean(grads)
-        params, opt_state = step_optimizer(self.state.params,
-                                           self.state.opt_state,
-                                           batch_grad,
-                                           self.optimizer)
+        self.step_optimizer(batch_grad)
 
-        self.state = self.state.replace(params=params, opt_state=opt_state)
+    def evaluate_convergence(self, duration):
+        epoch_loss = sum(self.batch_losses[-self.sim_batch_size:]) \
+                     / self.sim_batch_size
+        self.epoch_losses.append(epoch_loss)
+        print(f'Epoch {self.epoch}: Epoch loss = {epoch_loss}, Elapsed time = '
+              f'{duration} min')
 
-    def train(self, epochs, checkpoint_freq=None):
-        assert self.n_statepoints > 0, "Add at least 1 state point via " \
-                                        "'add_statepoint' to start training."
-        start_epoch = self.epoch
-        end_epoch = start_epoch + epochs
-        for epoch in range(start_epoch, end_epoch):
-            start_time = time.time()
-            batchlist = self.simulation_batches()
-            n_batches = len(batchlist)
-            for batch in batchlist:
-                self.update(batch)
-
-            duration = (time.time() - start_time) / 60.
-            self.update_times.append(duration)
-            epoch_loss = sum(self.batch_losses[-n_batches:]) / n_batches
-            self.epoch_losses.append(epoch_loss)
-            print('Epoch', str(epoch) + '/' + str(end_epoch), ': Epoch loss =',
-                  str(epoch_loss), 'Elapsed time =', str(duration), 'min')
-
-            self.epoch += 1
-            self.dump_checkpoint_occasionally(frequency=checkpoint_freq)
-        return
+        converged = False  # TODO implement convergence test
+        return converged

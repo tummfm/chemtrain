@@ -32,13 +32,6 @@ def mse_loss(predictions, targets):
     return mean_of_squares
 
 
-def step_optimizer(params, opt_state, curr_grad, optimizer):
-    """Step optimizer and returns state with updated parameters."""
-    scaled_grad, new_opt_state = optimizer.update(curr_grad, opt_state)
-    new_params = optax.apply_updates(params, scaled_grad)
-    return new_params, new_opt_state
-
-
 def tree_get_single(tree):
     """Returns the first tree of a tree-replica, e.g. from pmap and and moves
     it to the default device.
@@ -92,20 +85,29 @@ def format_not_recognized_error(format):
                      f"Expected '.hdf5' or '.pkl'.")
 
 
-class TrainerTemplate(ABC):
-    """Abstract class to define common properties and methods of Trainers."""
+class TrainerInterface(ABC):
+    """Abstract class defining the user interface of trainers."""
 
-    def __init__(self, checkpoint_path, checkpoint_format='.pkl',
+
+class MLETrainerTemplate(ABC):
+    """Abstract class implementing common properties and methods of single
+    point estimate Trainers using optax optimizers.
+    """
+
+    def __init__(self, optimizer, init_state, checkpoint_path, checkpoint_format='.pkl',
                  reference_energy_fn_template=None):
         """Forces implementation of checkpointing routines. A reference
         energy_fn_template can be provided, but is not mandatory due to
         the dependence of the template on the box via the displacement
         function.
         """
+        self.state = init_state
+        self.optimizer = optimizer
         self.checkpoint_path = checkpoint_path
         self.check_format = checkpoint_format
         self.epoch = 0
         self.reference_energy_fn_template = reference_energy_fn_template
+        self.update_times = []
 
         if checkpoint_format == '.pkl':
             print('Pickle is useful for checkpointing as the whole trainer '
@@ -113,6 +115,13 @@ class TrainerTemplate(ABC):
                   '(cloud-)pickle for long-term storage is highly discouraged. '
                   'Consider saving learned energy_params in a different '
                   'format, e.g. using the save_energy_params function.')
+
+    def step_optimizer(self, curr_grad):
+        """Steps optimizer and updates state using the gradient."""
+        scaled_grad, opt_state = self.optimizer.update(curr_grad,
+                                                       self.state.opt_state)
+        new_params = optax.apply_updates(self.state.params, scaled_grad)
+        self.state = self.state.replace(params=new_params, opt_state=opt_state)
 
     def dump_checkpoint_occasionally(self, frequency=None):
         """Dumps a checkpoint during training, from which training can
@@ -215,18 +224,10 @@ class TrainerTemplate(ABC):
         from the last state.
         """
 
-    @property
     @abstractmethod
-    def state(self):
-        """Variable to save optimization state. The state needs to
-        contain a parameter 'params' containing the current energy
-        parameters.
-        """
-
-    @state.setter
-    @abstractmethod
-    def state(self, loadstate):
-        raise NotImplementedError()
+    def evaluate_convergence(self, *args, **kwargs):
+        """Implement a function that checks for convergence to break
+        training loop"""
 
     @property
     @abstractmethod
