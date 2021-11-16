@@ -1,35 +1,20 @@
-from chex import dataclass
-from functools import partial
-from typing import Any
-
 from jax import jit, tree_map, tree_multimap, grad, lax, numpy as jnp
 from jax_sgmc.data import NumpyDataLoader, random_reference_data
-import time
-import warnings
 
-from chemtrain.util import TrainerTemplate, TrainerState, step_optimizer
+from chemtrain.util import TrainerState, tree_mean
 import chemtrain.difftre as difftre
-
-# The relative entropy implementation builds on the functionalities
-# implemented in DIffTRe. We therefore enforce a consistent interface
-# with the DifftreState. Here, we additionally need a batch_state that
-# keeps track of the reference data.
-
-
-@partial(dataclass, frozen=True)
-class EntropyState(TrainerState):
-    """Extend trainer state with batch state."""
-    batch_state: Any
 
 
 def init_rel_entropy_gradient(energy_fn_template, neighbor_fn, init_state,
                               compute_weights, kbT):
-    # TODO can be implemented on trainer level
+    """Initializes a function that computes the relative entropy
+    gradient given a trajectory and a batch of reference snapshots.
+    """
     beta = 1 / kbT
     _, nbrs_init = init_state
 
     @jit
-    def rel_entropy_gradient(params, traj_state, AA_traj):
+    def rel_entropy_gradient(params, traj_state, reference_batch):
 
         def energy(params, R):
             energy_fn = energy_fn_template(params)
@@ -50,8 +35,8 @@ def init_rel_entropy_gradient(energy_fn_template, neighbor_fn, init_state,
 
         CG_traj = traj_state.trajectory.position
         CG_weights, _ = compute_weights(params, traj_state)
-        n_AA_snapshots = AA_traj.shape[0]
-        AA_weights = jnp.ones(n_AA_snapshots) / n_AA_snapshots  # no reweighting
+        ref_batchsize = reference_batch.shape[0]
+        AA_weights = jnp.ones(ref_batchsize) / ref_batchsize  # no reweighting
 
         # Note:
         # would be more efficient to partially batch here, however
@@ -63,7 +48,7 @@ def init_rel_entropy_gradient(energy_fn_template, neighbor_fn, init_state,
         initial_grad = tree_map(jnp.zeros_like, params)
         mean_AA_grad, _ = lax.scan(weighted_gradient,
                                    initial_grad,
-                                   (AA_traj, AA_weights))
+                                   (reference_batch, AA_weights))
         mean_CG_grad, _ = lax.scan(weighted_gradient,
                                    initial_grad,
                                    (CG_traj, CG_weights))
@@ -74,122 +59,144 @@ def init_rel_entropy_gradient(energy_fn_template, neighbor_fn, init_state,
     return rel_entropy_gradient
 
 
-def init_update_fn(simulator_template, energy_fn_template, neighbor_fn,
-                   reference_state, init_params, kbT, optimizer, timings_struct,
-                   get_AA_batch, reweight_ratio=0.9):
-    initial_traj_generator, compute_weights, propagate = \
-        difftre.init_reweighting_propagation_fns(energy_fn_template,
-                                                 simulator_template,
-                                                 neighbor_fn,
-                                                 timings_struct,
-                                                 kbT,
-                                                 reweight_ratio)
-
-    t_start = time.time()
-    init_trajectory = initial_traj_generator(init_params, reference_state)
-    runtime = (time.time() - t_start) / 60.
-    print('Time for a single trajectory generation:', runtime, 'mins')
-
-    grad_fn = init_rel_entropy_gradient(energy_fn_template, neighbor_fn,
-                                        reference_state, compute_weights, kbT)
-
-    def propagation_and_grad(entropy_state):
-        """Propagates the trajectory, if necessary, and computes the
-        gradient via the relative entropy formalism.
-        """
-        traj_state = propagate(entropy_state.params, entropy_state.traj_state)
-        new_batch_state, AA_batch = get_AA_batch(entropy_state.batch_state)
-        AA_batch = AA_batch['R']
-        grad = grad_fn(entropy_state.params, traj_state, AA_batch)
-        return traj_state, new_batch_state, grad
-
-    def update(entropy_state):
-        """This function is not jitable as the update checks the
-        neighborlist buffer and increases is when needed.
-        """
-        traj_state, new_batch_state, curr_grad = propagation_and_grad(entropy_state)
-        params, opt_state = step_optimizer(entropy_state.params,
-                                           entropy_state.opt_state,
-                                           curr_grad,
-                                           optimizer)
-
-        new_state = entropy_state.replace(params=params,
-                                          traj_state=traj_state,
-                                          opt_state=opt_state,
-                                          batch_state=new_batch_state)
-        return new_state
-    return update, init_trajectory
-
-
-class Trainer(TrainerTemplate):
-    """Uses first order method as Hessian is very expensive for neural
-    networks. Both reweighting and the gradient formula assume a NVT
-    ensemble.
-    """
-    # TODO can we inherit from difftre and override all unnecessray?
+class Trainer(difftre.PropagationBase):
     # TODO is there a stopping criterion available?
     #  --> maybe based on exponential average of N_eff?
-    def __init__(self, init_params, AA_traj, simulator_template,
-                 energy_fn_template, neighbor_fn, reference_state, timings,
-                 optimizer, kbT, reweight_ratio=0.9, n_AA=None, batch_cache=10,
+    def __init__(self, init_params, optimizer,
+                 reweight_ratio=0.9, sim_batch_size=1, energy_fn_template=None,
                  checkpoint_folder='Checkpoints', checkpoint_format='pkl'):
+        """
+        Initializes a relative entropy trainer instance.
+
+        Uses first order method optimizer as Hessian is very expensive
+        for neural networks. Both reweighting and the gradient formula
+        currently assume a NVT ensemble.
+
+        Args:
+            init_params: Initial energy parameters
+            optimizer: Optimizer from optax
+            reweight_ratio: Ratio of reference samples required for n_eff to
+                            surpass to allow re-use of previous reference
+                            trajectory state. If trajectories should not be
+                            re-used, a value > 1 can be specified.
+            sim_batch_size: Number of state-points to be processed as a single
+                            batch. Gradients will be averaged over the batch
+                            before stepping the optimizer.
+            energy_fn_template: Function that takes energy parameters and
+                                initializes an new energy function. Here, the
+                                energy_fn_template is only a reference that
+                                will be saved alongside the trainer. Each
+                                state point requires its own due to the
+                                dependence on the box size via the displacement
+                                function, which can vary between state points.
+            checkpoint_folder: Name of folders to store ckeckpoints in.
+            checkpoint_format: Checkpoint format, currently only .pkl supported.
+        """
 
         checkpoint_path = 'output/rel_entropy/' + str(checkpoint_folder)
-        super().__init__(checkpoint_path, checkpoint_format, energy_fn_template)
+        init_trainer_state = TrainerState(params=init_params,
+                                          opt_state=optimizer.init(init_params))
+        super().__init__(init_trainer_state, optimizer, checkpoint_path,
+                         reweight_ratio, sim_batch_size, checkpoint_format,
+                         energy_fn_template)
 
-        # use same amount of printouts as generated in trajectory by default
-        if n_AA is None:
-            n_AA = jnp.size(timings.t_production_start)
-        AA_loader = NumpyDataLoader(R=AA_traj)
-        init_AA_batch, get_AA_batch = random_reference_data(
-            AA_loader, batch_cache * n_AA, n_AA)
-        init_AA_batch_state = init_AA_batch()
+        # in addition to the standard trajectory state, we also need to keep
+        # track of dataloader states for reference snapshots
+        self.data_states = {}
 
-        opt_state = optimizer.init(init_params)
-        self.update, init_traj = init_update_fn(simulator_template,
-                                                energy_fn_template,
-                                                neighbor_fn,
-                                                reference_state,
-                                                init_params,
-                                                kbT,
-                                                optimizer,
-                                                timings,
-                                                get_AA_batch,
-                                                reweight_ratio)
+    def __set_dataset(self, key, reference_data, reference_batch_size,
+                      batch_cache=10):
+        """Set dataset and loader corresponding to current state point."""
+        reference_loader = NumpyDataLoader(R=reference_data)
+        cache_size = batch_cache * reference_batch_size
+        init_reference_batch, get_reference_batch = random_reference_data(
+            reference_loader, cache_size, reference_batch_size)
+        init_reference_batch_state = init_reference_batch()
+        self.data_states[key] = init_reference_batch_state
+        return get_reference_batch
 
-        self.__state = EntropyState(params=init_params,
-                                    traj_state=init_traj,
-                                    opt_state=opt_state,
-                                    batch_state=init_AA_batch_state)
+    def add_statepoint(self, reference_data, energy_fn_template,
+                       simulator_template, neighbor_fn, timings, kbT,
+                       reference_state=None, reference_batch_size=None,
+                       batch_cache=10, initialize_traj=True):
+        """
+        Adds a state point to the pool of simulations.
 
-    @property
-    def state(self):
-        return self.__state
+        As each reference dataset / trajectory corresponds to a single
+        state point, we initialize the dataloader together with the
+        simulation.
 
-    @property
-    def params(self):
-        return self.__state.params
+        Args:
+            reference_data: De-correlated reference trajectory
+            energy_fn_template: Function that takes energy parameters and
+                                initializes an new energy function.
+            simulator_template: Function that takes an energy function and
+                                returns a simulator function.
+            neighbor_fn: Neighbor function
+            timings: Instance of TimingClass containing information
+                     about the trajectory length and which states to retain
+            kbT: Temperature in kbT
+            reference_state: Tuple of initial simulation state and neighbor list
+            reference_batch_size: Batch size of dataloader for reference
+                                  trajectory. If None, will use the same number
+                                  of snapshots as generated via the optimizer.
+            batch_cache: Number of reference batches to cache in order to
+                         minimize host-device communication.
+            initialize_traj: True, if an initial trajectory should be generated.
+                             Should only be set to False if a checkpoint is
+                             loaded before starting any training.
+        """
 
-    @state.setter
-    def state(self, loaded_state):
-        self.__state = loaded_state
+        if reference_batch_size is None:
+            # use same amount of snapshots as generated in trajectory by default
+            reference_batch_size = jnp.size(timings.t_production_start)
 
-    def train(self, epochs, checkpoint_freq=None):
-        start_epoch = self.epoch
-        end_epoch = start_epoch + epochs
+        # TODO get key as input
+        key, weights_fn, propagate = self.init_statepoint(reference_state,
+                                                          energy_fn_template,
+                                                          simulator_template,
+                                                          neighbor_fn,
+                                                          timings,
+                                                          kbT,
+                                                          initialize_traj)
 
-        for epoch in range(start_epoch, end_epoch):
-            start_time = time.time()
-            self.__state = self.update(self.__state)
-            end_time = (time.time() - start_time) / 60.
-            print('Time for update ' + str(epoch) + ':', str(end_time), 'min')
+        reference_dataloader = self.__set_dataset(key,
+                                                  reference_data,
+                                                  reference_batch_size,
+                                                  batch_cache)
 
-            if jnp.any(jnp.isnan(self.__state.traj_state.energies)):
-                warnings.warn('Parameters are NaN. This was likely caused by '
-                              'divergence of the optimization or a bad '
-                              'model setup causing a NaN trajectory.')
-                break
+        grad_fn = init_rel_entropy_gradient(energy_fn_template, neighbor_fn,
+                                            reference_state, weights_fn, kbT)
 
-            self.epoch += 1
-            self.dump_checkpoint_occasionally(frequency=checkpoint_freq)
-        return
+        def propagation_and_grad(params, traj_state, batch_state):
+            """Propagates the trajectory, if necessary, and computes the
+            gradient via the relative entropy formalism.
+            """
+            traj_state = propagate(params, traj_state)
+            new_batch_state, reference_batch = reference_dataloader(batch_state)
+            reference_positions = reference_batch['R']
+            grad = grad_fn(params, traj_state, reference_positions)
+            return traj_state, grad, new_batch_state
+
+        self.grad_fns[key] = propagation_and_grad
+
+    def update(self, batch):
+        """Updates the potential using the gradient from relative entropy."""
+        grads = []
+        for sim_key in batch:
+            grad_fn = self.grad_fns[sim_key]
+
+            self.trajectory_states[sim_key], curr_grad, \
+            self.data_states[sim_key] = grad_fn(self.params,
+                                                self.trajectory_states[sim_key],
+                                                self.data_states[sim_key])
+            grads.append(curr_grad)
+
+        batch_grad = tree_mean(grads)
+        self.step_optimizer(batch_grad)
+
+    def evaluate_convergence(self, duration):
+        print(f'Epoch {self.epoch}: Elapsed time = '
+              f'{duration} min')
+        converged = False  # TODO implement convergence test
+        return converged

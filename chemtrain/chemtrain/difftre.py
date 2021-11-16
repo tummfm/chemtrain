@@ -320,8 +320,8 @@ class Trainer(PropagationBase):
                             trajectory state. If trajectories should not be
                             re-used, a value > 1 can be specified.
             sim_batch_size: Number of state-points to be processed as a single
-                        batch. Gradients will be averaged over the batch
-                        before stepping the optimizer.
+                            batch. Gradients will be averaged over the batch
+                            before stepping the optimizer.
             energy_fn_template: Function that takes energy parameters and
                                 initializes an new energy function. Here, the
                                 energy_fn_template is only a reference that
@@ -453,6 +453,8 @@ class Trainer(PropagationBase):
         # https://jax.readthedocs.io/en/latest/faq.html#controlling-data-and-computation-placement-on-devices
         # TODO split gradient and loss computation from stepping optimizer for
         #  building hybrid trainers?
+
+        # TODO is there good way to reuse this function in BaseClass?
 
         # Note: in principle, we could move all the use of instance attributes
         # into difftre_grad_and_propagation, which would increase re-usability

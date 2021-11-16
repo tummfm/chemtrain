@@ -469,6 +469,7 @@ def DimeNetPP_neighborlist(displacement: DisplacementFn,
         pair_distances = space.distance(pair_displacement)
 
         # compute adjacency matrix via neighbor_list, then build sparse representation to avoid part of padding overhead
+        # TODO new sparse neighborlist format would simplify building the connectivity
         edge_idx_ji = jnp.where(pair_distances < r_cutoff, neighbor.idx, N)  # adds all edges > cut-off to masked edges
         pair_distances_sparse, pair_connections, angle_idxs, angular_connectivity, (n_edges, n_angles) = \
             custom_nn.sparse_representation(pair_distances, edge_idx_ji, max_edges, max_angles)
