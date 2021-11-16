@@ -5,7 +5,7 @@ import time
 import numpy as onp
 from jax_sgmc.data import NumpyDataLoader, random_reference_data
 from chemtrain.util import MLETrainerTemplate, TrainerState, \
-    tree_split, tree_get_single, tree_replicate, mse_loss
+    tree_split, tree_get_single, tree_replicate, mse_loss, step_optimizer
 from chemtrain.jax_md_mod import custom_quantity
 from functools import partial
 from typing import Any
@@ -150,8 +150,6 @@ class Trainer(MLETrainerTemplate):
         self.n_devices = device_count()
         batch_size = self.n_devices * batch_per_device
 
-        # TODO make more flexible to change dataset on the fly for
-        #  active learning?
         train_set_size = position_data.shape[0]
         train_size = int(train_set_size * train_ratio)
         self.batches_per_epoch = train_size // batch_size
@@ -191,8 +189,8 @@ class Trainer(MLETrainerTemplate):
                              val_batch_state=val_batch_state)
 
         checkpoint_path = 'output/force_matching/' + str(checkpoint_folder)
-        super().__init__(init_state, checkpoint_path, checkpoint_format,
-                         energy_fn_template)
+        super().__init__(optimizer, init_state, checkpoint_path,
+                         checkpoint_format, energy_fn_template)
 
         self.update = init_update_fn(energy_fn_template, neighbor_fn, nbrs_init,
                                      optimizer, get_train_batch, get_val_batch,
@@ -202,13 +200,25 @@ class Trainer(MLETrainerTemplate):
 
     @property
     def params(self):
-        single_params = tree_get_single(self.__state.params)
+        single_params = tree_get_single(self.params)
         return single_params
 
     @params.setter
     def params(self, loaded_params):
         replicated_params = tree_replicate(loaded_params, self.n_devices)
         self.params = replicated_params
+
+    def set_dataset(self):
+        """ Set training dataset.
+
+        Allows changing dataset on the fly, which is particularly
+        useful for active learning applications.
+        """
+        pass
+
+    def evaluate_convergence(self, *args, **kwargs):
+        # TODO!
+        pass
 
     def train(self, epochs, checkpoint_freq=None):
         """Continue training for a number of epochs."""
@@ -219,7 +229,7 @@ class Trainer(MLETrainerTemplate):
             start_time = time.time()
             train_losses, val_losses = [], []
             for i in range(self.batches_per_epoch):
-                self.__state, train_loss, val_loss = self.update(self.__state)
+                self.state, train_loss, val_loss = self.update(self.state)
                 train_losses.append(train_loss)
                 val_losses.append(val_loss)
             duration = (time.time() - start_time) / 60.

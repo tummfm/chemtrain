@@ -32,6 +32,13 @@ def mse_loss(predictions, targets):
     return mean_of_squares
 
 
+def step_optimizer(params, opt_state, grad, optimizer):
+    """Steps optimizer and updates state using the gradient."""
+    scaled_grad, new_opt_state = optimizer.update(grad, opt_state)
+    new_params = optax.apply_updates(params, scaled_grad)
+    return new_params, new_opt_state
+
+
 def tree_get_single(tree):
     """Returns the first tree of a tree-replica, e.g. from pmap and and moves
     it to the default device.
@@ -94,8 +101,8 @@ class MLETrainerTemplate(ABC):
     point estimate Trainers using optax optimizers.
     """
 
-    def __init__(self, optimizer, init_state, checkpoint_path, checkpoint_format='.pkl',
-                 reference_energy_fn_template=None):
+    def __init__(self, optimizer, init_state, checkpoint_path,
+                 checkpoint_format='.pkl', reference_energy_fn_template=None):
         """Forces implementation of checkpointing routines. A reference
         energy_fn_template can be provided, but is not mandatory due to
         the dependence of the template on the box via the displacement
@@ -117,11 +124,15 @@ class MLETrainerTemplate(ABC):
                   'format, e.g. using the save_energy_params function.')
 
     def step_optimizer(self, curr_grad):
-        """Steps optimizer and updates state using the gradient."""
-        scaled_grad, opt_state = self.optimizer.update(curr_grad,
-                                                       self.state.opt_state)
-        new_params = optax.apply_updates(self.state.params, scaled_grad)
-        self.state = self.state.replace(params=new_params, opt_state=opt_state)
+        """Wrapper around step_optimizer that is useful whenever the
+        update of the optimizer can be done outside of jit-compiled functions.
+        """
+        new_params, new_opt_state = step_optimizer(self.params,
+                                                   self.state.opt_state,
+                                                   curr_grad,
+                                                   self.optimizer)
+        self.state = self.state.replace(params=new_params,
+                                        opt_state=new_opt_state)
 
     def dump_checkpoint_occasionally(self, frequency=None):
         """Dumps a checkpoint during training, from which training can
@@ -176,10 +187,10 @@ class MLETrainerTemplate(ABC):
         trainer_copy = copy.copy(self)
         try:
             trainer_copy.__delattr__('grad_fns')
-        except KeyError:
+        except AttributeError:
             try:
                 trainer_copy.__delattr__('update')
-            except KeyError:
+            except AttributeError:
                 raise jit_fn_not_found_error()
         with open(save_path, 'wb') as pickle_file:
             pickle.dump(trainer_copy, pickle_file)
