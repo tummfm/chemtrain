@@ -149,16 +149,13 @@ class MLETrainerTemplate(ABC):
                     try:
                         save_dict.pop('grad_fns')  # for difftre / rel_entropy
                     except KeyError:
-                        try:
-                            save_dict.pop('update')  # for force matching  # TODO unique interface?
-                        except KeyError:
-                            raise jit_fn_not_found_error()
+                        raise jit_fn_not_found_error()
                     with open(file_path, 'wb') as f:
                         pickle.dump(save_dict, f)
 
                 elif self.check_format == 'hdf5':
                     file_path = self.checkpoint_path + f'/checkpoints.hdf5'
-                    raise NotImplementedError  # TODO
+                    raise NotImplementedError
                     # from jax_sgmc.io import pytree_dict_keys, dict_to_pytree
                     # leaf_names = pytree_dict_keys(self.state)
                     # leafes = tree_leaves(self.state)
@@ -188,10 +185,7 @@ class MLETrainerTemplate(ABC):
         try:
             trainer_copy.__delattr__('grad_fns')
         except AttributeError:
-            try:
-                trainer_copy.__delattr__('update')
-            except AttributeError:
-                raise jit_fn_not_found_error()
+            raise jit_fn_not_found_error()
         with open(save_path, 'wb') as pickle_file:
             pickle.dump(trainer_copy, pickle_file)
 
