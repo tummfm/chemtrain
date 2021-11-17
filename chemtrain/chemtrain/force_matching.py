@@ -1,6 +1,5 @@
 from collections import namedtuple
 from jax import jit, vmap, lax, device_count, value_and_grad, pmap
-from jax_md import quantity
 import time
 import numpy as onp
 from jax_sgmc.data import NumpyDataLoader, random_reference_data
@@ -15,7 +14,7 @@ from functools import partial
 #  models such as the tabulated potential are inefficient if used without
 #  neighbor list as many cut-off interactions are otherwise computed.
 #  For the sake of a simpler implementation, the slight inefficiency
-#  in the case of DimeNet++ is accepeted for now.
+#  in the case of DimeNet++ is accepted for now.
 
 State = namedtuple(
     "State",
@@ -28,57 +27,47 @@ position: atomic positions
 """
 
 
-def init_force_loss_fn(energy_fn_template, neighbor_fn, nbrs_init,
-                       virial_fn=None, gamma_p=1.e-6):
-
-    @jit
-    def force_loss(params, batch):
+def init_single_prediction(nbrs_init, energy_fn_template, neighbor_fn,
+                           virial_fn=None):
+    """Initialize predictions for a single snapshot. Can be used to
+    parametrize potentials from per-snapshot energy, force and/or virial.
+    """
+    def single_prediction(params, observation):
         energy_fn = energy_fn_template(params)
-        force_fn = quantity.canonicalize_force(energy_fn)
-
-        @vmap
-        def batched_forces(R):
-            neighbors = neighbor_fn(R, nbrs_init)
-            return force_fn(R, neighbor=neighbors)
-
-        loss = 0.
-        predicted_forces = batched_forces(batch['R'])
-        loss += mse_loss(predicted_forces, batch['F'])
-
+        R = observation['R']
+        nbrs = neighbor_fn(R, nbrs_init)
+        energy, negative_forces = value_and_grad(energy_fn)(R, neighbor=nbrs)
+        predictions = {'U': energy, 'F': -negative_forces}
         if virial_fn is not None:
-            # Note:
-            # maybe more efficient to combine both preditions, but XLA
-            # might just optimize such that neighbors computed above
-            # are re-used
-
-            @vmap
-            def batched_virial(R):
-                # emulate state structure, as virial_fn usually requires
-                # full state to include kinetic contribution
-                state = State(R)
-                nbrs = neighbor_fn(R, nbrs_init)
-                return virial_fn(state, nbrs, params)
-
-            predicted_p = virial_fn(batch['R'])
-            loss += gamma_p * mse_loss(predicted_p, batch['p'])
-
-        return loss
-    return force_loss
+            predictions['virial'] = virial_fn(State(R), nbrs, params)
+        return predictions
+    return single_prediction
 
 
-def init_update_fn(energy_fn_template, neighbor_fn, nbrs_init, optimizer,
-                   gamma_p=1.e-6, box_tensor=None, include_virial=False,
-                   n_devices=1):
+def init_grad_fn(energy_fn_template, neighbor_fn, nbrs_init, optimizer,
+                 gamma_f=1., gamma_p=1.e-6, box_tensor=None,
+                 include_virial=False, n_devices=1):
 
     if include_virial:
         virial_fn = custom_quantity.init_pressure(energy_fn_template,
                                                   box_tensor,
                                                   include_kinetic=False)
-
-        loss_fn = init_force_loss_fn(energy_fn_template, neighbor_fn, nbrs_init,
-                                     virial_fn, gamma_p=gamma_p)
     else:
-        loss_fn = init_force_loss_fn(energy_fn_template, neighbor_fn, nbrs_init)
+        virial_fn = None
+
+    _single_prediction = init_single_prediction(nbrs_init, energy_fn_template,
+                                                neighbor_fn, virial_fn)
+
+    def loss_fn(params, batch):
+        predictions = vmap(_single_prediction, in_axes=(None, 0))(params, batch)
+        loss = 0.
+        if 'U' in batch.keys():  # energy is loss component
+            loss += mse_loss(predictions['U'], batch['U'])
+        if 'F' in batch.keys():  # forces are loss component
+            loss += gamma_f * mse_loss(predictions['F'], batch['F'])
+        if 'p' in batch.keys():  # virial is loss component
+            loss += gamma_p * mse_loss(predictions['virial'], batch['p'])
+        return loss
 
     @partial(pmap, axis_name='devices')
     def batched_loss_fn(params, batch):
@@ -89,6 +78,8 @@ def init_update_fn(energy_fn_template, neighbor_fn, nbrs_init, optimizer,
     @partial(pmap, axis_name='devices')
     def batch_update(params, opt_state, batch):
         loss, grad = value_and_grad(loss_fn)(params, batch)
+
+        # step optimizer within pmap to minimize communication overhead
         grad = lax.pmean(grad, axis_name='devices')
         loss = lax.pmean(loss, axis_name='devices')
         new_params, opt_state = step_optimizer(params, opt_state,
@@ -117,17 +108,18 @@ class Trainer(MLETrainerTemplate):
     # TODO end training when val loss does not decrease for certain
     #  number of epochs / update steps; maybe exponentially moving average?
     def __init__(self, init_params, energy_fn_template, neighbor_fn, nbrs_init,
-                 optimizer, position_data, force_data, virial_data=None,
-                 box_tensor=None, gamma_p=1.e-6, batch_per_device=1,
-                 batch_cache=10, train_ratio=0.875,
+                 optimizer, position_data, energy_data=None, force_data=None,
+                 virial_data=None, box_tensor=None, gamma_f=1., gamma_p=1.e-6,
+                 batch_per_device=1, batch_cache=10, train_ratio=0.875,
                  checkpoint_folder='Checkpoints', checkpoint_format='pkl'):
 
         # setup dataset
         self.n_devices, self.batches_per_epoch, self.get_train_batch, \
-            self.get_val_batch, self.train_batch_state, self.val_batch_state = \
-            self._process_dataset(position_data, train_ratio, force_data,
-                                  virial_data, box_tensor, batch_per_device,
-                                  batch_cache)
+            self.get_val_batch, self.train_batch_state, self.val_batch_state, \
+            include_virial, self.training_dict_keys = \
+            self._process_dataset(position_data, train_ratio, energy_data,
+                                  force_data, virial_data, box_tensor,
+                                  batch_per_device, batch_cache)
         self.train_losses, self.val_losses = [], []
         opt_state = optimizer.init(init_params)  # initialize optimizer state
 
@@ -142,29 +134,44 @@ class Trainer(MLETrainerTemplate):
         super().__init__(optimizer, init_state, checkpoint_path,
                          checkpoint_format, energy_fn_template)
 
-        self.grad_fns = init_update_fn(energy_fn_template, neighbor_fn, nbrs_init,
+        self.grad_fns = init_grad_fn(energy_fn_template,
+                                     neighbor_fn,
+                                     nbrs_init,
                                      optimizer,
-                                     gamma_p=gamma_p, box_tensor=box_tensor,
-                                     include_virial=False,  # TODO fix
+                                     gamma_f=gamma_f,
+                                     gamma_p=gamma_p,
+                                     box_tensor=box_tensor,
+                                     include_virial=include_virial,
                                      n_devices=self.n_devices)
 
-    def update_dataset(self, position_data, train_ratio=0.875, force_data=None,
-                       virial_data=None, box_tensor=None, batch_per_device=1,
-                       batch_cache=10):
+    def update_dataset(self, position_data, train_ratio=0.875, energy_data=None,
+                       force_data=None, virial_data=None, box_tensor=None,
+                       batch_per_device=1, batch_cache=10, **grad_fns_kwargs):
         """Allows changing dataset on the fly, which is particularly
         useful for active learning applications.
         """
         self.n_devices, self.batches_per_epoch, self.get_train_batch, \
-            self.get_val_batch, self.train_data_state, self.val_batch_state = \
-            self._process_dataset(position_data, train_ratio, force_data,
-                                  virial_data, box_tensor, batch_per_device,
+            self.get_val_batch, self.train_batch_state, self.val_batch_state, \
+            include_virial, training_dict_keys = \
+            self._process_dataset(position_data,
+                                  train_ratio,
+                                  energy_data,
+                                  force_data,
+                                  virial_data,
+                                  box_tensor,
+                                  batch_per_device,
                                   batch_cache)
-        # TODO re-initialize grad_fns if targets are changed!
+
+        if training_dict_keys != self.training_dict_keys:
+            # the target quantities changes with respect to initialization
+            # we need to re-initialize grad_fns
+            self.grad_fns = init_grad_fn(include_virial=include_virial,
+                                         **grad_fns_kwargs)
 
     @staticmethod
-    def _process_dataset(position_data, train_ratio=0.875, force_data=None,
-                         virial_data=None, box_tensor=None, batch_per_device=1,
-                         batch_cache=10):
+    def _process_dataset(position_data, train_ratio=0.875, energy_data=None,
+                         force_data=None, virial_data=None, box_tensor=None,
+                         batch_per_device=1, batch_cache=10):
         # Default train_ratio represents 70-10-20 split, when 20 % test
         # data was already deducted
         n_devices = device_count()
@@ -172,32 +179,39 @@ class Trainer(MLETrainerTemplate):
         train_set_size = position_data.shape[0]
         train_size = int(train_set_size * train_ratio)
         batches_per_epoch = train_size // batch_size
+
         R_train, R_val = onp.split(position_data, [train_size])
-        F_train, F_val = onp.split(force_data, [train_size])
-        train_dict = {'R': R_train, 'F': F_train}
-        val_dict = {'R': R_val, 'F': F_val}
-        # TODO is there better way to handle whether to inlcude virial?
-        include_virial = virial_data is not None
-        # TODO include energy data - maybe build more flexible datset setup:
-        #  not 3 dfferent inputs
-        if include_virial:
-            # TODO: test virial matching! Predicted pressure should match
+        train_dict = {'R': R_train}
+        val_dict = {'R': R_val}
+        if energy_data is not None:
+            u_train, u_val = onp.split(energy_data, [train_size])
+            train_dict['U'] = u_train
+            val_dict['U'] = u_val
+        if force_data is not None:
+            f_train, f_val = onp.split(force_data, [train_size])
+            train_dict['F'] = f_train
+            val_dict['F'] = f_val
+        if virial_data is not None:
+            include_virial = True
             assert box_tensor is not None, "If the virial is to be matched, " \
                                            "box_tensor is a mandatory input."
             p_train, p_val = onp.split(virial_data, [train_size])
             train_dict['p'] = p_train
             val_dict['p'] = p_val
-        train_loader = NumpyDataLoader(R=R_train, F=F_train)
-        val_loader = NumpyDataLoader(R=R_val, F=F_val)
+        else:
+            include_virial = False
+
+        train_loader = NumpyDataLoader(**train_dict)
+        val_loader = NumpyDataLoader(**val_dict)
         init_train_batch, get_train_batch = random_reference_data(
             train_loader, batch_cache, batch_size)
         init_val_batch, get_val_batch = random_reference_data(
             val_loader, batch_cache, batch_size)
-
         train_batch_state = init_train_batch()
         val_batch_state = init_val_batch()
         return n_devices, batches_per_epoch, get_train_batch, get_val_batch, \
-            train_batch_state, val_batch_state
+            train_batch_state, val_batch_state, include_virial, \
+            train_dict.keys()
 
     @property
     def params(self):
@@ -215,9 +229,12 @@ class Trainer(MLETrainerTemplate):
         """
         self.train_batch_state, train_batch = self.get_train_batch(
             self.train_batch_state)
-        self.val_batch_state, val_batch = self.get_val_batch(self.val_batch_state)
+        self.val_batch_state, val_batch = self.get_val_batch(
+            self.val_batch_state)
 
-        self.state, train_loss, val_loss = self.grad_fns(self.state, train_batch, val_batch)
+        self.state, train_loss, val_loss = self.grad_fns(self.state,
+                                                         train_batch,
+                                                         val_batch)
         # only need loss_val from single device
         self.train_losses.append(train_loss[0])
         self.val_losses.append(val_loss[0])
