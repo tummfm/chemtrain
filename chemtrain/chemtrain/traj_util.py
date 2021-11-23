@@ -165,6 +165,10 @@ def trajectory_generator_init(simulator_template, energy_fn_template,
 
     return generate_reference_trajectory
 
+# TODO vectorization of energy and quantity_trajectory might provide some
+#  computational gains, at the expense of providing an additional parameter
+#  for batch-size, which can lead to OOM errors if not chosen properly.
+
 
 def energy_trajectory(trajectory, init_nbrs, neighbor_fn, energy_fn):
     """Computes potential energy values for all states in a trajectory.
