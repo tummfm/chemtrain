@@ -66,29 +66,8 @@ def init_reweighting_propagation_fns(energy_fn_template, simulator_template,
     trajectory_generator = trajectory_generator_init(simulator_template,
                                                      energy_fn_template,
                                                      neighbor_fn,
-                                                     timings)
-
-    def full_trajectory_generator(params, sim_state):
-        # TODO if energy becomes default, this function is unnecessary
-        """Customization of trajectory generator for DiffTRe purposes:
-        Generates constant temperature trajectories and additionally
-        computes energy values for each state used during reweighting.
-        """
-        new_traj = trajectory_generator(params, sim_state)
-
-        # always recompute neighbor list from last, fixed neighbor list.
-        # Note:
-        # one could save all the neighbor lists at the printout times,
-        # if memory permits. In principle, this energy computation
-        # could be omitted altogether if ones saves the energy  from
-        # the simulator for each printout state. We did not opt for
-        # this optimization to keep compatibility with Jax MD simulators.
-        final_state, nbrs = new_traj.sim_state
-        energy_fn = energy_fn_template(params)
-        energies = energy_trajectory(new_traj.trajectory, nbrs,
-                                     neighbor_fn, energy_fn)
-        traj_with_energies = new_traj.replace(energies=energies)
-        return traj_with_energies
+                                                     timings,
+                                                     with_energy=True)
 
     def estimate_effective_samples(weights):
         # mask to avoid NaN from log(0) if a few weights are 0.
@@ -130,7 +109,7 @@ def init_reweighting_propagation_fns(energy_fn_template, simulator_template,
         state of the previous trajectory to save equilibration time.
         """
         params, traj_state = inputs
-        updated_traj = full_trajectory_generator(params, traj_state.sim_state)
+        updated_traj = trajectory_generator(params, traj_state.sim_state)
         return updated_traj
 
     @jit
@@ -177,7 +156,7 @@ def init_reweighting_propagation_fns(energy_fn_template, simulator_template,
             reset_counter += 1
         return new_traj_state
 
-    return full_trajectory_generator, compute_weights, propagate
+    return trajectory_generator, compute_weights, propagate
 
 
 class PropagationBase(MLETrainerTemplate):
