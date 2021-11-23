@@ -1,12 +1,12 @@
 from abc import abstractmethod
-from jax import value_and_grad, checkpoint, jit, lax, random, \
-    numpy as jnp
-from jax_md import util
-from chemtrain.traj_util import trajectory_generator_init, energy_trajectory, \
-    quantity_traj
-from chemtrain.util import MLETrainerTemplate, TrainerState, tree_mean, mse_loss
 import time
 import warnings
+
+from jax import value_and_grad, checkpoint, jit, lax, random, \
+    numpy as jnp
+import jax_md.util
+
+from chemtrain import util, traj_util
 
 
 def independent_mse_loss_fn_init(quantities):
@@ -42,10 +42,10 @@ def independent_mse_loss_fn_init(quantities):
         for quantity_key in quantities:
             quantity_snapshots = quantity_trajs[quantity_key]
             weighted_snapshots = (quantity_snapshots.T * weights).T
-            average = util.high_precision_sum(weighted_snapshots, axis=0)
+            average = jax_md.util.high_precision_sum(weighted_snapshots, axis=0)
             predictions[quantity_key] = average
-            loss += quantities[quantity_key]['gamma'] \
-                    * mse_loss(average, quantities[quantity_key]['target'])
+            loss += quantities[quantity_key]['gamma'] * util.mse_loss(
+                average, quantities[quantity_key]['target'])
         return loss, predictions
     return loss_fn
 
@@ -63,11 +63,9 @@ def init_reweighting_propagation_fns(energy_fn_template, simulator_template,
     The propagation function also ensures that generated trajectories
     did not encounter any neighbor list overflow.
     """
-    trajectory_generator = trajectory_generator_init(simulator_template,
-                                                     energy_fn_template,
-                                                     neighbor_fn,
-                                                     timings,
-                                                     with_energy=True)
+    trajectory_generator = traj_util.trajectory_generator_init(
+        simulator_template, energy_fn_template, neighbor_fn, timings,
+        with_energy=True)
 
     def estimate_effective_samples(weights):
         # mask to avoid NaN from log(0) if a few weights are 0.
@@ -81,8 +79,8 @@ def init_reweighting_propagation_fns(energy_fn_template, simulator_template,
 
         # checkpointing: whole backward pass too memory consuming
         energy_fn = checkpoint(energy_fn_template(params))
-        energies_new = energy_trajectory(traj_state.trajectory, nbrs,
-                                         neighbor_fn, energy_fn)
+        energies_new = traj_util.energy_trajectory(traj_state.trajectory, nbrs,
+                                                   neighbor_fn, energy_fn)
 
         # Difference in pot. Energy is difference in total energy
         # as kinetic energy is the same and cancels
@@ -95,7 +93,7 @@ def init_reweighting_propagation_fns(energy_fn_template, simulator_template,
         # rules out overflow and the 0 value guarantees a denominator >=1.
         exponent -= jnp.max(exponent)
         prob_ratios = jnp.exp(exponent)
-        weights = prob_ratios / util.high_precision_sum(prob_ratios)
+        weights = prob_ratios / jax_md.util.high_precision_sum(prob_ratios)
         n_eff = estimate_effective_samples(weights)
         return weights, n_eff
 
@@ -159,7 +157,7 @@ def init_reweighting_propagation_fns(energy_fn_template, simulator_template,
     return trajectory_generator, compute_weights, propagate
 
 
-class PropagationBase(MLETrainerTemplate):
+class PropagationBase(util.MLETrainerTemplate):
     """Trainer base class for shared functionality whenever (multiple)
     simulations are run during training. Can be used as a template to
     build other trainers. Currently used for DiffTRe and relative entropy.
@@ -185,9 +183,9 @@ class PropagationBase(MLETrainerTemplate):
         self.n_statepoints = 0
         self.shuffle_key = random.PRNGKey(0)
 
-    def init_statepoint(self, reference_state, energy_fn_template,
-                        simulator_template, neighbor_fn, timings, kbT,
-                        initialize_traj=True):
+    def _init_statepoint(self, reference_state, energy_fn_template,
+                         simulator_template, neighbor_fn, timings, kbT,
+                         initialize_traj=True):
         """Initializes the simulation and reweighting functions as well
         as the initial trajectory for a statepoint."""
 
@@ -231,7 +229,7 @@ class PropagationBase(MLETrainerTemplate):
     def params(self, loaded_params):
         self.state.params = loaded_params
 
-    def simulation_batches(self):
+    def _simulation_batches(self):
         """Helper function to re-shuffle simulations and split into batches."""
         self.shuffle_key, used_key = random.split(self.shuffle_key, 2)
         shuffled_indices = random.permutation(used_key, self.n_statepoints)
@@ -252,13 +250,13 @@ class PropagationBase(MLETrainerTemplate):
         end_epoch = start_epoch + epochs
         for epoch in range(start_epoch, end_epoch):
             start_time = time.time()
-            batchlist = self.simulation_batches()
+            batchlist = self._simulation_batches()
             for batch in batchlist:
-                self.update(batch)
+                self._update(batch)
 
             duration = (time.time() - start_time) / 60.
             self.update_times.append(duration)
-            converged = self.evaluate_convergence(duration)
+            converged = self._evaluate_convergence(duration, thresh)
             self.epoch += 1
             self.dump_checkpoint_occasionally(frequency=checkpoint_freq)
 
@@ -268,7 +266,7 @@ class PropagationBase(MLETrainerTemplate):
             print('Maximum number of epochs reached without convergence.')
 
     @abstractmethod
-    def update(self, batch):
+    def _update(self, batch):
         """Implementation of gradient computation, stepping of the optimizer
         and logging of auxiliary results."""
         raise NotImplementedError()
@@ -276,12 +274,10 @@ class PropagationBase(MLETrainerTemplate):
 
 class Trainer(PropagationBase):
     """Trainer class for parametrizing potentials via the DiffTRe method."""
-    # TODO save params that generated best loss on not reweighted trajectory
-    # TODO implement stopping criterion based on exponentially decaying loss
-
-    # TODO add NpT ensemble; can we re-use energy function template in this case?
+    # TODO add NpT ensemble
     def __init__(self, init_params, optimizer, reweight_ratio=0.9,
                  sim_batch_size=1, energy_fn_template=None,
+                 convergence_criterion='max_loss',
                  checkpoint_folder='Checkpoints', checkpoint_format='pkl'):
         """Initializes a DiffTRe trainer instance.
 
@@ -308,15 +304,29 @@ class Trainer(PropagationBase):
                                 state point requires its own due to the
                                 dependence on the box size via the displacement
                                 function, which can vary between state points.
+            convergence_criterion: Either 'max_loss' or 'ave_loss'.
+                                   If 'max_loss', stops if the maximum loss
+                                   across all batches in the epoch is smaller
+                                   than convergence_thresh. 'ave_loss' evaluates
+                                   the average loss across the batch. For a
+                                   single state point, both are equivalent.
+                                   A criterion based on the rolling standatd
+                                   deviation 'std' might be implemented in the
+                                   future.
             checkpoint_folder: Name of folders to store ckeckpoints in.
             checkpoint_format: Checkpoint format, currently only .pkl supported.
         """
 
         self.batch_losses, self.epoch_losses = [], []
         self.predictions = {}
+        # TODO doc: beware that for too short trajectory might have overfittet
+        #  to single trajectory; if in doubt, set reweighting ratio = 1 towards
+        #  end of optimization
+        self.best_params = None
+        self.criterion = convergence_criterion
         checkpoint_path = 'output/difftre/' + str(checkpoint_folder)
-        init_state = TrainerState(params=init_params,
-                                  opt_state=optimizer.init(init_params))
+        init_state = util.TrainerState(params=init_params,
+                                       opt_state=optimizer.init(init_params))
         super(Trainer, self).__init__(init_state,
                                       optimizer,
                                       checkpoint_path,
@@ -382,13 +392,13 @@ class Trainer(PropagationBase):
         """
 
         # init simulation, reweighting functions and initial trajectory
-        key, weights_fn, propagate = self.init_statepoint(reference_state,
-                                                          energy_fn_template,
-                                                          simulator_template,
-                                                          neighbor_fn,
-                                                          timings,
-                                                          kbT,
-                                                          initialize_traj)
+        key, weights_fn, propagate = self._init_statepoint(reference_state,
+                                                           energy_fn_template,
+                                                           simulator_template,
+                                                           neighbor_fn,
+                                                           timings,
+                                                           kbT,
+                                                           initialize_traj)
 
         # build loss function for current state point
         if loss_fn is None:
@@ -402,10 +412,10 @@ class Trainer(PropagationBase):
             additionally returns predictions of the current model.
             """
             weights, _ = weights_fn(params, traj_state)
-            quantity_trajs = quantity_traj(traj_state,
-                                           quantities,
-                                           neighbor_fn,
-                                           params)
+            quantity_trajs = traj_util.quantity_traj(traj_state,
+                                                     quantities,
+                                                     neighbor_fn,
+                                                     params)
             loss, predictions = loss_fn(quantity_trajs, weights)
             return loss, predictions
 
@@ -424,7 +434,7 @@ class Trainer(PropagationBase):
         self.grad_fns[key] = difftre_grad_and_propagation
         self.predictions[key] = {}  # init saving predictions for this point
 
-    def update(self, batch):
+    def _update(self, batch):
         """Computes gradient averaged over the sim_batch by propagating
         respective state points. Additionally saves predictions and loss
         for postprocessing."""
@@ -457,15 +467,32 @@ class Trainer(PropagationBase):
                 break
 
         self.batch_losses.append(sum(losses) / self.sim_batch_size)
-        batch_grad = tree_mean(grads)
+        batch_grad = util.tree_mean(grads)
         self.step_optimizer(batch_grad)
 
-    def evaluate_convergence(self, duration):
-        epoch_loss = sum(self.batch_losses[-self.sim_batch_size:]) \
-                     / self.sim_batch_size
+    def _evaluate_convergence(self, duration, thresh):
+        last_losses = jnp.array(self.batch_losses[-self.sim_batch_size:])
+        epoch_loss = jnp.mean(last_losses)
         self.epoch_losses.append(epoch_loss)
         print(f'Epoch {self.epoch}: Epoch loss = {epoch_loss}, Elapsed time = '
               f'{duration} min')
 
-        converged = False  # TODO implement convergence test
+        # save parameter set that resulted in smallest loss up to this point
+        if jnp.argmin(jnp.array(self.epoch_losses)) == len(self.epoch_losses)-1:
+            self.best_params = self.params
+
+        converged = False
+        if thresh is not None:
+            if self.criterion == 'max_loss':
+                if max(last_losses) < thresh: converged = True
+            elif self.criterion == 'ave_loss':
+                if epoch_loss < thresh: converged = True
+            elif self.criterion == 'std':
+                raise NotImplementedError('Currently, there is no criterion '
+                                          'based on the std of the loss '
+                                          'implemented.')
+            else:
+                raise ValueError(f'Convergence criterion {self.criterion} '
+                                 f'unknown. Select "max_loss", "ave_loss" or '
+                                 f'"std".')
         return converged

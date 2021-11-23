@@ -151,13 +151,13 @@ class Trainer(difftre.PropagationBase):
             # use same amount of snapshots as generated in trajectory by default
             reference_batch_size = jnp.size(timings.t_production_start)
 
-        key, weights_fn, propagate = self.init_statepoint(reference_state,
-                                                          energy_fn_template,
-                                                          simulator_template,
-                                                          neighbor_fn,
-                                                          timings,
-                                                          kbT,
-                                                          initialize_traj)
+        key, weights_fn, propagate = self._init_statepoint(reference_state,
+                                                           energy_fn_template,
+                                                           simulator_template,
+                                                           neighbor_fn,
+                                                           timings,
+                                                           kbT,
+                                                           initialize_traj)
 
         reference_dataloader = self._set_dataset(key,
                                                  reference_data,
@@ -179,7 +179,7 @@ class Trainer(difftre.PropagationBase):
 
         self.grad_fns[key] = propagation_and_grad
 
-    def update(self, batch):
+    def _update(self, batch):
         """Updates the potential using the gradient from relative entropy."""
         grads = []
         for sim_key in batch:
@@ -194,9 +194,14 @@ class Trainer(difftre.PropagationBase):
         batch_grad = tree_mean(grads)
         self.step_optimizer(batch_grad)
 
-    def evaluate_convergence(self, duration):
-        print(f'Epoch {self.epoch}: Elapsed time = '
-              f'{duration} min')
+    def _evaluate_convergence(self, duration, thresh):
+        print(f'Epoch {self.epoch}: Elapsed time = {duration} min')
         converged = False  # TODO implement convergence test
-        #  --> maybe based on exponential average of log(N_eff)?
+        if thresh is not None:
+            raise NotImplementedError('Currently there is no convergence '
+                                      'criterion implemented for relative '
+                                      'entropy minimization. A possible '
+                                      'implementation might be based on the '
+                                      'variation of params or reweigting '
+                                      'effective sample size.')
         return converged
