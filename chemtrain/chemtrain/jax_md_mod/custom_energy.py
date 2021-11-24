@@ -459,6 +459,8 @@ def DimeNetPP_neighborlist(displacement: DisplacementFn,
         N, max_neighbors = neighbor.idx.shape
         if species is None:  # dummy species to allow streamlined use of different species
             species = jnp.zeros(N, dtype=jnp.int32)
+        else:
+            smap._check_species_dtype(species)  # assert species are int
 
         dynamic_displacement = partial(displacement, **dynamic_kwargs)  # necessary for pressure computation
         dyn_neighbor_displacement_fn = space.map_neighbor(dynamic_displacement)
