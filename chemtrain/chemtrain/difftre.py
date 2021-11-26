@@ -78,6 +78,65 @@ def _build_weights(exponents):
     return weights, n_eff
 
 
+def reweight_trajectory(traj, targets, npt_ensemble=False):
+    """Computes weights to reweight a trajectory from one thermodynamic
+    state point to another.
+
+    This function allows re-using an existing trajectory to compute
+    observables at slightly perturbed thermodynamic state points. The
+    reference trajectory can be generated at a constant state point or
+    at different state points, e.g. via non-equlinibrium MD. Both NVT and
+    NPT trajectories are supported, however reweighting currently only
+    allows reweighting into the same ensemble. For NVT, the trajectory can
+    be reweighted to a different temperature. For NPT, can be reweighted to
+    different kbT and/or pressure. We assume quantities not included in
+    'targets' to be constant over the trajectory, however this is not ensured
+    by the code.
+    For reference, implemented are cases 1. - 4. in
+    https://www.plumed.org/doc-v2.6/user-doc/html/_r_e_w_e_i_g_h_t__t_e_m_p__p_r_e_s_s.html.
+
+    Args:
+        traj: Reference trajectory to be reweighted
+        targets: A dict containing the targets under 'kbT' and/or 'pressure'.
+                 If a keyword is not provided, the qunatity is assumed to be
+                 and remain constant.
+        npt_ensemble: Whether 'traj' was generated in NPT, default False is NVT.
+
+    Returns:
+        A tuple (weights, n_eff). Weights can be used to compute
+        reweighted observables and n_eff judges the expected
+        statistical error from reweighting.
+    """
+    if not npt_ensemble:
+        assert 'kbT' in targets, 'For NVT, a kbT target needs to be provided.'
+    # Note: if temperature / pressure are supposed to remain constant and are
+    # hence not provided in the targets, we set them to the respective reference
+    # values. Hence, their contribution to reweighting cancels. This should
+    # even be at no additional cost under jit as XLA should easily detect the
+    # zero contribution. Same applies to combinations in the NPT ensemble.
+    target_kbt = targets.get('kbT', traj.kbT)
+    target_beta = 1. / target_kbt
+    reference_betas = 1. / traj.kbT
+
+    # temperature reweighting
+    exponents = -(target_beta - reference_betas) * traj.energies
+
+    if npt_ensemble:  # correct for P * V
+        assert 'kbT' in targets or 'pressure' in targets, ('At least one target'
+                                                           ' needs to be given '
+                                                           'for reweighting.')
+        target_press = targets.get('pressure', traj.barostat_press)
+        target_beta_p = target_beta * target_press
+        ref_beta_p = reference_betas * traj.barostat_press
+        volumes = traj_util.volumes(traj)
+
+        # For constant p, reduces to -V * P_ref * (beta_target - beta_ref)
+        # For constant T, reduces to -V * beta_ref * (p_target - p_ref)
+        exponents -= volumes * (target_beta_p - ref_beta_p)
+
+    return _build_weights(exponents)
+
+
 def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
                                       neighbor_fn, timings, ref_kbT,
                                       reweight_ratio=0.9, npt_ensemble=False):
