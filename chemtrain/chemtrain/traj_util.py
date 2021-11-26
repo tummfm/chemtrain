@@ -4,8 +4,8 @@ single snapshots.
 from functools import partial
 from typing import Any
 from chex import dataclass
-from jax import jit, lax, numpy as jnp
-from jax_md import util
+from jax import jit, lax, vmap, numpy as jnp
+from jax_md import util, quantity
 
 Array = util.Array
 
@@ -168,6 +168,17 @@ def trajectory_generator_init(simulator_template, energy_fn_template,
 # TODO vectorization of energy and quantity_trajectory might provide some
 #  computational gains, at the expense of providing an additional parameter
 #  for batch-size, which can lead to OOM errors if not chosen properly.
+
+
+def volumes(traj_state):
+    dim = traj_state.sim_state[0].position.shape[-1]
+    return vmap(quantity.volume, (None, 0))(dim, traj_state.boxes)
+
+
+def press_trajectory(params, traj_state):
+    #  TODO --> unify with computation of energy
+    pressure = quantity_traj(traj_state)
+    return pressure
 
 
 def energy_trajectory(trajectory, init_nbrs, neighbor_fn, energy_fn):

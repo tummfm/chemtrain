@@ -4,7 +4,7 @@ import warnings
 
 from jax import value_and_grad, checkpoint, jit, lax, random, \
     numpy as jnp
-import jax_md.util
+from jax_md import util as jax_md_util
 
 from chemtrain import util, traj_util
 
@@ -42,7 +42,7 @@ def independent_mse_loss_fn_init(quantities):
         for quantity_key in quantities:
             quantity_snapshots = quantity_trajs[quantity_key]
             weighted_snapshots = (quantity_snapshots.T * weights).T
-            average = jax_md.util.high_precision_sum(weighted_snapshots, axis=0)
+            average = jax_md_util.high_precision_sum(weighted_snapshots, axis=0)
             predictions[quantity_key] = average
             loss += quantities[quantity_key]['gamma'] * util.mse_loss(
                 average, quantities[quantity_key]['target'])
@@ -50,9 +50,37 @@ def independent_mse_loss_fn_init(quantities):
     return loss_fn
 
 
-def init_reweighting_propagation_fns(energy_fn_template, simulator_template,
-                                     neighbor_fn, timings, kbT,
-                                     reweight_ratio=0.9):
+def _estimate_effective_samples(weights):
+    """Returns the effective sample size after reweighting to
+    judge reweighting quality.
+    """
+    # mask to avoid NaN from log(0) if a few weights are 0.
+    weights = jnp.where(weights > 1.e-10, weights, 1.e-10)
+    exponent = -jnp.sum(weights * jnp.log(weights))
+    return jnp.exp(exponent)
+
+
+def _build_weights(exponents):
+    """Returns weights and the effective sample size from exponents
+    of the reweighting formulas in a numerically stable way.
+    """
+
+    # The reweighting scheme is a softmax, where the exponent above
+    # represents the logits. To improve numerical stability and
+    # guard against overflow it is good practice to subtract the
+    # max of the exponent using the identity softmax(x + c) =
+    # softmax(x). With all values in the exponent <=0, this
+    # rules out overflow and the 0 value guarantees a denominator >=1.
+    exponents -= jnp.max(exponents)
+    prob_ratios = jnp.exp(exponents)
+    weights = prob_ratios / jax_md_util.high_precision_sum(prob_ratios)
+    n_eff = _estimate_effective_samples(weights)
+    return weights, n_eff
+
+
+def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
+                                      neighbor_fn, timings, ref_kbT,
+                                      reweight_ratio=0.9, npt_ensemble=False):
     """
     Initializes all functions necessary for trajectory reweighting for
     a single state point.
@@ -63,39 +91,34 @@ def init_reweighting_propagation_fns(energy_fn_template, simulator_template,
     The propagation function also ensures that generated trajectories
     did not encounter any neighbor list overflow.
     """
+    if npt_ensemble:
+        pass
+        # TODO modify trajectory generator to include boxes and pressure
     trajectory_generator = traj_util.trajectory_generator_init(
         simulator_template, energy_fn_template, neighbor_fn, timings,
         with_energy=True)
 
-    def estimate_effective_samples(weights):
-        # mask to avoid NaN from log(0) if a few weights are 0.
-        weights = jnp.where(weights > 1.e-10, weights, 1.e-10)
-        exponent = - jnp.sum(weights * jnp.log(weights))
-        return jnp.exp(exponent)
+    beta = 1. / ref_kbT
 
     def compute_weights(params, traj_state):
-        """Computes weights for the reweighting approach in the NVT ensemble."""
+        """Computes weights for the reweighting approach."""
         _, nbrs = traj_state.sim_state
-
         # checkpointing: whole backward pass too memory consuming
         energy_fn = checkpoint(energy_fn_template(params))
         energies_new = traj_util.energy_trajectory(traj_state.trajectory, nbrs,
                                                    neighbor_fn, energy_fn)
 
-        # Difference in pot. Energy is difference in total energy
+        # Note: Difference in pot. Energy is difference in total energy
         # as kinetic energy is the same and cancels
-        exponent = -(1. / kbT) * (energies_new - traj_state.energies)
-        # The reweighting scheme is a softmax, where the exponent above
-        # represents the logits. To improve numerical stability and
-        # guard against overflow it is good practice to subtract the
-        # max of the exponent using the identity softmax(x + c) =
-        # softmax(x). With all values in the exponent <=0, this
-        # rules out overflow and the 0 value guarantees a denominator >=1.
-        exponent -= jnp.max(exponent)
-        prob_ratios = jnp.exp(exponent)
-        weights = prob_ratios / jax_md.util.high_precision_sum(prob_ratios)
-        n_eff = estimate_effective_samples(weights)
-        return weights, n_eff
+        exponent = -beta * (energies_new - traj_state.energies)
+
+        if npt_ensemble:  # we need to correct for the change in pressure
+            # TODO test this
+            volumes = traj_util.volumes(traj_state)
+            new_press = traj_util.press_trajectory(params, traj_state)
+            exponent -= beta * volumes * (new_press - traj_state.pressures)
+
+        return _build_weights(exponent)
 
     def trajectory_identity_mapping(inputs):
         """Re-uses trajectory if no recomputation needed."""
@@ -185,7 +208,7 @@ class PropagationBase(util.MLETrainerTemplate):
 
     def _init_statepoint(self, reference_state, energy_fn_template,
                          simulator_template, neighbor_fn, timings, kbT,
-                         initialize_traj=True):
+                         npt_ensemble=False, initialize_traj=True):
         """Initializes the simulation and reweighting functions as well
         as the initial trajectory for a statepoint."""
 
@@ -194,12 +217,13 @@ class PropagationBase(util.MLETrainerTemplate):
         self.n_statepoints += 1
 
         initial_traj_generator, compute_weights, propagate = \
-            init_reweighting_propagation_fns(energy_fn_template,
-                                             simulator_template,
-                                             neighbor_fn,
-                                             timings,
-                                             kbT,
-                                             self.reweight_ratio)
+            init_pot_reweight_propagation_fns(energy_fn_template,
+                                              simulator_template,
+                                              neighbor_fn,
+                                              timings,
+                                              kbT,
+                                              self.reweight_ratio,
+                                              npt_ensemble)
         if initialize_traj:
             assert reference_state is not None, "If a new trajectory needs " \
                                                 "to be generated, an initial " \
@@ -338,7 +362,7 @@ class Trainer(PropagationBase):
     def add_statepoint(self, energy_fn_template, simulator_template,
                        neighbor_fn, timings, kbT, quantities,
                        reference_state=None, loss_fn=None,
-                       initialize_traj=True):
+                       npt_ensemble=False, initialize_traj=True):
         """
         Adds a state point to the pool of simulations with respective targets.
 
@@ -386,6 +410,7 @@ class Trainer(PropagationBase):
                      Default None initializes an independent MSE loss, which
                      computes reweighting averages from snapshot-based
                      observables.
+            npt_ensemble: Runs in NPT ensemble if True, default False is NVT.
             initialize_traj: True, if an initial trajectory should be generated.
                              Should only be set to False if a checkpoint is
                              loaded before starting any training.
@@ -398,6 +423,7 @@ class Trainer(PropagationBase):
                                                            neighbor_fn,
                                                            timings,
                                                            kbT,
+                                                           npt_ensemble,
                                                            initialize_traj)
 
         # build loss function for current state point

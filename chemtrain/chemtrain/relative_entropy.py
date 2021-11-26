@@ -117,7 +117,7 @@ class Trainer(difftre.PropagationBase):
     def add_statepoint(self, reference_data, energy_fn_template,
                        simulator_template, neighbor_fn, timings, kbT,
                        reference_state=None, reference_batch_size=None,
-                       batch_cache=1, initialize_traj=True):
+                       batch_cache=1, npt_ensemble=False, initialize_traj=True):
         """
         Adds a state point to the pool of simulations.
 
@@ -142,6 +142,7 @@ class Trainer(difftre.PropagationBase):
             batch_cache: Number of reference batches to cache in order to
                          minimize host-device communication. Make sure the
                          cached data size does not exceed the full dataset size.
+            npt_ensemble: Runs in NPT ensemble if True, default False is NVT.
             initialize_traj: True, if an initial trajectory should be generated.
                              Should only be set to False if a checkpoint is
                              loaded before starting any training.
@@ -157,6 +158,7 @@ class Trainer(difftre.PropagationBase):
                                                            neighbor_fn,
                                                            timings,
                                                            kbT,
+                                                           npt_ensemble,
                                                            initialize_traj)
 
         reference_dataloader = self._set_dataset(key,
