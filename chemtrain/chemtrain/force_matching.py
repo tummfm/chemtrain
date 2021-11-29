@@ -44,10 +44,11 @@ def init_single_prediction(nbrs_init, energy_fn_template, neighbor_fn,
     return single_prediction
 
 
-def init_grad_fn(energy_fn_template, neighbor_fn, nbrs_init, optimizer,
-                 gamma_f=1., gamma_p=1.e-6, box_tensor=None,
-                 include_virial=False, n_devices=1):
-
+def init_update_fns(energy_fn_template, neighbor_fn, nbrs_init, optimizer,
+                    gamma_f=1., gamma_p=1.e-6, box_tensor=None,
+                    include_virial=False):
+    """Initializes update functions for energy and(or force matching.
+    """
     if include_virial:
         virial_fn = custom_quantity.init_pressure(energy_fn_template,
                                                   box_tensor,
@@ -86,20 +87,7 @@ def init_grad_fn(energy_fn_template, neighbor_fn, nbrs_init, optimizer,
                                                grad, optimizer)
         return new_params, opt_state, loss
 
-    def grad_fn(state, train_batch, val_batch):
-        # this function should not be jitted as jit of pmap is discouraged
-        train_batch = tree_split(train_batch, n_devices)
-        val_batch = tree_split(val_batch, n_devices)
-
-        params, opt_state, train_loss = batch_update(state.params,
-                                                     state.opt_state,
-                                                     train_batch)
-
-        val_loss = batched_loss_fn(params, val_batch)
-        new_state = state.replace(params=params, opt_state=opt_state)
-        return new_state, train_loss, val_loss
-
-    return grad_fn
+    return batch_update, batched_loss_fn
 
 
 class Trainer(MLETrainerTemplate):
@@ -121,6 +109,8 @@ class Trainer(MLETrainerTemplate):
                                   force_data, virial_data, box_tensor,
                                   batch_per_device, batch_cache)
         self.train_losses, self.val_losses = [], []
+        self.best_params = None
+
         opt_state = optimizer.init(init_params)  # initialize optimizer state
 
         # replicate params and optimizer states for pmap
@@ -134,15 +124,14 @@ class Trainer(MLETrainerTemplate):
         super().__init__(optimizer, init_state, checkpoint_path,
                          checkpoint_format, energy_fn_template)
 
-        self.grad_fns = init_grad_fn(energy_fn_template,
-                                     neighbor_fn,
-                                     nbrs_init,
-                                     optimizer,
-                                     gamma_f=gamma_f,
-                                     gamma_p=gamma_p,
-                                     box_tensor=box_tensor,
-                                     include_virial=include_virial,
-                                     n_devices=self.n_devices)
+        self.grad_fns = init_update_fns(energy_fn_template,
+                                        neighbor_fn,
+                                        nbrs_init,
+                                        optimizer,
+                                        gamma_f=gamma_f,
+                                        gamma_p=gamma_p,
+                                        box_tensor=box_tensor,
+                                        include_virial=include_virial)
 
     def update_dataset(self, position_data, train_ratio=0.875, energy_data=None,
                        force_data=None, virial_data=None, box_tensor=None,
@@ -165,8 +154,8 @@ class Trainer(MLETrainerTemplate):
         if training_dict_keys != self.training_dict_keys:
             # the target quantities changes with respect to initialization
             # we need to re-initialize grad_fns
-            self.grad_fns = init_grad_fn(include_virial=include_virial,
-                                         **grad_fns_kwargs)
+            self.grad_fns = init_update_fns(include_virial=include_virial,
+                                            **grad_fns_kwargs)
 
     @staticmethod
     def _process_dataset(position_data, train_ratio=0.875, energy_data=None,
@@ -224,19 +213,26 @@ class Trainer(MLETrainerTemplate):
         self.params = replicated_params
 
     def update(self):
-        """Function to scan over, optimizing parameters and returning
+        """Function to iterate, optimizing parameters and saving
         training and validation loss values.
         """
-        self.train_batch_state, train_batch = self.get_train_batch(
-            self.train_batch_state)
-        self.val_batch_state, val_batch = self.get_val_batch(
-            self.val_batch_state)
+        # both jitted functions stored together to delete them for checkpointing
+        update, batched_loss_fn = self.grad_fns
 
-        self.state, train_loss, val_loss = self.grad_fns(self.state,
-                                                         train_batch,
-                                                         val_batch)
-        # only need loss_val from single device
-        self.train_losses.append(train_loss[0])
+        self.train_batch_state, train_batch = \
+            self.get_train_batch(self.train_batch_state)
+        self.val_batch_state, val_batch = \
+            self.get_val_batch(self.val_batch_state)
+        train_batch = tree_split(train_batch, self.n_devices)
+        val_batch = tree_split(val_batch, self.n_devices)
+
+        params, opt_state, train_loss = update(self.state.params,
+                                               self.state.opt_state,
+                                               train_batch)
+        val_loss = batched_loss_fn(params, val_batch)
+
+        self.state = self.state.replace(params=params, opt_state=opt_state)
+        self.train_losses.append(train_loss[0])  # only from single device
         self.val_losses.append(val_loss[0])
 
     def evaluate_convergence(self, duration):
@@ -252,6 +248,7 @@ class Trainer(MLETrainerTemplate):
 
     def train(self, epochs, checkpoint_freq=None, thresh=None):
         """Continue training for a number of epochs."""
+        # TODO can we unify this?
         start_epoch = self.epoch
         end_epoch = start_epoch + epochs
 
