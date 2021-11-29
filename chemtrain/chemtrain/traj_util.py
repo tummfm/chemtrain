@@ -117,7 +117,7 @@ def run_to_next_printout_neighbors(apply_fn, neighbor_fn, timings,
 
 
 def trajectory_generator_init(simulator_template, energy_fn_template,
-                              neighbor_fn, timings):
+                              neighbor_fn, timings, with_energy=False):
     """Initializes a trajectory_generator function that computes a new
     trajectory stating at the last state.
 
@@ -128,6 +128,9 @@ def trajectory_generator_init(simulator_template, energy_fn_template,
         neighbor_fn: neighbor_fn
         timings: Instance of TimingClass containing information
                  about which states to retain
+        with_energy: If True, trajectory also contains energy values
+                     for each printout state. Possibly induces as slight
+                     computational overhead.
 
     Returns:
         A function taking energy params and the current state (including
@@ -148,11 +151,23 @@ def trajectory_generator_init(simulator_template, energy_fn_template,
         new_sim_state, traj = lax.scan(run_to_printout,  # production
                                        sim_state,
                                        xs=timings.t_production_start)
+
+        if with_energy:
+            ref_nbrs = new_sim_state[1]
+            energies = energy_trajectory(traj, ref_nbrs, neighbor_fn, energy_fn)
+        else:
+            energies = None
+
         return TrajectoryState(sim_state=new_sim_state,
                                trajectory=traj,
+                               energies=energies,
                                overflow=new_sim_state[1].did_buffer_overflow)
 
     return generate_reference_trajectory
+
+# TODO vectorization of energy and quantity_trajectory might provide some
+#  computational gains, at the expense of providing an additional parameter
+#  for batch-size, which can lead to OOM errors if not chosen properly.
 
 
 def energy_trajectory(trajectory, init_nbrs, neighbor_fn, energy_fn):

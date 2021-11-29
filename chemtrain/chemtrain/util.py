@@ -230,9 +230,9 @@ class MLETrainerTemplate(ABC):
         """
 
     @abstractmethod
-    def evaluate_convergence(self, *args, **kwargs):
+    def _evaluate_convergence(self, *args, **kwargs):
         """Implement a function that checks for convergence to break
-        training loop"""
+        training loop."""
 
     @property
     @abstractmethod

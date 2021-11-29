@@ -38,6 +38,7 @@ def init_rel_entropy_gradient(energy_fn_template, neighbor_fn, init_state,
         ref_batchsize = reference_batch.shape[0]
         AA_weights = jnp.ones(ref_batchsize) / ref_batchsize  # no reweighting
 
+        # TODO implement with vmap
         # Note:
         # would be more efficient to partially batch here, however
         # sequential trajectory generation dominates and batching
@@ -60,8 +61,6 @@ def init_rel_entropy_gradient(energy_fn_template, neighbor_fn, init_state,
 
 
 class Trainer(difftre.PropagationBase):
-    # TODO is there a stopping criterion available?
-    #  --> maybe based on exponential average of N_eff?
     def __init__(self, init_params, optimizer,
                  reweight_ratio=0.9, sim_batch_size=1, energy_fn_template=None,
                  checkpoint_folder='Checkpoints', checkpoint_format='pkl'):
@@ -104,8 +103,8 @@ class Trainer(difftre.PropagationBase):
         # track of dataloader states for reference snapshots
         self.data_states = {}
 
-    def __set_dataset(self, key, reference_data, reference_batch_size,
-                      batch_cache=10):
+    def _set_dataset(self, key, reference_data, reference_batch_size,
+                     batch_cache=1):
         """Set dataset and loader corresponding to current state point."""
         reference_loader = NumpyDataLoader(R=reference_data)
         cache_size = batch_cache * reference_batch_size
@@ -118,7 +117,7 @@ class Trainer(difftre.PropagationBase):
     def add_statepoint(self, reference_data, energy_fn_template,
                        simulator_template, neighbor_fn, timings, kbT,
                        reference_state=None, reference_batch_size=None,
-                       batch_cache=10, initialize_traj=True):
+                       batch_cache=1, initialize_traj=True):
         """
         Adds a state point to the pool of simulations.
 
@@ -141,7 +140,8 @@ class Trainer(difftre.PropagationBase):
                                   trajectory. If None, will use the same number
                                   of snapshots as generated via the optimizer.
             batch_cache: Number of reference batches to cache in order to
-                         minimize host-device communication.
+                         minimize host-device communication. Make sure the
+                         cached data size does not exceed the full dataset size.
             initialize_traj: True, if an initial trajectory should be generated.
                              Should only be set to False if a checkpoint is
                              loaded before starting any training.
@@ -151,19 +151,18 @@ class Trainer(difftre.PropagationBase):
             # use same amount of snapshots as generated in trajectory by default
             reference_batch_size = jnp.size(timings.t_production_start)
 
-        # TODO get key as input
-        key, weights_fn, propagate = self.init_statepoint(reference_state,
-                                                          energy_fn_template,
-                                                          simulator_template,
-                                                          neighbor_fn,
-                                                          timings,
-                                                          kbT,
-                                                          initialize_traj)
+        key, weights_fn, propagate = self._init_statepoint(reference_state,
+                                                           energy_fn_template,
+                                                           simulator_template,
+                                                           neighbor_fn,
+                                                           timings,
+                                                           kbT,
+                                                           initialize_traj)
 
-        reference_dataloader = self.__set_dataset(key,
-                                                  reference_data,
-                                                  reference_batch_size,
-                                                  batch_cache)
+        reference_dataloader = self._set_dataset(key,
+                                                 reference_data,
+                                                 reference_batch_size,
+                                                 batch_cache)
 
         grad_fn = init_rel_entropy_gradient(energy_fn_template, neighbor_fn,
                                             reference_state, weights_fn, kbT)
@@ -180,7 +179,7 @@ class Trainer(difftre.PropagationBase):
 
         self.grad_fns[key] = propagation_and_grad
 
-    def update(self, batch):
+    def _update(self, batch):
         """Updates the potential using the gradient from relative entropy."""
         grads = []
         for sim_key in batch:
@@ -195,8 +194,14 @@ class Trainer(difftre.PropagationBase):
         batch_grad = tree_mean(grads)
         self.step_optimizer(batch_grad)
 
-    def evaluate_convergence(self, duration):
-        print(f'Epoch {self.epoch}: Elapsed time = '
-              f'{duration} min')
+    def _evaluate_convergence(self, duration, thresh):
+        print(f'Epoch {self.epoch}: Elapsed time = {duration} min')
         converged = False  # TODO implement convergence test
+        if thresh is not None:
+            raise NotImplementedError('Currently there is no convergence '
+                                      'criterion implemented for relative '
+                                      'entropy minimization. A possible '
+                                      'implementation might be based on the '
+                                      'variation of params or reweigting '
+                                      'effective sample size.')
         return converged
