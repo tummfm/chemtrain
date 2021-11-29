@@ -7,9 +7,10 @@ from jax import value_and_grad, checkpoint, jit, lax, random, \
 from jax_md import util as jax_md_util
 
 from chemtrain import util, traj_util
+from chemtrain.jax_md_mod import custom_quantity
 
 
-def independent_mse_loss_fn_init(quantities):
+def _independent_mse_loss_fn_init(quantities):
     """Initializes the default loss function, where MSE errors of
     destinct quantities are added.
 
@@ -114,12 +115,16 @@ def reweight_trajectory(traj, targets, npt_ensemble=False):
     # values. Hence, their contribution to reweighting cancels. This should
     # even be at no additional cost under jit as XLA should easily detect the
     # zero contribution. Same applies to combinations in the NPT ensemble.
-    target_kbt = targets.get('kbT', traj.kbT)
+    target_kbt = targets.get('kbT', traj.thermostat_kbT)
     target_beta = 1. / target_kbt
-    reference_betas = 1. / traj.kbT
+    reference_betas = 1. / traj.thermostat_kbT
 
     # temperature reweighting
-    exponents = -(target_beta - reference_betas) * traj.energies
+    if 'energy' not in traj.aux:
+        raise ValueError('For reweighting, energies need to be provided '
+                         'alongside the trajectory. Add energy to auxilary '
+                         'outputs in trajectory generator.')
+    exponents = -(target_beta - reference_betas) * traj.aux['energy']
 
     if npt_ensemble:  # correct for P * V
         assert 'kbT' in targets or 'pressure' in targets, ('At least one target'
@@ -150,33 +155,44 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
     The propagation function also ensures that generated trajectories
     did not encounter any neighbor list overflow.
     """
+    traj_energy_fn = custom_quantity.energy_wrapper(energy_fn_template)
+    # TODO refactor 'compute_fn' and write function that checkpoints compute_fn
+    reweighting_quantities = {'energy': {'compute_fn': traj_energy_fn}}
+
     if npt_ensemble:
-        pass
-        # TODO modify trajectory generator to include boxes and pressure
+        pressure_fn = 0  # TODO initialize and modify to
+        reweighting_quantities['pressure'] = {'compute_fn': pressure_fn}
+
     trajectory_generator = traj_util.trajectory_generator_init(
         simulator_template, energy_fn_template, neighbor_fn, timings,
-        with_energy=True)
+        reweighting_quantities)
 
     beta = 1. / ref_kbT
+    # checkpoint energy and pressure functions as saving whole difftre
+    # backward pass is too memory consuming
+    for quantity_key in reweighting_quantities:
+        reweighting_quantities[quantity_key]['compute_fn'] = checkpoint(
+            reweighting_quantities[quantity_key]['compute_fn'])
 
     def compute_weights(params, traj_state):
         """Computes weights for the reweighting approach."""
-        _, nbrs = traj_state.sim_state
-        # checkpointing: whole backward pass too memory consuming
-        energy_fn = checkpoint(energy_fn_template(params))
-        energies_new = traj_util.energy_trajectory(traj_state.trajectory, nbrs,
-                                                   neighbor_fn, energy_fn)
+
+        # reweighting properties (U and pressure) under perturbed potential
+        reweight_properties = traj_util.quantity_traj(traj_state,
+                                                      reweighting_quantities,
+                                                      neighbor_fn,
+                                                      params)
 
         # Note: Difference in pot. Energy is difference in total energy
         # as kinetic energy is the same and cancels
-        exponent = -beta * (energies_new - traj_state.energies)
+        exponent = -beta * (reweight_properties['energy']
+                            - traj_state.aux['energy'])
 
         if npt_ensemble:  # we need to correct for the change in pressure
             # TODO test this
             volumes = traj_util.volumes(traj_state)
-            new_press = traj_util.press_trajectory(params, traj_state)
-            exponent -= beta * volumes * (new_press - traj_state.pressures)
-
+            exponent -= beta * volumes * (reweight_properties['pressure']
+                                          - traj_state.aux['pressure'])
         return _build_weights(exponent)
 
     def trajectory_identity_mapping(inputs):
@@ -202,7 +218,7 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
         generation.
         """
         weights, n_eff = compute_weights(params, traj_state)
-        n_snapshots = traj_state.energies.size
+        n_snapshots = traj_state.aux['energy'].size
         recompute = n_eff < reweight_ratio * n_snapshots
         propagated_state = lax.cond(recompute,
                                     recompute_trajectory,
@@ -487,7 +503,9 @@ class Trainer(PropagationBase):
 
         # build loss function for current state point
         if loss_fn is None:
-            loss_fn = independent_mse_loss_fn_init(quantities)
+            # TODO refactor this: Separate 'compute_fn' from targets and add
+            #  checkpointing here
+            loss_fn = _independent_mse_loss_fn_init(quantities)
         else:
             print('Using custom loss function. '
                   'Ignoring \'gamma\' and \'target\' in  \"quantities\".')

@@ -8,6 +8,16 @@ from jax.scipy.stats.norm import cdf as normal_cdf
 Array = util.Array
 
 
+def energy_wrapper(energy_fn_template):
+    """Wrapper around energy_fn to allow energy computation via
+    traj_util.quantity_traj.
+    """
+    def energy(state, neighbor, energy_params, **kwargs):
+        energy_fn = energy_fn_template(energy_params)
+        return energy_fn(state.position, neighbor=neighbor, **kwargs)
+    return energy
+
+
 @dataclasses.dataclass
 class RDFParams:
     """

@@ -2,10 +2,10 @@
 single snapshots.
 """
 from functools import partial
-from typing import Any
+from typing import Any, Dict
 from chex import dataclass
 from jax import jit, lax, vmap, numpy as jnp
-from jax_md import util, quantity
+from jax_md import util, quantity, simulate
 
 Array = util.Array
 
@@ -18,12 +18,14 @@ class TimingClass:
     t_equilib_start: Starting time of all printouts that will be dumped
                      for equilibration
     t_production_start: Starting time of all runs that result in a printout
+    t_production_end: Generation time of all printouts
     timesteps_per_printout: Number of simulation timesteps to run forward
                             from each starting time
     time_step: Simulation time step
     """
     t_equilib_start: Array
     t_production_start: Array
+    t_production_end: Array
     timesteps_per_printout: int
     time_step: float
 
@@ -35,13 +37,18 @@ class TrajectoryState:
     Attributes:
     sim_state: Last simulation state, a tuple of last state and nbrs
     trajectory: Generated trajectory
-    energies: Potential energy value for each snapshot in trajectory
     overflow: True if neighbor list overflowed during trajectory generation
+    thermostat_kbT: Target thermostat kbT at time of respective snapshots
+    barostat_press: Target barostat pressure at time of respective snapshots
+    aux: Dict of auxilary per-snapshot quantities as defined by quantities
+         in trajectory generator.
     """
     sim_state: Any
     trajectory: Any
-    energies: Array = None
     overflow: Array = False
+    thermostat_kbT: Array = None
+    barostat_press: Array = None
+    aux: Dict = None
 
 
 def process_printouts(time_step, total_time, t_equilib, print_every):
@@ -67,15 +74,17 @@ def process_printouts(time_step, total_time, t_equilib, print_every):
     n_dumped = int(t_equilib / print_every)
     equilibration_t_start = jnp.arange(n_dumped) * print_every
     production_t_start = jnp.arange(n_production) * print_every + t_equilib
+    production_t_end = production_t_start + print_every
     timings = TimingClass(t_equilib_start=equilibration_t_start,
                           t_production_start=production_t_start,
+                          t_production_end=production_t_end,
                           timesteps_per_printout=timesteps_per_printout,
                           time_step=time_step)
     return timings
 
 
-def run_to_next_printout_neighbors(apply_fn, neighbor_fn, timings,
-                                   kt_schedule=None):
+def _run_to_next_printout_neighbors(apply_fn, neighbor_fn, timings,
+                                    **schedule_kwargs):
     """Initializes a function that runs simulation to next printout
     state and returns that state.
 
@@ -87,19 +96,22 @@ def run_to_next_printout_neighbors(apply_fn, neighbor_fn, timings,
       neighbor_fn: Neighbor function
       timings: Instance of TimingClass containing information
                about which states to retain and simulation time
-      kt_schedule: A function mapping simulation time within the
-             trajectory to target kbT as enforced by thermostat
+      schedule_kwargs: Kwargs to supply 'kT' and/or 'pressure' time-dependent
+                       functions to allow for non-equilibrium MD
 
     Returns:
       A function that takes the current simulation state, runs the
       simulation forward to the next printout state and returns it.
     """
     def do_step(cur_state, t):
+        apply_kwargs = {}
+        if 'kt_schedule' in schedule_kwargs:
+            apply_kwargs['kT'] = schedule_kwargs['kT'](t)
+        if 'press_schedule' in schedule_kwargs:
+            apply_kwargs['pressure'] = schedule_kwargs['pressure'](t)
+
         state, nbrs = cur_state
-        if kt_schedule is None:
-            new_state = apply_fn(state, neighbor=nbrs)
-        else:
-            new_state = apply_fn(state, neighbor=nbrs, kT=kt_schedule(t))
+        new_state = apply_fn(state, neighbor=nbrs, **apply_kwargs)
         nbrs = neighbor_fn(new_state.position, nbrs)
         new_sim_state = (new_state, nbrs)
         return new_sim_state, t
@@ -116,8 +128,25 @@ def run_to_next_printout_neighbors(apply_fn, neighbor_fn, timings,
     return run_small_simulation
 
 
+def _canonicalize_dynamic_state_kwargs(state_kwargs, t_snapshots, *keys):
+    """Converts constant state_kwargs, such as 'kT' and 'pressure' to constant
+    lambda functions. Additionally return the values of state_kwargs at
+    production printout times.
+    """
+    state_point_vals = []
+    for key in keys:
+        if key in state_kwargs:
+            if jnp.isscalar(state_kwargs[key]):
+                state_kwargs[key] = lambda t: state_kwargs[key]
+            state_points = vmap(state_kwargs[key])(t_snapshots)
+        else:
+            state_points = None
+        state_point_vals.append(state_points)
+    return state_kwargs, tuple(state_point_vals)
+
+
 def trajectory_generator_init(simulator_template, energy_fn_template,
-                              neighbor_fn, timings, with_energy=False):
+                              neighbor_fn, timings, quantities=None):
     """Initializes a trajectory_generator function that computes a new
     trajectory stating at the last state.
 
@@ -128,23 +157,41 @@ def trajectory_generator_init(simulator_template, energy_fn_template,
         neighbor_fn: neighbor_fn
         timings: Instance of TimingClass containing information
                  about which states to retain
-        with_energy: If True, trajectory also contains energy values
-                     for each printout state. Possibly induces as slight
-                     computational overhead.
+        quantities: Quantities dict to compute and store auxilary quantities
+                    alongside trajectory. This is particularly helpful for
+                    storing energy and pressure in a reweighting context.
 
     Returns:
         A function taking energy params and the current state (including
         neighbor list) that runs the simulation forward generating the
         next TrajectoryState.
     """
-    def generate_reference_trajectory(params, sim_state, kt_schedule=None):
+    if quantities is None:
+        quantities = {}
+
+    def generate_reference_trajectory(params, sim_state, **kwargs):
+        """
+        Returns a new TrajectoryState with auxilary variables.
+
+        Args:
+            params: Energy function parameters
+            sim_state: Initial simulation state (state)
+            **kwargs: Kwargs to supply 'kT' and/or 'pressure' to change these
+                      thermostat/barostat values on the fly. Can be constant
+                      or function of t.
+
+        Returns:
+            TrajectoryState object containing the newly generated trajectory
+        """
+
+        kwargs, (kbt, barostat_press) = _canonicalize_dynamic_state_kwargs(
+            kwargs, timings.t_production_end, 'kT', 'pressure')
         energy_fn = energy_fn_template(params)
         _, apply_fn = simulator_template(energy_fn)
-        run_to_printout = run_to_next_printout_neighbors(apply_fn,
-                                                         neighbor_fn,
-                                                         timings,
-                                                         kt_schedule)
-
+        run_to_printout = _run_to_next_printout_neighbors(apply_fn,
+                                                          neighbor_fn,
+                                                          timings,
+                                                          **kwargs)
         sim_state, _ = lax.scan(run_to_printout,  # equilibrate
                                 sim_state,
                                 xs=timings.t_equilib_start)
@@ -152,59 +199,22 @@ def trajectory_generator_init(simulator_template, energy_fn_template,
                                        sim_state,
                                        xs=timings.t_production_start)
 
-        if with_energy:
-            ref_nbrs = new_sim_state[1]
-            energies = energy_trajectory(traj, ref_nbrs, neighbor_fn, energy_fn)
-        else:
-            energies = None
+        state = TrajectoryState(sim_state=new_sim_state,
+                                trajectory=traj,
+                                overflow=new_sim_state[1].did_buffer_overflow,
+                                thermostat_kbT=kbt,
+                                barostat_press=barostat_press)
 
-        return TrajectoryState(sim_state=new_sim_state,
-                               trajectory=traj,
-                               energies=energies,
-                               overflow=new_sim_state[1].did_buffer_overflow)
+        aux_trajectory = quantity_traj(state, quantities, neighbor_fn, params)
+        return state.replace(aux=aux_trajectory)
 
     return generate_reference_trajectory
-
-# TODO vectorization of energy and quantity_trajectory might provide some
-#  computational gains, at the expense of providing an additional parameter
-#  for batch-size, which can lead to OOM errors if not chosen properly.
 
 
 def volumes(traj_state):
     dim = traj_state.sim_state[0].position.shape[-1]
-    return vmap(quantity.volume, (None, 0))(dim, traj_state.boxes)
-
-
-def press_trajectory(params, traj_state):
-    #  TODO --> unify with computation of energy
-    pressure = quantity_traj(traj_state)
-    return pressure
-
-
-def energy_trajectory(trajectory, init_nbrs, neighbor_fn, energy_fn):
-    """Computes potential energy values for all states in a trajectory.
-
-    Args:
-        trajectory: Trajectory of states from simulation
-        init_nbrs: A reference neighbor list to recompute neighbors
-                   for each snapshot allowing jit
-        neighbor_fn: Neighbor function
-        energy_fn: Energy function
-
-    Returns:
-        An array of potential energy values containing the energy of
-        each state in a trajectory.
-    """
-    def energy_snapshot(dummy_carry, state):
-        R = state.position
-        nbrs = neighbor_fn(R, init_nbrs)
-        energy = energy_fn(R, neighbor=nbrs)
-        return dummy_carry, energy
-
-    _, U_traj = lax.scan(energy_snapshot,
-                         jnp.array(0., dtype=jnp.float32),
-                         trajectory)
-    return U_traj
+    boxes = vmap(simulate.npt_box)(traj_state.trajectory)
+    return vmap(quantity.volume, (None, 0))(dim, boxes)
 
 
 def quantity_traj(traj_state, quantities, neighbor_fn, energy_params=None):
@@ -233,8 +243,7 @@ def quantity_traj(traj_state, quantities, neighbor_fn, energy_params=None):
 
     @jit
     def quantity_trajectory(dummy_carry, state):
-        R = state.position
-        nbrs = neighbor_fn(R, fixed_reference_nbrs)
+        nbrs = neighbor_fn(state.position, fixed_reference_nbrs)
         computed_quantities = {quantity_fn_key: quantities[quantity_fn_key]
                                ['compute_fn'](state,
                                               neighbor=nbrs,
@@ -242,5 +251,8 @@ def quantity_traj(traj_state, quantities, neighbor_fn, energy_params=None):
                                for quantity_fn_key in quantities}
         return dummy_carry, computed_quantities
 
+    # TODO vectorization of might provide some computational gains at the
+    #  expense of providing an additional parameter for batch-size, which
+    #  can lead to OOM errors if not chosen properly.
     _, quantity_trajs = lax.scan(quantity_trajectory, 0., traj_state.trajectory)
     return quantity_trajs
