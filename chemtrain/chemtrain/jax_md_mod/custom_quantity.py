@@ -453,7 +453,7 @@ def kinetic_energy_tensor(mass, velocity):
     return - util.high_precision_sum(mass * velocity_tensors, axis=0)
 
 
-def init_virial_stress_tensor(energy_fn_template, box_tensor=None, include_kinetic=True, fixed_box=True):
+def init_virial_stress_tensor(energy_fn_template, box_tensor=None, include_kinetic=True):
     """
     Initializes a function that computes the virial stress tensor for a single state.
 
@@ -467,7 +467,9 @@ def init_virial_stress_tensor(energy_fn_template, box_tensor=None, include_kinet
 
     Args:
         energy_fn_template: A function that takes energy parameters as input and returns an energy function
-        box_tensor: The transformation T of general periodic boundary conditions
+        box_tensor: The transformation T of general periodic boundary
+                    conditions. If None, box_tensor needs to be provided as
+                    'box' during function call, e.g. for NPT ensemble.
         include_kinetic: Whether kinetic part of stress tensor should be included.
         fixed_box: If True: always uses same box tensor. If False: box_tensor can be provided on-the-fly
 
@@ -476,11 +478,8 @@ def init_virial_stress_tensor(energy_fn_template, box_tensor=None, include_kinet
         returns the instantaneous virial stress tensor
     """
 
-    box_tensor = util.f32(box_tensor)
-    assert not (box_tensor is None and fixed_box), "If a fixed box_tensor should be used, it has to be given as input"
-
-    def virial_potential_part(energy_fn, state, nbrs, box_tensor):
-        energy_fn_without_kwargs = lambda R, nbrs, box_tensor: energy_fn(R, neighbor=nbrs, box=box_tensor)  # for grad
+    def virial_potential_part(energy_fn, state, nbrs, box_tensor, **kwargs):
+        energy_fn_without_kwargs = lambda R, nbrs, box_tensor: energy_fn(R, neighbor=nbrs, box=box_tensor, **kwargs)  # for grad
         R = state.position  # in unit box if fractional coordinaes used
         negative_forces, box_gradient = grad(energy_fn_without_kwargs, argnums=[0, 2])(R, nbrs, box_tensor)
         R = space.transform(box_tensor, R)  # transform back to real positions
@@ -488,26 +487,27 @@ def init_virial_stress_tensor(energy_fn_template, box_tensor=None, include_kinet
         box_contribution = jnp.dot(box_gradient.T, box_tensor)
         return force_contribution + box_contribution
 
-    def virial_stress_tensor_neighborlist(state, neighbor, energy_params, box_tensor, **unused_kwargs):
+    def virial_stress_tensor_neighborlist(state, neighbor, energy_params, box, **kwargs):
         # Note: this workaround with the energy_template was needed to keep the function jitable
         #       when changing energy_params on-the-fly
+        # TODO function to transform box to box-tensor
         energy_fn = energy_fn_template(energy_params)
-        virial_tensor = virial_potential_part(energy_fn, state, neighbor, box_tensor)
+        virial_tensor = virial_potential_part(energy_fn, state, neighbor, box, **kwargs)
         spatial_dim = state.position.shape[-1]
-        volume = quantity.volume(spatial_dim, box_tensor)
+        volume = quantity.volume(spatial_dim, box)
         if include_kinetic:
             kinetic_tensor = kinetic_energy_tensor(state.mass, state.velocity)
             return (kinetic_tensor + virial_tensor) / volume
         else:
             return virial_tensor / volume
 
-    if fixed_box:
-        return partial(virial_stress_tensor_neighborlist, box_tensor=box_tensor)
-    else:
+    if box_tensor is None:
         return virial_stress_tensor_neighborlist
+    else:
+        return partial(virial_stress_tensor_neighborlist, box=box_tensor)
 
 
-def init_pressure(energy_fn_template, box_tensor, include_kinetic=True):
+def init_pressure(energy_fn_template, box_tensor=None, include_kinetic=True):
     """
     Initializes a function that computes the pressure for a single state.
 
@@ -516,18 +516,24 @@ def init_pressure(energy_fn_template, box_tensor, include_kinetic=True):
 
     Args:
         energy_fn_template: A function that takes energy parameters as input and returns an energy function
-        box_tensor: The transformation T of general periodic boundary conditions
+        box_tensor: The transformation T of general periodic boundary
+                    conditions. If None, box_tensor needs to be provided as
+                    'box' during function call, e.g. for NPT ensemble.
         include_kinetic: Whether kinetic part of stress tensor should be included.
 
     Returns:
         A function that takes a simulation state with neighborlist and energy_params and
         returns the instantaneous pressure
     """
-    stress_tensor_fn = init_virial_stress_tensor(energy_fn_template, box_tensor, fixed_box=True, include_kinetic=include_kinetic)
+    stress_tensor_fn = init_virial_stress_tensor(energy_fn_template,
+                                                 box_tensor,
+                                                 include_kinetic=include_kinetic)
 
-    def pressure_neighborlist(state, neighbor, energy_params, **unused_kwargs):
-        stress_tensor = stress_tensor_fn(state, neighbor, energy_params, **unused_kwargs)
-        return - jnp.trace(stress_tensor) / 3.  # pressure is negative hydrostatic stress
+    def pressure_neighborlist(state, neighbor, energy_params, **kwargs):
+        stress_tensor = stress_tensor_fn(state, neighbor, energy_params,
+                                         **kwargs)
+        # pressure is negative hydrostatic stress
+        return - jnp.trace(stress_tensor) / 3.
     return pressure_neighborlist
 
 

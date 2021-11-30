@@ -6,9 +6,11 @@ from typing import Any, Dict
 
 import chex
 from jax import jit, lax, vmap, numpy as jnp
-from jax_md import util, quantity, simulate
+from jax_md import quantity, simulate, util as jax_md_util
 
-Array = util.Array
+from chemtrain import util
+
+Array = jax_md_util.Array
 
 
 @partial(chex.dataclass, frozen=True)
@@ -235,14 +237,19 @@ def quantity_traj(traj_state, quantities, energy_params=None):
         input quantity function.
     """
 
-    _, fixed_reference_nbrs = traj_state.sim_state
+    last_state, fixed_reference_nbrs = traj_state.sim_state
+    npt_ensemble = util.is_npt_ensemble(last_state)
 
     @jit
     def quantity_trajectory(_, state):
         nbrs = fixed_reference_nbrs.update(state.position)
+        kwargs = {'neighbor': nbrs, 'energy_params': energy_params}
+        if npt_ensemble:
+            box = simulate.npt_box(state)
+            kwargs['box'] = box
+        # TODO input kbT as well for temperature-dependent potential
         computed_quantities = {
-            quantity_fn_key: quantities[quantity_fn_key](
-                state, neighbor=nbrs, energy_params=energy_params)
+            quantity_fn_key: quantities[quantity_fn_key](state, **kwargs)
             for quantity_fn_key in quantities
         }
         return _, computed_quantities

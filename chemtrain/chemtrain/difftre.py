@@ -169,7 +169,9 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
     reweighting_quantities = {'energy': traj_energy_fn}
 
     if npt_ensemble:
-        pressure_fn = 0  # TODO initialize and modify to
+        # kinetic energy contribution to pressure cancels in reweighting
+        pressure_fn = custom_quantity.init_pressure(energy_fn_template,
+                                                    include_kinetic=False)
         reweighting_quantities['pressure'] = pressure_fn
 
     trajectory_generator = traj_util.trajectory_generator_init(
@@ -286,13 +288,14 @@ class PropagationBase(util.MLETrainerTemplate):
 
     def _init_statepoint(self, reference_state, energy_fn_template,
                          simulator_template, neighbor_fn, timings, kbT,
-                         npt_ensemble=False, initialize_traj=True):
+                         initialize_traj=True):
         """Initializes the simulation and reweighting functions as well
         as the initial trajectory for a statepoint."""
 
         # is there a better differentiator? kbT could be same for 2 simulations
         key = self.n_statepoints
         self.n_statepoints += 1
+        npt_ensemble = util.is_npt_ensemble(reference_state)
 
         initial_traj_generator, compute_weights, propagate = \
             init_pot_reweight_propagation_fns(energy_fn_template,
@@ -303,9 +306,6 @@ class PropagationBase(util.MLETrainerTemplate):
                                               self.reweight_ratio,
                                               npt_ensemble)
         if initialize_traj:
-            assert reference_state is not None, "If a new trajectory needs " \
-                                                "to be generated, an initial " \
-                                                "state needs to be provided."
             t_start = time.time()
             init_traj = initial_traj_generator(self.params, reference_state)
             runtime = (time.time() - t_start) / 60.
@@ -439,8 +439,8 @@ class Trainer(PropagationBase):
 
     def add_statepoint(self, energy_fn_template, simulator_template,
                        neighbor_fn, timings, kbT, quantities,
-                       reference_state=None, targets=None, loss_fn=None,
-                       npt_ensemble=False, initialize_traj=True):
+                       reference_state, targets=None, loss_fn=None,
+                       initialize_traj=True):
         """
         Adds a state point to the pool of simulations with respective targets.
 
@@ -505,7 +505,6 @@ class Trainer(PropagationBase):
                                                            neighbor_fn,
                                                            timings,
                                                            kbT,
-                                                           npt_ensemble,
                                                            initialize_traj)
 
         # build loss function for current state point

@@ -39,6 +39,11 @@ def step_optimizer(params, opt_state, grad, optimizer):
     return new_params, new_opt_state
 
 
+def is_npt_ensemble(state):
+    """Whether a state belongs to the NPT ensemble."""
+    return hasattr(state, 'box_position')
+
+
 def tree_get_single(tree):
     """Returns the first tree of a tree-replica, e.g. from pmap and and moves
     it to the default device.

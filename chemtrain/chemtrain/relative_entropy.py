@@ -114,8 +114,8 @@ class Trainer(difftre.PropagationBase):
 
     def add_statepoint(self, reference_data, energy_fn_template,
                        simulator_template, neighbor_fn, timings, kbT,
-                       reference_state=None, reference_batch_size=None,
-                       batch_cache=1, npt_ensemble=False, initialize_traj=True):
+                       reference_state, reference_batch_size=None,
+                       batch_cache=1, initialize_traj=True):
         """
         Adds a state point to the pool of simulations.
 
@@ -156,7 +156,6 @@ class Trainer(difftre.PropagationBase):
                                                            neighbor_fn,
                                                            timings,
                                                            kbT,
-                                                           npt_ensemble,
                                                            initialize_traj)
 
         reference_dataloader = self._set_dataset(key,
