@@ -242,7 +242,10 @@ class Trainer(MLETrainerTemplate):
         self.train_losses.append(train_loss[0])  # only from single device
         self.val_losses.append(val_loss[0])
 
-    def _evaluate_convergence(self, duration):
+    def _evaluate_convergence(self, duration, thresh):
+        """Prints progress, saves best obtained params and signals converged if
+        validation loss improvement over the last epoch is less than the thesh.
+        """
         mean_train_loss = sum(self.train_losses[-self.batches_per_epoch:]) \
                           / self.batches_per_epoch
         mean_val_loss = sum(self.val_losses[-self.batches_per_epoch:]) \
@@ -250,7 +253,16 @@ class Trainer(MLETrainerTemplate):
         print(f'Epoch {self.epoch}: Average train loss: {mean_train_loss} '
               f'Average val loss: {mean_val_loss} '
               f'Elapsed time = {duration} min')
-        converged = False  # TODO implement convergence test
+
+        improvement = self.best_val_loss - mean_val_loss
+        if improvement > 0.:
+            self.best_val_loss = mean_val_loss
+            self.best_params = copy.copy(self.params)
+
+        converged = False
+        if thresh is not None:
+            if improvement < thresh:
+                converged = True
         return converged
 
     def train(self, epochs, checkpoint_freq=None, thresh=None):
@@ -261,13 +273,11 @@ class Trainer(MLETrainerTemplate):
 
         for epoch in range(start_epoch, end_epoch):
             start_time = time.time()
-            # TODO replicate params here: we only checkpoint non-replicated
-            #  params, but keep communication overhead within an epoch low.
             for i in range(self.batches_per_epoch):
                 self.update()
             duration = (time.time() - start_time) / 60.
 
-            converged = self._evaluate_convergence(duration)
+            converged = self._evaluate_convergence(duration, thresh)
             self.update_times.append(duration)
             self.epoch += 1
             self.dump_checkpoint_occasionally(frequency=checkpoint_freq)
