@@ -11,7 +11,7 @@ from chemtrain import util, traj_util
 from chemtrain.jax_md_mod import custom_quantity
 
 
-def _independent_mse_loss_fn_init(quantities):
+def _independent_mse_loss_fn_init(targets):
     """Initializes the default loss function, where MSE errors of
     destinct quantities are added.
 
@@ -30,8 +30,8 @@ def _independent_mse_loss_fn_init(quantities):
 
 
     Args:
-        quantities: The quantity dict with 'compute_fn', 'gamma' and
-                    'target' for each observable
+        targets: The target dict with 'gamma' and 'target' for each observable
+        defined in 'quantities'
 
     Returns:
         The loss_fn taking trajectories of fluctuating properties,
@@ -41,15 +41,24 @@ def _independent_mse_loss_fn_init(quantities):
     def loss_fn(quantity_trajs, weights):
         loss = 0.
         predictions = {}
-        for quantity_key in quantities:
+        for quantity_key in targets:
+            if quantity_key not in quantity_trajs:
+                raise ValueError('Any target property defined in "tagets" needs'
+                                 ' to be provided in "quantities".')
             quantity_snapshots = quantity_trajs[quantity_key]
             weighted_snapshots = (quantity_snapshots.T * weights).T
             average = jax_md_util.high_precision_sum(weighted_snapshots, axis=0)
             predictions[quantity_key] = average
-            loss += quantities[quantity_key]['gamma'] * util.mse_loss(
-                average, quantities[quantity_key]['target'])
+            loss += targets[quantity_key]['gamma'] * util.mse_loss(
+                average, targets[quantity_key]['target'])
         return loss, predictions
     return loss_fn
+
+
+def _checkpoint_quantities(quantities):
+    """Applies checkpoint to all compute_fns to save memory on backward pass."""
+    for quantity_key in quantities:
+        quantities[quantity_key] = checkpoint(quantities[quantity_key])
 
 
 def _estimate_effective_samples(weights):
@@ -157,22 +166,17 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
     did not encounter any neighbor list overflow.
     """
     traj_energy_fn = custom_quantity.energy_wrapper(energy_fn_template)
-    # TODO refactor 'compute_fn' and write function that checkpoints compute_fn
-    reweighting_quantities = {'energy': {'compute_fn': traj_energy_fn}}
+    reweighting_quantities = {'energy': traj_energy_fn}
 
     if npt_ensemble:
         pressure_fn = 0  # TODO initialize and modify to
-        reweighting_quantities['pressure'] = {'compute_fn': pressure_fn}
+        reweighting_quantities['pressure'] = pressure_fn
 
     trajectory_generator = traj_util.trajectory_generator_init(
         simulator_template, energy_fn_template, timings, reweighting_quantities)
 
     beta = 1. / ref_kbT
-    # checkpoint energy and pressure functions as saving whole difftre
-    # backward pass is too memory consuming
-    for quantity_key in reweighting_quantities:
-        reweighting_quantities[quantity_key]['compute_fn'] = checkpoint(
-            reweighting_quantities[quantity_key]['compute_fn'])
+    _checkpoint_quantities(reweighting_quantities)
 
     def compute_weights(params, traj_state):
         """Computes weights for the reweighting approach."""
@@ -435,7 +439,7 @@ class Trainer(PropagationBase):
 
     def add_statepoint(self, energy_fn_template, simulator_template,
                        neighbor_fn, timings, kbT, quantities,
-                       reference_state=None, loss_fn=None,
+                       reference_state=None, targets=None, loss_fn=None,
                        npt_ensemble=False, initialize_traj=True):
         """
         Adds a state point to the pool of simulations with respective targets.
@@ -446,16 +450,15 @@ class Trainer(PropagationBase):
         The quantity dict defines the way target observations
         contribute to the loss function. Each target observable needs to be
         saved in the quantity dict via a unique key. Model predictions will
-        be output under the same key. Each unique observable needs to provide
-        another dict containing a function computing the observable under
-        'compute_fn', a multiplier controlling the weight of the observable
+        be output under the same key. In case the default loss function should
+        be employed, for each observable the 'target' dict containing
+        a multiplier controlling the weight of the observable
         in the loss function under 'gamma' as well as the prediction target
-        under 'target'. The later 2 entries are not requires in case of a
-        custom loss_fn.
+        under 'target' needs to be provided.
 
         In many applications, the default loss function will be sufficient.
         If a target observable cannot be described directly as an average
-        over instantaneous quantities (e.g. stiffness in the diamond example),
+        over instantaneous quantities (e.g. stiffness),
         a custom loss_fn needs to be defined. The signature of the loss_fn
         needs to be the following: It takes the trajectory of computed
         instantaneous quantities saved in a dict under its respective key of
@@ -476,9 +479,14 @@ class Trainer(PropagationBase):
             timings: Instance of TimingClass containing information
                      about the trajectory length and which states to retain
             kbT: Temperature in kbT
-            quantities: The quantity dict with 'compute_fn', 'gamma' and
-                        'target' for each observable
+            quantities: Dict containing for each observables specified by the
+                        key a corresponding function to compute it for each
+                        snapshot using traj_util.quantity_traj.
             reference_state: Tuple of initial simulation state and neighbor list
+            targets: Dict containing the same keys as quantities and containing
+                     another dict providing 'gamma' and 'target' for each
+                     observable. Targets are only necessary when using the
+                     'independent_loss_fn'.
             loss_fn: Custom loss function taking the trajectory of quantities
                      and weights and returning the loss and predictions;
                      Default None initializes an independent MSE loss, which
@@ -502,12 +510,12 @@ class Trainer(PropagationBase):
 
         # build loss function for current state point
         if loss_fn is None:
-            # TODO refactor this: Separate 'compute_fn' from targets and add
-            #  checkpointing here
-            loss_fn = _independent_mse_loss_fn_init(quantities)
+            loss_fn = _independent_mse_loss_fn_init(targets)
         else:
             print('Using custom loss function. '
                   'Ignoring \'gamma\' and \'target\' in  \"quantities\".')
+
+        _checkpoint_quantities(quantities)
 
         def difftre_loss(params, traj_state):
             """Computes the loss using the DiffTRe formalism and

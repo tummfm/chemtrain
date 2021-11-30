@@ -224,9 +224,9 @@ def quantity_traj(traj_state, quantities, energy_params=None):
     a dict under the same key as the input quantity function.
 
     Args:
-        traj_state: DifftreState as output from trajectory generator
+        traj_state: TrajectoryState as output from trajectory generator
         quantities: The quantity dict containing for each target quantity
-                    a dict containing the quantity function under 'compute_fn'
+                    the snapshot compute function
         energy_params: Energy params for energy_fn_template to initialize
                        the current energy_fn
 
@@ -238,14 +238,14 @@ def quantity_traj(traj_state, quantities, energy_params=None):
     _, fixed_reference_nbrs = traj_state.sim_state
 
     @jit
-    def quantity_trajectory(dummy_carry, state):
+    def quantity_trajectory(_, state):
         nbrs = fixed_reference_nbrs.update(state.position)
-        computed_quantities = {quantity_fn_key: quantities[quantity_fn_key]
-                               ['compute_fn'](state,
-                                              neighbor=nbrs,
-                                              energy_params=energy_params)
-                               for quantity_fn_key in quantities}
-        return dummy_carry, computed_quantities
+        computed_quantities = {
+            quantity_fn_key: quantities[quantity_fn_key](
+                state, neighbor=nbrs, energy_params=energy_params)
+            for quantity_fn_key in quantities
+        }
+        return _, computed_quantities
 
     # TODO vectorization of might provide some computational gains at the
     #  expense of providing an additional parameter for batch-size, which
