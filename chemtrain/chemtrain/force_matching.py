@@ -99,10 +99,6 @@ class Trainer(MLETrainerTemplate):
     Caution: Currently neighborlist overflow is not checked.
     Make sure to build nbrs_init large enough.
     """
-    # TODO save best params during training based on val loss
-
-    # TODO end training when val loss does not decrease for certain
-    #  number of epochs / update steps; maybe exponentially moving average?
     def __init__(self, init_params, energy_fn_template, nbrs_init,
                  optimizer, position_data, energy_data=None, force_data=None,
                  virial_data=None, box_tensor=None, gamma_f=1., gamma_p=1.e-6,
@@ -118,6 +114,7 @@ class Trainer(MLETrainerTemplate):
                                   batch_per_device, batch_cache)
         self.train_losses, self.val_losses = [], []
         self.best_params = None
+        self.best_val_loss = 1.e16
 
         opt_state = optimizer.init(init_params)  # initialize optimizer state
 
@@ -211,13 +208,13 @@ class Trainer(MLETrainerTemplate):
 
     @property
     def params(self):
-        single_params = tree_get_single(self.params)
+        single_params = util.tree_get_single(self.state.params)
         return single_params
 
     @params.setter
     def params(self, loaded_params):
-        replicated_params = tree_replicate(loaded_params, self.n_devices)
-        self.params = replicated_params
+        replicated_params = util.tree_replicate(loaded_params, self.n_devices)
+        self.state = self.state.replace(params=replicated_params)
 
     def update(self):
         """Function to iterate, optimizing parameters and saving

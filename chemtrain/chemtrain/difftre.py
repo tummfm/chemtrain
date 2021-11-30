@@ -1,4 +1,5 @@
 from abc import abstractmethod
+import copy
 import time
 import warnings
 
@@ -324,7 +325,7 @@ class PropagationBase(util.MLETrainerTemplate):
 
     @params.setter
     def params(self, loaded_params):
-        self.state.params = loaded_params
+        self.state = self.state.replace(params=loaded_params)
 
     def _simulation_batches(self):
         """Helper function to re-shuffle simulations and split into batches."""
@@ -579,7 +580,7 @@ class Trainer(PropagationBase):
 
         # save parameter set that resulted in smallest loss up to this point
         if jnp.argmin(jnp.array(self.epoch_losses)) == len(self.epoch_losses)-1:
-            self.best_params = self.params
+            self.best_params = copy.copy(self.params)
 
         converged = False
         if thresh is not None:
