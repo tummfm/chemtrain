@@ -27,15 +27,15 @@ position: atomic positions
 """
 
 
-def init_single_prediction(nbrs_init, energy_fn_template, neighbor_fn,
-                           virial_fn=None):
+def init_single_prediction(nbrs_init, energy_fn_template, virial_fn=None):
     """Initialize predictions for a single snapshot. Can be used to
     parametrize potentials from per-snapshot energy, force and/or virial.
     """
     def single_prediction(params, observation):
         energy_fn = energy_fn_template(params)
         R = observation['R']
-        nbrs = neighbor_fn(R, nbrs_init)
+        # TODO check for neighborlist overflow and hand through
+        nbrs = nbrs_init.update(R)
         energy, negative_forces = value_and_grad(energy_fn)(R, neighbor=nbrs)
         predictions = {'U': energy, 'F': -negative_forces}
         if virial_fn is not None:
@@ -44,7 +44,7 @@ def init_single_prediction(nbrs_init, energy_fn_template, neighbor_fn,
     return single_prediction
 
 
-def init_update_fns(energy_fn_template, neighbor_fn, nbrs_init, optimizer,
+def init_update_fns(energy_fn_template, nbrs_init, optimizer,
                     gamma_f=1., gamma_p=1.e-6, box_tensor=None,
                     include_virial=False):
     """Initializes update functions for energy and(or force matching.
@@ -57,7 +57,7 @@ def init_update_fns(energy_fn_template, neighbor_fn, nbrs_init, optimizer,
         virial_fn = None
 
     _single_prediction = init_single_prediction(nbrs_init, energy_fn_template,
-                                                neighbor_fn, virial_fn)
+                                                virial_fn)
 
     def loss_fn(params, batch):
         predictions = vmap(_single_prediction, in_axes=(None, 0))(params, batch)
@@ -91,11 +91,19 @@ def init_update_fns(energy_fn_template, neighbor_fn, nbrs_init, optimizer,
 
 
 class Trainer(MLETrainerTemplate):
+    """Force-matching trainer.
+
+    This implementation assumes a constant number of particles per box.
+    If this is not the case, please use the 'XY' Trainer based on padded sparse
+    neighborlists.
+    Caution: Currently neighborlist overflow is not checked.
+    Make sure to build nbrs_init large enough.
+    """
     # TODO save best params during training based on val loss
 
     # TODO end training when val loss does not decrease for certain
     #  number of epochs / update steps; maybe exponentially moving average?
-    def __init__(self, init_params, energy_fn_template, neighbor_fn, nbrs_init,
+    def __init__(self, init_params, energy_fn_template, nbrs_init,
                  optimizer, position_data, energy_data=None, force_data=None,
                  virial_data=None, box_tensor=None, gamma_f=1., gamma_p=1.e-6,
                  batch_per_device=1, batch_cache=10, train_ratio=0.875,
@@ -125,7 +133,6 @@ class Trainer(MLETrainerTemplate):
                          checkpoint_format, energy_fn_template)
 
         self.grad_fns = init_update_fns(energy_fn_template,
-                                        neighbor_fn,
                                         nbrs_init,
                                         optimizer,
                                         gamma_f=gamma_f,
@@ -235,7 +242,7 @@ class Trainer(MLETrainerTemplate):
         self.train_losses.append(train_loss[0])  # only from single device
         self.val_losses.append(val_loss[0])
 
-    def evaluate_convergence(self, duration):
+    def _evaluate_convergence(self, duration):
         mean_train_loss = sum(self.train_losses[-self.batches_per_epoch:]) \
                           / self.batches_per_epoch
         mean_val_loss = sum(self.val_losses[-self.batches_per_epoch:]) \
@@ -260,7 +267,7 @@ class Trainer(MLETrainerTemplate):
                 self.update()
             duration = (time.time() - start_time) / 60.
 
-            converged = self.evaluate_convergence(duration)
+            converged = self._evaluate_convergence(duration)
             self.update_times.append(duration)
             self.epoch += 1
             self.dump_checkpoint_occasionally(frequency=checkpoint_freq)

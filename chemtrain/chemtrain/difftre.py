@@ -164,8 +164,7 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
         reweighting_quantities['pressure'] = {'compute_fn': pressure_fn}
 
     trajectory_generator = traj_util.trajectory_generator_init(
-        simulator_template, energy_fn_template, neighbor_fn, timings,
-        reweighting_quantities)
+        simulator_template, energy_fn_template, timings, reweighting_quantities)
 
     beta = 1. / ref_kbT
     # checkpoint energy and pressure functions as saving whole difftre
@@ -180,7 +179,6 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
         # reweighting properties (U and pressure) under perturbed potential
         reweight_properties = traj_util.quantity_traj(traj_state,
                                                       reweighting_quantities,
-                                                      neighbor_fn,
                                                       params)
 
         # Note: Difference in pot. Energy is difference in total energy
@@ -245,7 +243,7 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
                                    'Consider increasing the neighbor list '
                                    'capacity multiplier.')
             last_sim_snapshot, _ = new_traj_state.sim_state
-            enlarged_nbrs = neighbor_fn(last_sim_snapshot.position)
+            enlarged_nbrs = neighbor_fn.allocate(last_sim_snapshot.position)
             reset_traj_state = old_traj_state.replace(
                 sim_state=(last_sim_snapshot, enlarged_nbrs))
             new_traj_state = recompute_trajectory((params, reset_traj_state))
@@ -517,7 +515,6 @@ class Trainer(PropagationBase):
             weights, _ = weights_fn(params, traj_state)
             quantity_trajs = traj_util.quantity_traj(traj_state,
                                                      quantities,
-                                                     neighbor_fn,
                                                      params)
             loss, predictions = loss_fn(quantity_trajs, weights)
             return loss, predictions

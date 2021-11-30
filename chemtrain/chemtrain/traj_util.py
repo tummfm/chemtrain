@@ -83,8 +83,7 @@ def process_printouts(time_step, total_time, t_equilib, print_every):
     return timings
 
 
-def _run_to_next_printout_neighbors(apply_fn, neighbor_fn, timings,
-                                    **schedule_kwargs):
+def _run_to_next_printout_neighbors(apply_fn, timings, **schedule_kwargs):
     """Initializes a function that runs simulation to next printout
     state and returns that state.
 
@@ -112,7 +111,7 @@ def _run_to_next_printout_neighbors(apply_fn, neighbor_fn, timings,
 
         state, nbrs = cur_state
         new_state = apply_fn(state, neighbor=nbrs, **apply_kwargs)
-        nbrs = neighbor_fn(new_state.position, nbrs)
+        nbrs = nbrs.update(new_state.position)
         new_sim_state = (new_state, nbrs)
         return new_sim_state, t
 
@@ -146,7 +145,7 @@ def _canonicalize_dynamic_state_kwargs(state_kwargs, t_snapshots, *keys):
 
 
 def trajectory_generator_init(simulator_template, energy_fn_template,
-                              neighbor_fn, timings, quantities=None):
+                              timings, quantities=None):
     """Initializes a trajectory_generator function that computes a new
     trajectory stating at the last state.
 
@@ -154,7 +153,6 @@ def trajectory_generator_init(simulator_template, energy_fn_template,
         simulator_template: Function returning new simulator given
                             current energy function
         energy_fn_template: Energy function template
-        neighbor_fn: neighbor_fn
         timings: Instance of TimingClass containing information
                  about which states to retain
         quantities: Quantities dict to compute and store auxilary quantities
@@ -188,9 +186,7 @@ def trajectory_generator_init(simulator_template, energy_fn_template,
             kwargs, timings.t_production_end, 'kT', 'pressure')
         energy_fn = energy_fn_template(params)
         _, apply_fn = simulator_template(energy_fn)
-        run_to_printout = _run_to_next_printout_neighbors(apply_fn,
-                                                          neighbor_fn,
-                                                          timings,
+        run_to_printout = _run_to_next_printout_neighbors(apply_fn, timings,
                                                           **kwargs)
         sim_state, _ = lax.scan(run_to_printout,  # equilibrate
                                 sim_state,
@@ -205,7 +201,7 @@ def trajectory_generator_init(simulator_template, energy_fn_template,
                                 thermostat_kbT=kbt,
                                 barostat_press=barostat_press)
 
-        aux_trajectory = quantity_traj(state, quantities, neighbor_fn, params)
+        aux_trajectory = quantity_traj(state, quantities, params)
         return state.replace(aux=aux_trajectory)
 
     return generate_reference_trajectory
@@ -217,7 +213,7 @@ def volumes(traj_state):
     return vmap(quantity.volume, (None, 0))(dim, boxes)
 
 
-def quantity_traj(traj_state, quantities, neighbor_fn, energy_params=None):
+def quantity_traj(traj_state, quantities, energy_params=None):
     """Computes quantities of interest for all states in a trajectory.
 
     Arbitrary quantity functions can be provided via the quantities dict.
@@ -230,7 +226,6 @@ def quantity_traj(traj_state, quantities, neighbor_fn, energy_params=None):
         traj_state: DifftreState as output from trajectory generator
         quantities: The quantity dict containing for each target quantity
                     a dict containing the quantity function under 'compute_fn'
-        neighbor_fn: Neighbor function
         energy_params: Energy params for energy_fn_template to initialize
                        the current energy_fn
 
@@ -243,7 +238,7 @@ def quantity_traj(traj_state, quantities, neighbor_fn, energy_params=None):
 
     @jit
     def quantity_trajectory(dummy_carry, state):
-        nbrs = neighbor_fn(state.position, fixed_reference_nbrs)
+        nbrs = fixed_reference_nbrs.update(state.position)
         computed_quantities = {quantity_fn_key: quantities[quantity_fn_key]
                                ['compute_fn'](state,
                                               neighbor=nbrs,

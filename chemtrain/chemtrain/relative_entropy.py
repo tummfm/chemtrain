@@ -5,20 +5,19 @@ from chemtrain.util import TrainerState, tree_mean
 import chemtrain.difftre as difftre
 
 
-def init_rel_entropy_gradient(energy_fn_template, neighbor_fn, init_state,
-                              compute_weights, kbT):
+def init_rel_entropy_gradient(energy_fn_template, compute_weights, kbt):
     """Initializes a function that computes the relative entropy
     gradient given a trajectory and a batch of reference snapshots.
     """
-    beta = 1 / kbT
-    _, nbrs_init = init_state
+    beta = 1 / kbt
 
     @jit
     def rel_entropy_gradient(params, traj_state, reference_batch):
+        nbrs_init = traj_state.sim_state[1]
 
         def energy(params, R):
             energy_fn = energy_fn_template(params)
-            nbrs = neighbor_fn(R, nbrs_init)
+            nbrs = nbrs_init.update(R)
             return energy_fn(R, neighbor=nbrs)
 
         def weighted_gradient(grad_carry, input):
@@ -166,8 +165,7 @@ class Trainer(difftre.PropagationBase):
                                                  reference_batch_size,
                                                  batch_cache)
 
-        grad_fn = init_rel_entropy_gradient(energy_fn_template, neighbor_fn,
-                                            reference_state, weights_fn, kbT)
+        grad_fn = init_rel_entropy_gradient(energy_fn_template, weights_fn, kbT)
 
         def propagation_and_grad(params, traj_state, batch_state):
             """Propagates the trajectory, if necessary, and computes the
