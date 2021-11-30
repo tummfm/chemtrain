@@ -3,14 +3,15 @@ single snapshots.
 """
 from functools import partial
 from typing import Any, Dict
-from chex import dataclass
+
+import chex
 from jax import jit, lax, vmap, numpy as jnp
 from jax_md import util, quantity, simulate
 
 Array = util.Array
 
 
-@partial(dataclass, frozen=True)
+@partial(chex.dataclass, frozen=True)
 class TimingClass:
     """A dataclass containing run-times for the simulation.
 
@@ -30,7 +31,7 @@ class TimingClass:
     time_step: float
 
 
-@partial(dataclass, frozen=True)
+@partial(chex.dataclass, frozen=True)
 class TrajectoryState:
     """A dataclass storing information of a generated trajectory.
 

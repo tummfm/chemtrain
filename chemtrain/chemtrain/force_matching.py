@@ -1,12 +1,14 @@
 from collections import namedtuple
-from jax import jit, vmap, lax, device_count, value_and_grad, pmap
-import time
-import numpy as onp
-from jax_sgmc.data import NumpyDataLoader, random_reference_data
-from chemtrain.util import MLETrainerTemplate, TrainerState, \
-    tree_split, tree_get_single, tree_replicate, mse_loss, step_optimizer
-from chemtrain.jax_md_mod import custom_quantity
+import copy
 from functools import partial
+import time
+
+from jax import vmap, lax, device_count, value_and_grad, pmap
+import numpy as onp
+from jax_sgmc import data
+
+from chemtrain import util
+from chemtrain.jax_md_mod import custom_quantity
 
 # Note:
 #  Computing the neighborlist in each snapshot is not efficient for DimeNet++,
@@ -63,11 +65,11 @@ def init_update_fns(energy_fn_template, nbrs_init, optimizer,
         predictions = vmap(_single_prediction, in_axes=(None, 0))(params, batch)
         loss = 0.
         if 'U' in batch.keys():  # energy is loss component
-            loss += mse_loss(predictions['U'], batch['U'])
+            loss += util.mse_loss(predictions['U'], batch['U'])
         if 'F' in batch.keys():  # forces are loss component
-            loss += gamma_f * mse_loss(predictions['F'], batch['F'])
+            loss += gamma_f * util.mse_loss(predictions['F'], batch['F'])
         if 'p' in batch.keys():  # virial is loss component
-            loss += gamma_p * mse_loss(predictions['virial'], batch['p'])
+            loss += gamma_p * util.mse_loss(predictions['virial'], batch['p'])
         return loss
 
     @partial(pmap, axis_name='devices')
@@ -83,14 +85,14 @@ def init_update_fns(energy_fn_template, nbrs_init, optimizer,
         # step optimizer within pmap to minimize communication overhead
         grad = lax.pmean(grad, axis_name='devices')
         loss = lax.pmean(loss, axis_name='devices')
-        new_params, opt_state = step_optimizer(params, opt_state,
-                                               grad, optimizer)
+        new_params, opt_state = util.step_optimizer(params, opt_state,
+                                                    grad, optimizer)
         return new_params, opt_state, loss
 
     return batch_update, batched_loss_fn
 
 
-class Trainer(MLETrainerTemplate):
+class Trainer(util.MLETrainerTemplate):
     """Force-matching trainer.
 
     This implementation assumes a constant number of particles per box.
@@ -119,11 +121,11 @@ class Trainer(MLETrainerTemplate):
         opt_state = optimizer.init(init_params)  # initialize optimizer state
 
         # replicate params and optimizer states for pmap
-        init_params = tree_replicate(init_params, self.n_devices)
-        opt_state = tree_replicate(opt_state, self.n_devices)
+        init_params = util.tree_replicate(init_params, self.n_devices)
+        opt_state = util.tree_replicate(opt_state, self.n_devices)
 
-        init_state = TrainerState(params=init_params,
-                                  opt_state=opt_state)
+        init_state = util.TrainerState(params=init_params,
+                                       opt_state=opt_state)
 
         checkpoint_path = 'output/force_matching/' + str(checkpoint_folder)
         super().__init__(optimizer, init_state, checkpoint_path,
@@ -194,11 +196,11 @@ class Trainer(MLETrainerTemplate):
         else:
             include_virial = False
 
-        train_loader = NumpyDataLoader(**train_dict)
-        val_loader = NumpyDataLoader(**val_dict)
-        init_train_batch, get_train_batch = random_reference_data(
+        train_loader = data.NumpyDataLoader(**train_dict)
+        val_loader = data.NumpyDataLoader(**val_dict)
+        init_train_batch, get_train_batch = data.random_reference_data(
             train_loader, batch_cache, batch_size)
-        init_val_batch, get_val_batch = random_reference_data(
+        init_val_batch, get_val_batch = data.random_reference_data(
             val_loader, batch_cache, batch_size)
         train_batch_state = init_train_batch()
         val_batch_state = init_val_batch()
@@ -227,8 +229,8 @@ class Trainer(MLETrainerTemplate):
             self.get_train_batch(self.train_batch_state)
         self.val_batch_state, val_batch = \
             self.get_val_batch(self.val_batch_state)
-        train_batch = tree_split(train_batch, self.n_devices)
-        val_batch = tree_split(val_batch, self.n_devices)
+        train_batch = util.tree_split(train_batch, self.n_devices)
+        val_batch = util.tree_split(val_batch, self.n_devices)
 
         params, opt_state, train_loss = update(self.state.params,
                                                self.state.opt_state,

@@ -1,8 +1,7 @@
 from jax import jit, tree_map, tree_multimap, grad, lax, numpy as jnp
-from jax_sgmc.data import NumpyDataLoader, random_reference_data
+from jax_sgmc import data
 
-from chemtrain.util import TrainerState, tree_mean
-import chemtrain.difftre as difftre
+from chemtrain import util, difftre
 
 
 def init_rel_entropy_gradient(energy_fn_template, compute_weights, kbt):
@@ -92,8 +91,8 @@ class Trainer(difftre.PropagationBase):
         """
 
         checkpoint_path = 'output/rel_entropy/' + str(checkpoint_folder)
-        init_trainer_state = TrainerState(params=init_params,
-                                          opt_state=optimizer.init(init_params))
+        init_trainer_state = util.TrainerState(
+            params=init_params, opt_state=optimizer.init(init_params))
         super().__init__(init_trainer_state, optimizer, checkpoint_path,
                          reweight_ratio, sim_batch_size, checkpoint_format,
                          energy_fn_template)
@@ -105,9 +104,9 @@ class Trainer(difftre.PropagationBase):
     def _set_dataset(self, key, reference_data, reference_batch_size,
                      batch_cache=1):
         """Set dataset and loader corresponding to current state point."""
-        reference_loader = NumpyDataLoader(R=reference_data)
+        reference_loader = data.NumpyDataLoader(R=reference_data)
         cache_size = batch_cache * reference_batch_size
-        init_reference_batch, get_reference_batch = random_reference_data(
+        init_reference_batch, get_reference_batch = data.random_reference_data(
             reference_loader, cache_size, reference_batch_size)
         init_reference_batch_state = init_reference_batch()
         self.data_states[key] = init_reference_batch_state
@@ -191,7 +190,7 @@ class Trainer(difftre.PropagationBase):
                                                 self.data_states[sim_key])
             grads.append(curr_grad)
 
-        batch_grad = tree_mean(grads)
+        batch_grad = util.tree_mean(grads)
         self.step_optimizer(batch_grad)
 
     def _evaluate_convergence(self, duration, thresh):
