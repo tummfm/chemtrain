@@ -1,3 +1,4 @@
+"""Utility functions helpful in designing new trainers."""
 import abc
 import copy
 from functools import partial
@@ -62,7 +63,7 @@ def tree_replicate(tree, n_devices):
 def tree_split(tree, n_devices):
     """Splits the first axis of `tree` evenly across the number of devices."""
     assert tree_leaves(tree)[0].shape[0] % n_devices == 0, \
-        "First dimension needs to be multiple of number of devices."
+        'First dimension needs to be multiple of number of devices.'
     return tree_map(lambda x: jnp.reshape(x, (n_devices, x.shape[0]//n_devices,
                                               *x.shape[1:])), tree)
 
@@ -88,15 +89,15 @@ def scale_dataset_fractional(traj, box):
     return scaled_traj
 
 
-def jit_fn_not_found_error():
-    raise AttributeError("Please store the (jit-compiled) function under "
-                         "'self.update' or 'self.grad_fns', such that it "
-                         "can be deleted here as it cannot be pickled.")
+def jit_fn_not_found_error(e):
+    raise AttributeError('Please store the (jit-compiled) function under '
+                         '"self.update" or "self.grad_fns", such that it '
+                         'can be deleted here as it cannot be pickled.') from e
 
 
 def format_not_recognized_error(file_format):
-    raise ValueError(f"File format {file_format} not recognized. "
-                     f"Expected '.hdf5' or '.pkl'.")
+    raise ValueError(f'File format {file_format} not recognized. '
+                     f'Expected ".hdf5" or ".pkl".')
 
 
 class TrainerInterface(abc.ABC):
@@ -160,8 +161,8 @@ class MLETrainerTemplate(abc.ABC):
                     # jitted function cannot be pickled
                     try:
                         save_dict.pop('grad_fns')  # for difftre / rel_entropy
-                    except KeyError:
-                        raise jit_fn_not_found_error()
+                    except KeyError as e:
+                        jit_fn_not_found_error(e)
                     with open(file_path, 'wb') as f:
                         pickle.dump(save_dict, f)
 
@@ -196,8 +197,8 @@ class MLETrainerTemplate(abc.ABC):
         trainer_copy = copy.copy(self)
         try:
             trainer_copy.__delattr__('grad_fns')
-        except AttributeError:
-            raise jit_fn_not_found_error()
+        except AttributeError as e:
+            jit_fn_not_found_error(e)
         with open(save_path, 'wb') as pickle_file:
             pickle.dump(trainer_copy, pickle_file)
 
@@ -249,7 +250,7 @@ class MLETrainerTemplate(abc.ABC):
         """
         start_epoch = self._epoch
         end_epoch = start_epoch + epochs
-        for epoch in range(start_epoch, end_epoch):
+        for _ in range(start_epoch, end_epoch):
             start_time = time.time()
             for batch in self._get_batch():
                 self._update(batch)

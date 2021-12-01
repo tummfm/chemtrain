@@ -2,11 +2,9 @@
 import copy
 import warnings
 
-import numpy as onp
 from jax import device_count, jit, value_and_grad, numpy as jnp
-
-import chemtrain.reweighting
 from jax_sgmc import data
+import numpy as onp
 
 from chemtrain import util, force_matching, traj_util, reweighting
 
@@ -92,6 +90,7 @@ class ForceMatching(util.MLETrainerTemplate):
         train_size = int(train_set_size * train_ratio)
         batches_per_epoch = train_size // batch_size
 
+        # pylint: disable=unbalanced-tuple-unpacking
         r_train, r_val = onp.split(position_data, [train_size])
         train_dict = {'R': r_train}
         val_dict = {'R': r_val}
@@ -105,8 +104,8 @@ class ForceMatching(util.MLETrainerTemplate):
             val_dict['F'] = f_val
         if virial_data is not None:
             include_virial = True
-            assert box_tensor is not None, "If the virial is to be matched, " \
-                                           "box_tensor is a mandatory input."
+            assert box_tensor is not None, ('If the virial is to be matched, '
+                                            'box_tensor is a mandatory input.')
             p_train, p_val = onp.split(virial_data, [train_size])
             train_dict['p'] = p_train
             val_dict['p'] = p_val
@@ -145,14 +144,14 @@ class ForceMatching(util.MLETrainerTemplate):
             val_batch = util.tree_split(val_batch, self.n_devices)
             yield train_batch, val_batch
 
-    def _update(self, cur_batches):
+    def _update(self, batch):
         """Function to iterate, optimizing parameters and saving
         training and validation loss values.
         """
         # both jitted functions stored together to delete them for checkpointing
         update_fn, batched_loss_fn = self.grad_fns
 
-        train_batch, val_batch = cur_batches
+        train_batch, val_batch = batch
         params, opt_state, train_loss = update_fn(self.state.params,
                                                   self.state.opt_state,
                                                   train_batch)
@@ -240,13 +239,8 @@ class Difftre(reweighting.PropagationBase):
         checkpoint_path = 'output/difftre/' + str(checkpoint_folder)
         init_state = util.TrainerState(params=init_params,
                                        opt_state=optimizer.init(init_params))
-        super(Difftre, self).__init__(init_state,
-                                      optimizer,
-                                      checkpoint_path,
-                                      reweight_ratio,
-                                      sim_batch_size,
-                                      checkpoint_format,
-                                      energy_fn_template)
+        super().__init__(init_state, optimizer, checkpoint_path, reweight_ratio,
+                         sim_batch_size, checkpoint_format, energy_fn_template)
 
     def add_statepoint(self, energy_fn_template, simulator_template,
                        neighbor_fn, timings, kbt, quantities,
@@ -418,6 +412,7 @@ class Difftre(reweighting.PropagationBase):
 
 
 class RelativeEntropy(reweighting.PropagationBase):
+    """Trainer for relative entropy minimization."""
     def __init__(self, init_params, optimizer,
                  reweight_ratio=0.9, sim_batch_size=1, energy_fn_template=None,
                  checkpoint_folder='Checkpoints', checkpoint_format='pkl'):
@@ -521,7 +516,7 @@ class RelativeEntropy(reweighting.PropagationBase):
                                                  reference_batch_size,
                                                  batch_cache)
 
-        grad_fn = chemtrain.reweighting.init_rel_entropy_gradient(
+        grad_fn = reweighting.init_rel_entropy_gradient(
             energy_fn_template, weights_fn, kbt)
 
         def propagation_and_grad(params, traj_state, batch_state):

@@ -1,3 +1,8 @@
+"""Implementation of the reweighting formalism.
+
+Allows re-using existing trajectories.
+p(S) = ...
+"""
 from abc import abstractmethod
 import time
 import warnings
@@ -80,9 +85,9 @@ def reweight_trajectory(traj, targets, npt_ensemble=False):
     # values. Hence, their contribution to reweighting cancels. This should
     # even be at no additional cost under jit as XLA should easily detect the
     # zero contribution. Same applies to combinations in the NPT ensemble.
-    target_kbt = targets.get('kbT', traj.thermostat_kbT)
+    target_kbt = targets.get('kbT', traj.thermostat_kbt)
     target_beta = 1. / target_kbt
-    reference_betas = 1. / traj.thermostat_kbT
+    reference_betas = 1. / traj.thermostat_kbt
 
     # temperature reweighting
     if 'energy' not in traj.aux:
@@ -108,7 +113,7 @@ def reweight_trajectory(traj, targets, npt_ensemble=False):
 
 
 def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
-                                      neighbor_fn, timings, ref_kbT,
+                                      neighbor_fn, timings, ref_kbt,
                                       reweight_ratio=0.9, npt_ensemble=False):
     """
     Initializes all functions necessary for trajectory reweighting for
@@ -132,7 +137,7 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
     trajectory_generator = traj_util.trajectory_generator_init(
         simulator_template, energy_fn_template, timings, reweighting_quantities)
 
-    beta = 1. / ref_kbT
+    beta = 1. / ref_kbt
     checkpoint_quantities(reweighting_quantities)
 
     def compute_weights(params, traj_state):
@@ -177,7 +182,7 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
         indicating if the neighborlist buffer overflowed during trajectory
         generation.
         """
-        weights, n_eff = compute_weights(params, traj_state)
+        _, n_eff = compute_weights(params, traj_state)
         n_snapshots = traj_state.aux['energy'].size
         recompute = n_eff < reweight_ratio * n_snapshots
         propagated_state = lax.cond(recompute,
@@ -269,16 +274,16 @@ def init_rel_entropy_gradient(energy_fn_template, compute_weights, kbt):
     def rel_entropy_gradient(params, traj_state, reference_batch):
         nbrs_init = traj_state.sim_state[1]
 
-        def energy(params, R):
+        def energy(params, position):
             energy_fn = energy_fn_template(params)
-            nbrs = nbrs_init.update(R)
-            return energy_fn(R, neighbor=nbrs)
+            nbrs = nbrs_init.update(position)
+            return energy_fn(position, neighbor=nbrs)
 
-        def weighted_gradient(grad_carry, input):
-            dUdtheta = grad(energy)  # gradient wrt. params
-            R = input[0]
-            weight = input[1]
-            snapshot_grad = dUdtheta(params, R)
+        def weighted_gradient(grad_carry, scan_input):
+            dudtheta = grad(energy)  # gradient wrt. params
+            position = scan_input[0]
+            weight = scan_input[1]
+            snapshot_grad = dudtheta(params, position)
             # sum over weights represents average
             update_carry = lambda carry, new_grad: carry + weight * new_grad
             updated_carry = tree_multimap(update_carry,
@@ -286,10 +291,10 @@ def init_rel_entropy_gradient(energy_fn_template, compute_weights, kbt):
                                           snapshot_grad)
             return updated_carry, 0
 
-        CG_traj = traj_state.trajectory.position
-        CG_weights, _ = compute_weights(params, traj_state)
+        generated_traj = traj_state.trajectory.position
+        weights, _ = compute_weights(params, traj_state)
         ref_batchsize = reference_batch.shape[0]
-        AA_weights = jnp.ones(ref_batchsize) / ref_batchsize  # no reweighting
+        ref_weights = jnp.ones(ref_batchsize) / ref_batchsize  # no reweighting
 
         # TODO implement with vmap
         # Note:
@@ -300,15 +305,15 @@ def init_rel_entropy_gradient(energy_fn_template, compute_weights, kbt):
         # the trajectory length, which would become prohibitive for
         # memory consuming models such as neural network potentials.
         initial_grad = tree_map(jnp.zeros_like, params)
-        mean_AA_grad, _ = lax.scan(weighted_gradient,
-                                   initial_grad,
-                                   (reference_batch, AA_weights))
-        mean_CG_grad, _ = lax.scan(weighted_gradient,
-                                   initial_grad,
-                                   (CG_traj, CG_weights))
+        mean_ref_grad, _ = lax.scan(weighted_gradient,
+                                    initial_grad,
+                                    (reference_batch, ref_weights))
+        mean_gen_grad, _ = lax.scan(weighted_gradient,
+                                    initial_grad,
+                                    (generated_traj, weights))
 
         combine_grads = lambda x, y: beta * (x - y)
-        dtheta = tree_multimap(combine_grads, mean_AA_grad, mean_CG_grad)
+        dtheta = tree_multimap(combine_grads, mean_ref_grad, mean_gen_grad)
         return dtheta
     return rel_entropy_gradient
 
@@ -340,7 +345,7 @@ class PropagationBase(util.MLETrainerTemplate):
         self.shuffle_key = random.PRNGKey(0)
 
     def _init_statepoint(self, reference_state, energy_fn_template,
-                         simulator_template, neighbor_fn, timings, kbT,
+                         simulator_template, neighbor_fn, timings, kbt,
                          initialize_traj=True):
         """Initializes the simulation and reweighting functions as well
         as the initial trajectory for a statepoint."""
@@ -355,7 +360,7 @@ class PropagationBase(util.MLETrainerTemplate):
                                               simulator_template,
                                               neighbor_fn,
                                               timings,
-                                              kbT,
+                                              kbt,
                                               self.reweight_ratio,
                                               npt_ensemble)
         if initialize_traj:
@@ -398,8 +403,8 @@ class PropagationBase(util.MLETrainerTemplate):
         return (batch for batch in batch_list)
 
     def train(self, epochs, checkpoint_freq=None, thresh=None):
-        assert self.n_statepoints > 0, "Add at least 1 state point via " \
-                                       "'add_statepoint' to start training."
+        assert self.n_statepoints > 0, ('Add at least 1 state point via '
+                                        '"add_statepoint" to start training.')
         super().train(epochs, checkpoint_freq=checkpoint_freq, thresh=thresh)
 
     @abstractmethod

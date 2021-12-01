@@ -49,7 +49,7 @@ class TrajectoryState:
     sim_state: Any
     trajectory: Any
     overflow: Array = False
-    thermostat_kbT: Array = None
+    thermostat_kbt: Array = None
     barostat_press: Array = None
     aux: Dict = None
 
@@ -68,10 +68,10 @@ def process_printouts(time_step, total_time, t_equilib, print_every):
         A class containing information for the simulator
         on which states to save.
     """
-    assert total_time > 0. and t_equilib > 0., "Times need to be positive."
-    assert total_time > t_equilib, "Total time needs to exceed " \
-                                   "equilibration time, otherwise no " \
-                                   "trajectory will be sampled."
+    assert total_time > 0. and t_equilib > 0., 'Times need to be positive.'
+    assert total_time > t_equilib, ('Total time needs to exceed equilibration '
+                                    'time, otherwise no trajectory will be '
+                                    'sampled.')
     timesteps_per_printout = int(print_every / time_step)
     n_production = int((total_time - t_equilib) / print_every)
     n_dumped = int(t_equilib / print_every)
@@ -132,14 +132,17 @@ def _run_to_next_printout_neighbors(apply_fn, timings, **schedule_kwargs):
 
 def _canonicalize_dynamic_state_kwargs(state_kwargs, t_snapshots, *keys):
     """Converts constant state_kwargs, such as 'kT' and 'pressure' to constant
-    lambda functions. Additionally return the values of state_kwargs at
+    functions over time. Additionally return the values of state_kwargs at
     production printout times.
     """
+    def constant_fn(_, c):
+        return c
+
     state_point_vals = []
     for key in keys:
         if key in state_kwargs:
             if jnp.isscalar(state_kwargs[key]):
-                state_kwargs[key] = lambda t: state_kwargs[key]
+                state_kwargs[key] = partial(constant_fn, c=state_kwargs[key])
             state_points = vmap(state_kwargs[key])(t_snapshots)
         else:
             state_points = None
@@ -201,7 +204,7 @@ def trajectory_generator_init(simulator_template, energy_fn_template,
         state = TrajectoryState(sim_state=new_sim_state,
                                 trajectory=traj,
                                 overflow=new_sim_state[1].did_buffer_overflow,
-                                thermostat_kbT=kbt,
+                                thermostat_kbt=kbt,
                                 barostat_press=barostat_press)
 
         aux_trajectory = quantity_traj(state, quantities, params)

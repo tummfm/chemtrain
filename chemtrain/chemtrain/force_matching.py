@@ -1,3 +1,6 @@
+"""Functions for learning via direct matching of per-snapshot quantities,
+such as energy, forces and virial pressure.
+"""
 from collections import namedtuple
 from functools import partial
 
@@ -17,10 +20,10 @@ from chemtrain.jax_md_mod import custom_quantity
 #  for each snapshot in the dataset.
 
 State = namedtuple(
-    "State",
-    ["position"]
+    'State',
+    ['position']
 )
-State.__doc__ = """Emulates structure of simulation state for 
+State.__doc__ = """Emulates structure of simulation state for
 compatibility with quantity functions.
 
 position: atomic positions
@@ -33,13 +36,13 @@ def init_single_prediction(nbrs_init, energy_fn_template, virial_fn=None):
     """
     def single_prediction(params, observation):
         energy_fn = energy_fn_template(params)
-        R = observation['R']
+        pos = observation['R']
         # TODO check for neighborlist overflow and hand through
-        nbrs = nbrs_init.update(R)
-        energy, negative_forces = value_and_grad(energy_fn)(R, neighbor=nbrs)
+        nbrs = nbrs_init.update(pos)
+        energy, negative_forces = value_and_grad(energy_fn)(pos, neighbor=nbrs)
         predictions = {'U': energy, 'F': -negative_forces}
         if virial_fn is not None:
-            predictions['virial'] = virial_fn(State(R), nbrs, params)
+            predictions['virial'] = virial_fn(State(pos), nbrs, params)
         return predictions
     return single_prediction
 
@@ -47,7 +50,9 @@ def init_single_prediction(nbrs_init, energy_fn_template, virial_fn=None):
 def init_update_fns(energy_fn_template, nbrs_init, optimizer,
                     gamma_f=1., gamma_p=1.e-6, box_tensor=None,
                     include_virial=False):
-    """Initializes update functions for energy and(or force matching.
+    """Initializes update functions for energy and/or force matching.
+
+    The returned functions are jit and can therefore not be pickled.
     """
     if include_virial:
         virial_fn = custom_quantity.init_pressure(energy_fn_template,
@@ -56,11 +61,11 @@ def init_update_fns(energy_fn_template, nbrs_init, optimizer,
     else:
         virial_fn = None
 
-    _single_prediction = init_single_prediction(nbrs_init, energy_fn_template,
-                                                virial_fn)
+    single_prediction = init_single_prediction(nbrs_init, energy_fn_template,
+                                               virial_fn)
 
     def loss_fn(params, batch):
-        predictions = vmap(_single_prediction, in_axes=(None, 0))(params, batch)
+        predictions = vmap(single_prediction, in_axes=(None, 0))(params, batch)
         loss = 0.
         if 'U' in batch.keys():  # energy is loss component
             loss += util.mse_loss(predictions['U'], batch['U'])
