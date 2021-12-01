@@ -331,7 +331,7 @@ class PropagationBase(util.MLETrainerTemplate):
     def params(self, loaded_params):
         self.state = self.state.replace(params=loaded_params)
 
-    def _simulation_batches(self):
+    def _get_batch(self):
         """Helper function to re-shuffle simulations and split into batches."""
         self.shuffle_key, used_key = random.split(self.shuffle_key, 2)
         shuffled_indices = random.permutation(used_key, self.n_statepoints)
@@ -340,38 +340,21 @@ class PropagationBase(util.MLETrainerTemplate):
         elif self.sim_batch_size == -1:
             batch_list = jnp.split(shuffled_indices, 1)
         else:
-            raise NotImplementedError('Only batch_size = 1 or -1 implemented. '
-                                      'Unclear how to deal with case, where '
-                                      'batch_size > n_state_points.')
-        return batch_list
+            raise NotImplementedError('Only batch_size = 1 or -1 implemented.')
+
+        return (batch for batch in batch_list)
 
     def train(self, epochs, checkpoint_freq=None, thresh=None):
         assert self.n_statepoints > 0, "Add at least 1 state point via " \
                                        "'add_statepoint' to start training."
-        start_epoch = self._epoch
-        end_epoch = start_epoch + epochs
-        for epoch in range(start_epoch, end_epoch):
-            start_time = time.time()
-            batchlist = self._simulation_batches()
-            for batch in batchlist:
-                self._update(batch)
-
-            duration = (time.time() - start_time) / 60.
-            self.update_times.append(duration)
-            converged = self._evaluate_convergence(duration, thresh)
-            self._epoch += 1
-            self._dump_checkpoint_occasionally(frequency=checkpoint_freq)
-
-            if converged:
-                break
-        if thresh is not None:
-            print('Maximum number of epochs reached without convergence.')
+        super().train(epochs, checkpoint_freq=checkpoint_freq, thresh=thresh)
 
     @abstractmethod
     def _update(self, batch):
         """Implementation of gradient computation, stepping of the optimizer
-        and logging of auxiliary results."""
-        raise NotImplementedError()
+        and logging of auxiliary results. Takes batch of simulation indices
+        as input.
+        """
 
 
 class Trainer(PropagationBase):
