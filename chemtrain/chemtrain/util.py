@@ -1,21 +1,23 @@
-from abc import ABC, abstractmethod
+import abc
+import copy
+from functools import partial
+import pathlib
+import time
 from typing import Any
-import numpy as onp
-from pathlib import Path
+
+import chex
 import cloudpickle as pickle
+# import h5py
+import numpy as onp
 import optax
 from jax import lax, tree_map, tree_leaves, numpy as jnp
-import jax_md.util
+from jax_md import util
 
 from chemtrain.jax_md_mod import custom_space
-import copy
-from chex import dataclass
-from functools import partial
-# import h5py
 
 
 # freezing seems to give slight performance improvement
-@partial(dataclass, frozen=True)
+@partial(chex.dataclass, frozen=True)
 class TrainerState:
     """Each trainer at least contains the state of parameter and
     optimizer.
@@ -27,8 +29,8 @@ class TrainerState:
 def mse_loss(predictions, targets):
     """Computes mean squared error loss for given predictions and targets."""
     squared_difference = jnp.square(targets - predictions)
-    mean_of_squares = jax_md.util.high_precision_sum(squared_difference) \
-                      / predictions.size
+    mean_of_squares = util.high_precision_sum(
+        squared_difference) / predictions.size
     return mean_of_squares
 
 
@@ -92,16 +94,16 @@ def jit_fn_not_found_error():
                          "can be deleted here as it cannot be pickled.")
 
 
-def format_not_recognized_error(format):
-    raise ValueError(f"File format {format} not recognized. "
+def format_not_recognized_error(file_format):
+    raise ValueError(f"File format {file_format} not recognized. "
                      f"Expected '.hdf5' or '.pkl'.")
 
 
-class TrainerInterface(ABC):
+class TrainerInterface(abc.ABC):
     """Abstract class defining the user interface of trainers."""
 
 
-class MLETrainerTemplate(ABC):
+class MLETrainerTemplate(abc.ABC):
     """Abstract class implementing common properties and methods of single
     point estimate Trainers using optax optimizers.
     """
@@ -117,7 +119,7 @@ class MLETrainerTemplate(ABC):
         self.optimizer = optimizer
         self.checkpoint_path = checkpoint_path
         self.check_format = checkpoint_format
-        self.epoch = 0
+        self._epoch = 0
         self.reference_energy_fn_template = reference_energy_fn_template
         self.update_times = []
 
@@ -128,7 +130,11 @@ class MLETrainerTemplate(ABC):
                   'Consider saving learned energy_params in a different '
                   'format, e.g. using the save_energy_params function.')
 
-    def step_optimizer(self, curr_grad):
+    @property
+    def energy_fn(self):
+        return self.reference_energy_fn_template(self.params)
+
+    def _step_optimizer(self, curr_grad):
         """Wrapper around step_optimizer that is useful whenever the
         update of the optimizer can be done outside of jit-compiled functions.
         """
@@ -139,16 +145,17 @@ class MLETrainerTemplate(ABC):
         self.state = self.state.replace(params=new_params,
                                         opt_state=new_opt_state)
 
-    def dump_checkpoint_occasionally(self, frequency=None):
+    def _dump_checkpoint_occasionally(self, frequency=None):
         """Dumps a checkpoint during training, from which training can
         be resumed.
         """
         if frequency is not None:
-            Path(self.checkpoint_path).mkdir(parents=True, exist_ok=True)
-            if self.epoch % frequency == 0:  # checkpoint model
+            pathlib.Path(self.checkpoint_path).mkdir(parents=True,
+                                                     exist_ok=True)
+            if self._epoch % frequency == 0:  # checkpoint model
                 if self.check_format == 'pkl':
-                    file_path = self.checkpoint_path + \
-                                f'/epoch{self.epoch - 1}.pkl'
+                    file_path = (self.checkpoint_path +
+                                 f'/epoch{self._epoch - 1}.pkl')
                     save_dict = self.__dict__.copy()
                     # jitted function cannot be pickled
                     try:
@@ -159,7 +166,7 @@ class MLETrainerTemplate(ABC):
                         pickle.dump(save_dict, f)
 
                 elif self.check_format == 'hdf5':
-                    file_path = self.checkpoint_path + f'/checkpoints.hdf5'
+                    # file_path = self.checkpoint_path + f'/checkpoints.hdf5'
                     raise NotImplementedError
                     # from jax_sgmc.io import pytree_dict_keys, dict_to_pytree
                     # leaf_names = pytree_dict_keys(self.state)
@@ -226,31 +233,66 @@ class MLETrainerTemplate(ABC):
             format_not_recognized_error(file_path[-4:])
         self.params = tree_map(jnp.array, params)  # move state on device
 
-    @abstractmethod
-    def train(self, epochs, checkpoints=None):
-        """Training method only takes the number of epochs to run,
-        runs them and saves the optimization state into self.state,
-        such that calling train again will resume optimization
-        from the last state.
+    def train(self, epochs, checkpoint_freq=None, thresh=None):
+        """Trains for a specified number of epochs, checkpoints after a
+        specified number of epochs and ends training if a convergence
+        criterion is met. This function can be called multiple times to extend
+        training.
+
+        This function only implements the training sceleton by splitting the
+        training into epochs and batches as well as providing checkpointing and
+        ending of training if the convergence criterion is met. The specifics
+        of dataloading, parameter updating and convergence criterion evaluation
+        needs to be implemented in _get_batch(), _update() and
+        _evaluate_convergence(), respectively, depending on the exact trainer
+        details to be implemented.
+        """
+        start_epoch = self._epoch
+        end_epoch = start_epoch + epochs
+        for epoch in range(start_epoch, end_epoch):
+            start_time = time.time()
+            for batch in self._get_batch():
+                self._update(batch)
+            duration = (time.time() - start_time) / 60.
+            self.update_times.append(duration)
+            converged = self._evaluate_convergence(duration, thresh)
+            self._epoch += 1
+            self._dump_checkpoint_occasionally(frequency=checkpoint_freq)
+
+            if converged:
+                break
+        if thresh is not None:
+            print('Maximum number of epochs reached without convergence.')
+
+    @abc.abstractmethod
+    def _get_batch(self):
+        """A generator that returns the next batch that will be provided to the
+        _update function. The length of the generator should correspond to the
+        number of batches per epoch.
         """
 
-    @abstractmethod
-    def _evaluate_convergence(self, *args, **kwargs):
-        """Implement a function that checks for convergence to break
-        training loop."""
+    @abc.abstractmethod
+    def _update(self, batch):
+        """Uses the current batch to updates self.state via the training scheme
+        implemented in the specific trainer. Can additionally save auxilary
+        optimization results, such as losses and observables, that can be
+        used by _evaluate_convergence and for post-processing.
+        """
+
+    @abc.abstractmethod
+    def _evaluate_convergence(self, duration, thresh):
+        """Returns whether a convergence criterion has been met. Can also be
+        used to print callbacks, such as time per epoch and loss vales.
+        """
 
     @property
-    @abstractmethod
+    @abc.abstractmethod
     def params(self):
-        # cannot be implemented here due to different parallelization schemes
-        # for different trainers
-        raise NotImplementedError()
+        """Short-cut for parameters. Cannot be implemented here due to
+        different parallelization schemes for different trainers.
+        """
 
     @params.setter
-    @abstractmethod
+    @abc.abstractmethod
     def params(self, loaded_params):
         raise NotImplementedError()
-
-    @property
-    def energy_fn(self):
-        return self.reference_energy_fn_template(self.params)

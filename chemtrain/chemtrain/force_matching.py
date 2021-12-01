@@ -253,7 +253,7 @@ class Trainer(util.MLETrainerTemplate):
                           / self.batches_per_epoch
         mean_val_loss = sum(self.val_losses[-self.batches_per_epoch:]) \
                         / self.batches_per_epoch
-        print(f'Epoch {self.epoch}: Average train loss: {mean_train_loss} '
+        print(f'Epoch {self._epoch}: Average train loss: {mean_train_loss} '
               f'Average val loss: {mean_val_loss} '
               f'Elapsed time = {duration} min')
 
@@ -267,23 +267,3 @@ class Trainer(util.MLETrainerTemplate):
             if improvement < thresh:
                 converged = True
         return converged
-
-    def train(self, epochs, checkpoint_freq=None, thresh=None):
-        """Continue training for a number of epochs."""
-        start_epoch = self.epoch
-        end_epoch = start_epoch + epochs
-        for epoch in range(start_epoch, end_epoch):
-            start_time = time.time()
-            for batch in self._get_batch():
-                self._update(batch)
-
-            duration = (time.time() - start_time) / 60.
-            self.update_times.append(duration)
-            converged = self._evaluate_convergence(duration, thresh)
-            self.epoch += 1
-            self.dump_checkpoint_occasionally(frequency=checkpoint_freq)
-
-            if converged:
-                break
-        if thresh is not None:
-            print('Maximum number of epochs reached without convergence.')

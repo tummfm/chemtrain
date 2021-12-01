@@ -190,10 +190,10 @@ class Trainer(difftre.PropagationBase):
             grads.append(curr_grad)
 
         batch_grad = util.tree_mean(grads)
-        self.step_optimizer(batch_grad)
+        self._step_optimizer(batch_grad)
 
     def _evaluate_convergence(self, duration, thresh):
-        print(f'Epoch {self.epoch}: Elapsed time = {duration} min')
+        print(f'Epoch {self._epoch}: Elapsed time = {duration} min')
         converged = False  # TODO implement convergence test
         if thresh is not None:
             raise NotImplementedError('Currently there is no convergence '

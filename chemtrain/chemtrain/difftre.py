@@ -348,7 +348,7 @@ class PropagationBase(util.MLETrainerTemplate):
     def train(self, epochs, checkpoint_freq=None, thresh=None):
         assert self.n_statepoints > 0, "Add at least 1 state point via " \
                                        "'add_statepoint' to start training."
-        start_epoch = self.epoch
+        start_epoch = self._epoch
         end_epoch = start_epoch + epochs
         for epoch in range(start_epoch, end_epoch):
             start_time = time.time()
@@ -359,8 +359,8 @@ class PropagationBase(util.MLETrainerTemplate):
             duration = (time.time() - start_time) / 60.
             self.update_times.append(duration)
             converged = self._evaluate_convergence(duration, thresh)
-            self.epoch += 1
-            self.dump_checkpoint_occasionally(frequency=checkpoint_freq)
+            self._epoch += 1
+            self._dump_checkpoint_occasionally(frequency=checkpoint_freq)
 
             if converged:
                 break
@@ -564,25 +564,25 @@ class Trainer(PropagationBase):
                 grad_fn(self.params, self.trajectory_states[sim_key])
 
             self.trajectory_states[sim_key] = new_traj_state
-            self.predictions[sim_key][self.epoch] = state_point_predictions
+            self.predictions[sim_key][self._epoch] = state_point_predictions
             grads.append(curr_grad)
             losses.append(loss_val)
             if jnp.isnan(loss_val):
                 warnings.warn(f'Loss of state point {sim_key} in epoch '
-                              f'{self.epoch} is NaN. This was likely caused by '
+                              f'{self._epoch} is NaN. This was likely caused by '
                               f'divergence of the optimization or a bad model '
                               f'setup causing a NaN trajectory.')
                 break
 
         self.batch_losses.append(sum(losses) / self.sim_batch_size)
         batch_grad = util.tree_mean(grads)
-        self.step_optimizer(batch_grad)
+        self._step_optimizer(batch_grad)
 
     def _evaluate_convergence(self, duration, thresh):
         last_losses = jnp.array(self.batch_losses[-self.sim_batch_size:])
         epoch_loss = jnp.mean(last_losses)
         self.epoch_losses.append(epoch_loss)
-        print(f'Epoch {self.epoch}: Epoch loss = {epoch_loss}, Elapsed time = '
+        print(f'Epoch {self._epoch}: Epoch loss = {epoch_loss}, Elapsed time = '
               f'{duration} min')
 
         # save parameter set that resulted in smallest loss up to this point
