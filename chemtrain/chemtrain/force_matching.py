@@ -218,23 +218,27 @@ class Trainer(util.MLETrainerTemplate):
         replicated_params = util.tree_replicate(loaded_params, self.n_devices)
         self.state = self.state.replace(params=replicated_params)
 
-    def update(self):
+    def _get_batch(self):
+        for _ in range(self.batches_per_epoch):
+            self.train_batch_state, train_batch = \
+                self.get_train_batch(self.train_batch_state)
+            self.val_batch_state, val_batch = \
+                self.get_val_batch(self.val_batch_state)
+            train_batch = util.tree_split(train_batch, self.n_devices)
+            val_batch = util.tree_split(val_batch, self.n_devices)
+            yield train_batch, val_batch
+
+    def _update(self, cur_batches):
         """Function to iterate, optimizing parameters and saving
         training and validation loss values.
         """
         # both jitted functions stored together to delete them for checkpointing
-        update, batched_loss_fn = self.grad_fns
+        update_fn, batched_loss_fn = self.grad_fns
 
-        self.train_batch_state, train_batch = \
-            self.get_train_batch(self.train_batch_state)
-        self.val_batch_state, val_batch = \
-            self.get_val_batch(self.val_batch_state)
-        train_batch = util.tree_split(train_batch, self.n_devices)
-        val_batch = util.tree_split(val_batch, self.n_devices)
-
-        params, opt_state, train_loss = update(self.state.params,
-                                               self.state.opt_state,
-                                               train_batch)
+        train_batch, val_batch = cur_batches
+        params, opt_state, train_loss = update_fn(self.state.params,
+                                                  self.state.opt_state,
+                                                  train_batch)
         val_loss = batched_loss_fn(params, val_batch)
 
         self.state = self.state.replace(params=params, opt_state=opt_state)
@@ -266,18 +270,16 @@ class Trainer(util.MLETrainerTemplate):
 
     def train(self, epochs, checkpoint_freq=None, thresh=None):
         """Continue training for a number of epochs."""
-        # TODO can we unify this?
         start_epoch = self.epoch
         end_epoch = start_epoch + epochs
-
         for epoch in range(start_epoch, end_epoch):
             start_time = time.time()
-            for i in range(self.batches_per_epoch):
-                self.update()
-            duration = (time.time() - start_time) / 60.
+            for batch in self._get_batch():
+                self._update(batch)
 
-            converged = self._evaluate_convergence(duration, thresh)
+            duration = (time.time() - start_time) / 60.
             self.update_times.append(duration)
+            converged = self._evaluate_convergence(duration, thresh)
             self.epoch += 1
             self.dump_checkpoint_occasionally(frequency=checkpoint_freq)
 
