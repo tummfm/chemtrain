@@ -193,10 +193,35 @@ def angle(r_ij, r_kj):
     return theta
 
 
+def _triplet_pairwise_displacements(position, neighbor, displacement_fn):
+    """For each triplet of particles ijk, computes the displacement vectors
+    r_kj = R_k - R_j and r_ij, i.e. the vector pointing from the central
+    particle j to the side particles i and k. Returns a tuple (r_kj, r_ij)
+    that contains the dispacement vectors for all triplets.
+    r_kj.shape = (N_triplets, 3). This sparse format simplifies capping
+    non-existant triplets that only result from the overcapacity of a dense
+    neighborlist, realiszing a computational speed-up.
+    """
+    # TODO unification with sparse neighborlist format woud simplify this.
+    neighbor_displacement_fn = space.map_neighbor(displacement_fn)
+    n_particles, max_neighbors = neighbor.idx.shape
+    r_neigh = position[neighbor.idx]
+    neighbor_displacement = neighbor_displacement_fn(position, r_neigh)
+    neighbor_displacement_flat = jnp.reshape(
+        neighbor_displacement, (n_particles * max_neighbors, 3))
+    r_kj = jnp.repeat(neighbor_displacement_flat, max_neighbors, axis=0)
+    r_ij = jnp.tile(neighbor_displacement, (1, max_neighbors, 1)).reshape(
+        [n_particles * max_neighbors**2, 3])
+    return r_kj, r_ij
+
+
 def _angle_neighbor_mask(neighbor):
-    """Mask the cases of non-existing neighbors and both neighbors being
-    the same particle. The cases j=k and j=i is already excluded by the
-    neighbor list construction. Returns a boolean (N_triplets,) array.
+    """Returns a boolean (N_triplets,) array. Each entry corresponds to a
+    triplet stored in the sparse displacement vectors. For each triplet, masks
+    the cases of non-existing neighbors and both neighbors being the same
+    particle. The cases j=k and j=i is already excluded by the neighbor list
+    construction. For more details on the sparse triplet structure, see
+    _triplet_pairwise_displacements.
     """
     n_particles, max_neighbors = neighbor.idx.shape
     edge_idx_flat = jnp.ravel(neighbor.idx)
@@ -211,21 +236,6 @@ def _angle_neighbor_mask(neighbor):
     mask = mask_k * mask_i * mask_i_eq_k
     mask = jnp.expand_dims(mask, axis=-1)
     return mask
-
-
-def pairwise_distances_and_displacements(position, neighbor, displacement_fn):  # TODO make private
-    """Build distance matrix and pairs of displacement vectors."""
-    neighbor_displacement_fn = space.map_neighbor(displacement_fn)
-    n_particles, max_neighbors = neighbor.idx.shape
-    r_neigh = position[neighbor.idx]
-    neighbor_displacement = neighbor_displacement_fn(position, r_neigh)
-    neighbor_distances = space.distance(neighbor_displacement)
-    neighbor_displacement_flat = jnp.reshape(
-        neighbor_displacement, (n_particles * max_neighbors, 3))
-    r_kj = jnp.repeat(neighbor_displacement_flat, max_neighbors, axis=0)
-    r_ij = jnp.tile(neighbor_displacement, (1, max_neighbors, 1)).reshape(
-        [n_particles * max_neighbors**2, 3])
-    return neighbor_distances, r_kj, r_ij
 
 
 def init_adf_nbrs(displacement_fn, adf_params, smoothing_dr=0.01, r_init=None,
@@ -266,15 +276,15 @@ def init_adf_nbrs(displacement_fn, adf_params, smoothing_dr=0.01, r_init=None,
     sigma_theta = util.f32(sigma_theta)
     bin_centers = util.f32(bin_centers)
 
-    def cut_off_weights(pair_dist, max_neighbors):
+    def cut_off_weights(r_kj, r_ij):
         """Smoothly constraints triplets to a radial band such that both
         distances are between r_inner and r_outer. The Gaussian cdf is used for
         smoothing. The smoothing width can be controlled by the gaussian
         standard deviation.
         """
-        dist_kj = jnp.repeat(jnp.ravel(pair_dist), max_neighbors, axis=0)
-        dist_ij = jnp.tile(pair_dist, (1, max_neighbors)).ravel()
-        # get r_small and r_large for each triplet
+        dist_kj = space.distance(r_kj)
+        dist_ij = space.distance(r_ij)
+        # get d_small and d_large for each triplet
         pair_dist = jnp.column_stack((dist_kj, dist_ij)).sort(axis=1)
         # get inner boundary weight from r_small and outer weight from r_large
         inner_weight = norm.cdf(pair_dist[:, 0], loc=r_inner,
@@ -302,11 +312,10 @@ def init_adf_nbrs(displacement_fn, adf_params, smoothing_dr=0.01, r_init=None,
         if nbrs_init is None:
             raise ValueError('If we estimate the maximum number of triplets, '
                              'the initial neighbor list is a necessary input.')
-        _, max_neighbors = nbrs_init.idx.shape
         mask = _angle_neighbor_mask(nbrs_init)
-        neighbor_distances, _, _ = pairwise_distances_and_displacements(
-            r_init, nbrs_init, displacement_fn)
-        weights = cut_off_weights(neighbor_distances, max_neighbors)
+        r_kj, r_ij = _triplet_pairwise_displacements(r_init, nbrs_init,
+                                                     displacement_fn)
+        weights = cut_off_weights(r_kj, r_ij)
         weights *= mask  # combine radial cut-off with neighborlist mask
         max_weights = jnp.count_nonzero(weights > 1.e-6) * max_weight_multiplier
 
@@ -315,11 +324,10 @@ def init_adf_nbrs(displacement_fn, adf_params, smoothing_dr=0.01, r_init=None,
         on-the-fly via the 'box' kwarg.
         """
         dyn_displacement = partial(displacement_fn, **kwargs)  # box kwarg
-        _, max_neighbors = neighbor.idx.shape
         mask = _angle_neighbor_mask(neighbor)
-        neighbor_distances, r_kj, r_ij = pairwise_distances_and_displacements(
+        r_kj, r_ij = _triplet_pairwise_displacements(
             state.position, neighbor, dyn_displacement)
-        weights = cut_off_weights(neighbor_distances, max_neighbors)
+        weights = cut_off_weights(r_kj, r_ij)
         weights *= mask  # combine radial cut-off with neighborlist mask
 
         if r_init is not None:  # prune triplets
