@@ -42,7 +42,7 @@ def angles_triplets(R, displacement_fn, angle_idxs, angular_connectivity):
     R_kj = vmap(displacement_fn)(R_k, R_j)
     # we need to mask as the case R_ji is co-linear with R_kj would otherwise generate NaNs on the backward pass
     R_ij_safe, R_kj_safe = safe_angle_mask(R_ij, R_kj, angle_mask)
-    angles = custom_quantity.vectorized_angle_fn(R_ij_safe, R_kj_safe)
+    angles = vmap(custom_quantity.angle)(R_ij_safe, R_kj_safe)
     return angles
 
 
