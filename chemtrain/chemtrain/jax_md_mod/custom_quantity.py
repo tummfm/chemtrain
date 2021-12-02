@@ -23,6 +23,16 @@ def energy_wrapper(energy_fn_template):
         return energy_fn(state.position, neighbor=neighbor, **kwargs)
     return energy
 
+
+def _dyn_box(reference_box, **kwargs):
+    """Gets box dynamically from kwargs, if provided, otherwise defaults to
+    reference. Ensures that a box is provided.
+    """
+    box = kwargs.get('box', reference_box)
+    assert box is not None, ('If no reference box is given, needs to be '
+                             'given as kwarg "box".')
+    return box
+
 # TODO distinct classes and discretization functions don't seem optimal
 #  --> possible refactor
 
@@ -110,19 +120,19 @@ def _ideal_gas_density(particle_density, bin_boundaries):
     return bin_weights
 
 
-def init_rdf(box, displacement_fn, rdf_params):
+def init_rdf(displacement_fn, rdf_params, reference_box=None):
     """Initializes a function that computes the radial distribution function
     (RDF) for a single state.
 
     Args:
-        box: Simulation box
         displacement_fn: Displacement function
         rdf_params: RDFParams defining the hyperparameters of the RDF
+        reference_box: Simulation box. Can be provided here for constant boxes
+                       or on-the-fly as kwarg 'box', e.g. for NPT ensemble
 
     Returns:
         A function taking a simulation state and returning the instantaneous RDF
     """
-    # TODO if box is None: require keyword, otherwise encode with partial
     _, bin_centers, bin_boundaries, sigma = dataclasses.astuple(rdf_params)
     distance_metric = space.canonicalize_displacement_or_metric(displacement_fn)
     bin_size = jnp.diff(bin_boundaries)
@@ -148,7 +158,8 @@ def init_rdf(box, displacement_fn, rdf_params):
                                                  axis=0) / n_particles
         return mean_pair_corr
 
-    def rdf_compute_fun(state, **unused_kwargs):  # TODO add box here
+    def rdf_compute_fun(state, **kwargs):
+        box = _dyn_box(reference_box, **kwargs)
         # Note: we cannot use neighbor list since RDF cutoff and
         # neighbor list cut-off don't coincide in general
         n_particles, spatial_dim = state.position.shape
@@ -182,22 +193,10 @@ def angle(r_ij, r_kj):
     return theta
 
 
-def _adf_cutoff(r_outer, r_inner, smooth_dr):
-    """Smoothly constraints triplets to a radial band such that both distances
-    are between r_inner and r_outer. The Gaussian cdf is used for smoothing.
-    The smoothing width can be controlled by the gaussian standard deviation.
-    """
-    def smooth_cutoff(r_small, r_large):
-        outer_weight = 1. - norm.cdf(r_large, loc=r_outer, scale=smooth_dr**2)
-        inner_weight = norm.cdf(r_small, loc=r_inner, scale=smooth_dr**2)
-        return outer_weight * inner_weight
-    return smooth_cutoff
-
-
 def _angle_neighbor_mask(neighbor):
     """Mask the cases of non-existing neighbors and both neighbors being
     the same particle. The cases j=k and j=i is already excluded by the
-    neighbor list construction.
+    neighbor list construction. Returns a boolean (N_triplets,) array.
     """
     n_particles, max_neighbors = neighbor.idx.shape
     edge_idx_flat = jnp.ravel(neighbor.idx)
@@ -212,6 +211,21 @@ def _angle_neighbor_mask(neighbor):
     mask = mask_k * mask_i * mask_i_eq_k
     mask = jnp.expand_dims(mask, axis=-1)
     return mask
+
+
+def pairwise_distances_and_displacements(position, neighbor, displacement_fn):  # TODO make private
+    """Build distance matrix and pairs of displacement vectors."""
+    neighbor_displacement_fn = space.map_neighbor(displacement_fn)
+    n_particles, max_neighbors = neighbor.idx.shape
+    r_neigh = position[neighbor.idx]
+    neighbor_displacement = neighbor_displacement_fn(position, r_neigh)
+    neighbor_distances = space.distance(neighbor_displacement)
+    neighbor_displacement_flat = jnp.reshape(
+        neighbor_displacement, (n_particles * max_neighbors, 3))
+    r_kj = jnp.repeat(neighbor_displacement_flat, max_neighbors, axis=0)
+    r_ij = jnp.tile(neighbor_displacement, (1, max_neighbors, 1)).reshape(
+        [n_particles * max_neighbors**2, 3])
+    return neighbor_distances, r_kj, r_ij
 
 
 def init_adf_nbrs(displacement_fn, adf_params, smoothing_dr=0.01, r_init=None,
@@ -249,41 +263,30 @@ def init_adf_nbrs(displacement_fn, adf_params, smoothing_dr=0.01, r_init=None,
 
     _, bin_centers, sigma_theta, r_outer, r_inner = dataclasses.astuple(
         adf_params)
-    neighbor_displacement_fn = space.map_neighbor(displacement_fn)
     sigma_theta = util.f32(sigma_theta)
     bin_centers = util.f32(bin_centers)
 
-    smooth_cutoff_fn = _adf_cutoff(r_outer, r_inner, smoothing_dr)
-
-    # TODO should we split these functions differently? Re-usability potential?
-
-    def pairwise_distances_and_displacements(position, neighbor):
-        """Build distance matrix and pairs of displacement vectors."""
-        n_particles, max_neighbors = neighbor.idx.shape
-        r_neigh = position[neighbor.idx]
-        neighbor_displacement = neighbor_displacement_fn(position, r_neigh)
-        neighbor_distances = space.distance(neighbor_displacement)
-        neighbor_displacement_flat = jnp.reshape(
-            neighbor_displacement, (n_particles * max_neighbors, 3))
-        r_kj = jnp.repeat(neighbor_displacement_flat, max_neighbors, axis=0)
-        r_ij = jnp.tile(neighbor_displacement, (1, max_neighbors, 1)).reshape(
-            [n_particles * max_neighbors**2, 3])
-        return neighbor_distances, r_kj, r_ij
-
     def cut_off_weights(pair_dist, max_neighbors):
-        """Build differentiable cut-off weight vector using Gaussian CDF
-        cut-off function.
+        """Smoothly constraints triplets to a radial band such that both
+        distances are between r_inner and r_outer. The Gaussian cdf is used for
+        smoothing. The smoothing width can be controlled by the gaussian
+        standard deviation.
         """
         dist_kj = jnp.repeat(jnp.ravel(pair_dist), max_neighbors, axis=0)
         dist_ij = jnp.tile(pair_dist, (1, max_neighbors)).ravel()
         # get r_small and r_large for each triplet
         pair_dist = jnp.column_stack((dist_kj, dist_ij)).sort(axis=1)
-        weights = smooth_cutoff_fn(pair_dist[:, 0], pair_dist[:, 1])
-        weights = jnp.expand_dims(weights, axis=-1)
+        outer_weight = 1 - norm.cdf(pair_dist[:, 0], loc=r_outer,
+                                    scale=smoothing_dr**2)
+        inner_weight = norm.cdf(pair_dist[:, 1], loc=r_inner,
+                                scale=smoothing_dr**2)
+        weights = jnp.expand_dims(outer_weight * inner_weight, axis=-1)
         return weights
 
     def weighted_adf(angles, weights):
-        """Compute weighted adf contribution of each triplet."""
+        """Compute weighted ADF contribution of each triplet. For
+        differentiability, each triplet contribution is smoothed via a Gaussian.
+        """
         exp = jnp.exp(util.f32(-0.5) * (angles[:, jnp.newaxis] - bin_centers)**2
                       / sigma_theta**2)
         gaussians = exp / jnp.sqrt(2 * jnp.pi * sigma_theta**2)
@@ -301,16 +304,20 @@ def init_adf_nbrs(displacement_fn, adf_params, smoothing_dr=0.01, r_init=None,
         _, max_neighbors = nbrs_init.idx.shape
         mask = _angle_neighbor_mask(nbrs_init)
         neighbor_distances, _, _ = pairwise_distances_and_displacements(
-            r_init, nbrs_init)
+            r_init, nbrs_init, displacement_fn)
         weights = cut_off_weights(neighbor_distances, max_neighbors)
         weights *= mask  # combine radial cut-off with neighborlist mask
         max_weights = jnp.count_nonzero(weights > 1.e-6) * max_weight_multiplier
 
-    def adf_fn(state, neighbor, **unused_kwargs):  # TODO add box and partial
+    def adf_fn(state, neighbor, **kwargs):
+        """Returns ADF for a single snapshot. Allows changing the box
+        on-the-fly via the 'box' kwarg.
+        """
+        dyn_displacement = partial(displacement_fn, **kwargs)  # box kwarg
         _, max_neighbors = neighbor.idx.shape
         mask = _angle_neighbor_mask(neighbor)
         neighbor_distances, r_kj, r_ij = pairwise_distances_and_displacements(
-            state.position, neighbor)
+            state.position, neighbor, dyn_displacement)
         weights = cut_off_weights(neighbor_distances, max_neighbors)
         weights *= mask  # combine radial cut-off with neighborlist mask
 
@@ -364,8 +371,9 @@ def init_tetrahedral_order_parameter(displacement):
         A function that takes a simulation state with neighborlist and returns
          the instantaneous q value.
     """
-    def q_fn(state, neighbor, **unused_kwargs):
-        nearest_dispacements = _nearest_tetrahedral_nbrs(displacement,
+    def q_fn(state, neighbor, **kwargs):
+        dyn_displacement = partial(displacement, **kwargs)
+        nearest_dispacements = _nearest_tetrahedral_nbrs(dyn_displacement,
                                                          state.position,
                                                          neighbor)
         # Note: for loop will be unrolled by jit.
@@ -453,10 +461,11 @@ def init_bond_length(displacement_fn, bonds, average=False):
     """
     metric = vmap(space.canonicalize_displacement_or_metric(displacement_fn))
 
-    def bond_length(state, **unused_kwargs):
+    def bond_length(state, **kwargs):
+        dyn_metric = partial(metric, **kwargs)
         r1 = state.position[bonds[:, 0]]
         r2 = state.position[bonds[:, 1]]
-        distances = metric(r1, r2)
+        distances = dyn_metric(r1, r2)
         if average:
             return jnp.mean(distances)
         else:
@@ -488,7 +497,7 @@ def virial_potential_part(energy_fn, state, nbrs, box_tensor, **kwargs):
     return force_contribution + box_contribution
 
 
-def init_virial_stress_tensor(energy_fn_template, box_tensor=None,
+def init_virial_stress_tensor(energy_fn_template, ref_box_tensor=None,
                               include_kinetic=True):
     """Initializes a function that computes the virial stress tensor for a
     single state.
@@ -506,9 +515,9 @@ def init_virial_stress_tensor(energy_fn_template, box_tensor=None,
     Args:
         energy_fn_template: A function that takes energy parameters as input
                             and returns an energy function
-        box_tensor: The transformation T of general periodic boundary
-                    conditions. If None, box_tensor needs to be provided as
-                    'box' during function call, e.g. for the NPT ensemble.
+        ref_box_tensor: The transformation T of general periodic boundary
+                        conditions. If None, box_tensor needs to be provided as
+                        'box' during function call, e.g. for the NPT ensemble.
         include_kinetic: Whether kinetic part of stress tensor should be added.
 
     Returns:
@@ -516,12 +525,12 @@ def init_virial_stress_tensor(energy_fn_template, box_tensor=None,
         energy_params and box (if applicable) and returns the instantaneous
         virial stress tensor.
     """
-
-    def virial_stress_tensor_neighborlist(state, neighbor, energy_params, box,
+    def virial_stress_tensor_neighborlist(state, neighbor, energy_params,
                                           **kwargs):
         # Note: this workaround with the energy_template was needed to keep
         #       the function jitable when changing energy_params on-the-fly
         # TODO function to transform box to box-tensor
+        box = _dyn_box(ref_box_tensor, **kwargs)
         energy_fn = energy_fn_template(energy_params)
         virial_tensor = virial_potential_part(energy_fn, state, neighbor, box,
                                               **kwargs)
@@ -533,13 +542,11 @@ def init_virial_stress_tensor(energy_fn_template, box_tensor=None,
         else:
             return virial_tensor / volume
 
-    if box_tensor is None:
-        return virial_stress_tensor_neighborlist
-    else:
-        return partial(virial_stress_tensor_neighborlist, box=box_tensor)
+    return virial_stress_tensor_neighborlist
 
 
-def init_pressure(energy_fn_template, box_tensor=None, include_kinetic=True):
+def init_pressure(energy_fn_template, ref_box_tensor=None,
+                  include_kinetic=True):
     """Initializes a function that computes the pressure for a single state.
 
     This function is applicable to arbitrary many-body interactions, even
@@ -549,9 +556,9 @@ def init_pressure(energy_fn_template, box_tensor=None, include_kinetic=True):
     Args:
         energy_fn_template: A function that takes energy parameters as input
                             and returns an energy function
-        box_tensor: The transformation T of general periodic boundary
-                    conditions. If None, box_tensor needs to be provided as
-                    'box' during function call, e.g. for NPT ensemble.
+        ref_box_tensor: The transformation T of general periodic boundary
+                        conditions. If None, box_tensor needs to be provided as
+                        'box' during function call, e.g. for NPT ensemble.
         include_kinetic: Whether kinetic part of stress tensor should be added.
 
     Returns:
@@ -560,7 +567,7 @@ def init_pressure(energy_fn_template, box_tensor=None, include_kinetic=True):
         pressure.
     """
     stress_tensor_fn = init_virial_stress_tensor(
-        energy_fn_template, box_tensor, include_kinetic=include_kinetic)
+        energy_fn_template, ref_box_tensor, include_kinetic=include_kinetic)
 
     def pressure_neighborlist(state, neighbor, energy_params, **kwargs):
         stress_tensor = stress_tensor_fn(state, neighbor, energy_params,
@@ -597,10 +604,15 @@ def init_stiffness_tensor_stress_fluctuation(energy_fn_template, box_tensor,
      Van Workum et al., "Isothermal stress and elasticity tensors for ions and
      point dipoles using Ewald summations", PHYSICAL REVIEW E 71, 061102 (2005).
 
+     # TODO provide sample usage
+
     Args:
         energy_fn_template: A function that takes energy parameters as input
                             and returns an energy function
-        box_tensor: The transformation T of general periodic boundary conditions
+        box_tensor: The transformation T of general periodic boundary
+                    conditions. As the stress-fluctuation method is only
+                    applicable to the NVT ensemble, the box_tensor needs to be
+                    provided here as a constant, not on-the-fly.
         kbt: Temperature in units of the Boltzmann constant
         n_particles: Number of particles in the box
 
