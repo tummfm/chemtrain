@@ -276,10 +276,11 @@ def init_adf_nbrs(displacement_fn, adf_params, smoothing_dr=0.01, r_init=None,
         dist_ij = jnp.tile(pair_dist, (1, max_neighbors)).ravel()
         # get r_small and r_large for each triplet
         pair_dist = jnp.column_stack((dist_kj, dist_ij)).sort(axis=1)
-        outer_weight = 1 - norm.cdf(pair_dist[:, 0], loc=r_outer,
-                                    scale=smoothing_dr**2)
-        inner_weight = norm.cdf(pair_dist[:, 1], loc=r_inner,
+        # get inner boundary weight from r_small and outer weight from r_large
+        inner_weight = norm.cdf(pair_dist[:, 0], loc=r_inner,
                                 scale=smoothing_dr**2)
+        outer_weight = 1 - norm.cdf(pair_dist[:, 1], loc=r_outer,
+                                    scale=smoothing_dr**2)
         weights = jnp.expand_dims(outer_weight * inner_weight, axis=-1)
         return weights
 
