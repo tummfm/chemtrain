@@ -7,7 +7,7 @@ from functools import partial
 
 from jax import jit, grad, vmap, lax, jacrev, jacfwd, numpy as jnp
 from jax.scipy.stats import norm
-from jax_md import space, util, dataclasses, quantity
+from jax_md import space, util, dataclasses, quantity, simulate
 
 from chemtrain.jax_md_mod import custom_nn
 
@@ -32,6 +32,16 @@ def _dyn_box(reference_box, **kwargs):
     assert box is not None, ('If no reference box is given, needs to be '
                              'given as kwarg "box".')
     return box
+
+
+def density(state, **unused_kwargs):
+    """Returns density of a single snapshot of the NPT ensemble."""
+    dim = state.position.shape[-1]
+    box = simulate.npt_box(state)
+    volume = quantity.volume(dim, box)
+    total_mass = jnp.sum(state.mass)
+    return total_mass / volume
+
 
 # TODO distinct classes and discretization functions don't seem optimal
 #  --> possible refactor
