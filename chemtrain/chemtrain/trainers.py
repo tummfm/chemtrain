@@ -178,11 +178,9 @@ class ForceMatching(util.MLETrainerTemplate):
             self.best_val_loss = mean_val_loss
             self.best_params = copy.copy(self.params)
 
-        converged = False
         if thresh is not None:
             if improvement < thresh:
-                converged = True
-        return converged
+                self.converged = True
 
 
 class Difftre(reweighting.PropagationBase):
@@ -377,6 +375,7 @@ class Difftre(reweighting.PropagationBase):
                               f'{self._epoch} is NaN. This was likely caused by'
                               f' divergence of the optimization or a bad model '
                               f'setup causing a NaN trajectory.')
+                self.converged = True  # ends training
                 break
 
         self.batch_losses.append(sum(losses) / self.sim_batch_size)
@@ -394,12 +393,11 @@ class Difftre(reweighting.PropagationBase):
         if jnp.argmin(jnp.array(self.epoch_losses)) == len(self.epoch_losses)-1:
             self.best_params = copy.copy(self.params)
 
-        converged = False
         if thresh is not None:
             if self.criterion == 'max_loss':
-                if max(last_losses) < thresh: converged = True
+                if max(last_losses) < thresh: self.converged = True
             elif self.criterion == 'ave_loss':
-                if epoch_loss < thresh: converged = True
+                if epoch_loss < thresh: self.converged = True
             elif self.criterion == 'std':
                 raise NotImplementedError('Currently, there is no criterion '
                                           'based on the std of the loss '
@@ -408,7 +406,6 @@ class Difftre(reweighting.PropagationBase):
                 raise ValueError(f'Convergence criterion {self.criterion} '
                                  f'unknown. Select "max_loss", "ave_loss" or '
                                  f'"std".')
-        return converged
 
 
 class RelativeEntropy(reweighting.PropagationBase):
@@ -548,7 +545,7 @@ class RelativeEntropy(reweighting.PropagationBase):
 
     def _evaluate_convergence(self, duration, thresh):
         print(f'Epoch {self._epoch}: Elapsed time = {duration} min')
-        converged = False  # TODO implement convergence test
+        self.converged = False  # TODO implement convergence test
         if thresh is not None:
             raise NotImplementedError('Currently there is no convergence '
                                       'criterion implemented for relative '
@@ -556,4 +553,3 @@ class RelativeEntropy(reweighting.PropagationBase):
                                       'implementation might be based on the '
                                       'variation of params or reweigting '
                                       'effective sample size.')
-        return converged
