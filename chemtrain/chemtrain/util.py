@@ -125,13 +125,6 @@ class MLETrainerTemplate(abc.ABC):
         self.update_times = []
         self.converged = False
 
-        if checkpoint_format == '.pkl':
-            print('Pickle is useful for checkpointing as the whole trainer '
-                  '(except for jitted functions) can be saved. However, using'
-                  '(cloud-)pickle for long-term storage is highly discouraged. '
-                  'Consider saving learned energy_params in a different '
-                  'format, e.g. using the save_energy_params function.')
-
     @property
     def energy_fn(self):
         return self.reference_energy_fn_template(self.params)

@@ -26,20 +26,29 @@ def energy_wrapper(energy_fn_template):
 
 def _dyn_box(reference_box, **kwargs):
     """Gets box dynamically from kwargs, if provided, otherwise defaults to
-    reference. Ensures that a box is provided.
+    reference. Ensures that a box is provided and deletes from kwargs.
     """
-    box = kwargs.get('box', reference_box)
+    box = kwargs.pop('box', reference_box)
     assert box is not None, ('If no reference box is given, needs to be '
                              'given as kwarg "box".')
-    return box
+    return box, kwargs
+
+
+def _canonicalized_masses(state):
+    if state.mass.ndim == 0:
+        masses = jnp.ones(state.position.shape[0]) * state.mass
+    else:
+        masses = state.mass
+    return masses
 
 
 def density(state, **unused_kwargs):
     """Returns density of a single snapshot of the NPT ensemble."""
     dim = state.position.shape[-1]
+    masses = _canonicalized_masses(state)
     box = simulate.npt_box(state)
     volume = quantity.volume(dim, box)
-    total_mass = jnp.sum(state.mass)
+    total_mass = jnp.sum(masses)
     return total_mass / volume
 
 
@@ -169,7 +178,7 @@ def init_rdf(displacement_fn, rdf_params, reference_box=None):
         return mean_pair_corr
 
     def rdf_compute_fun(state, **kwargs):
-        box = _dyn_box(reference_box, **kwargs)
+        box, _ = _dyn_box(reference_box, **kwargs)
         # Note: we cannot use neighbor list since RDF cutoff and
         # neighbor list cut-off don't coincide in general
         n_particles, spatial_dim = state.position.shape
@@ -549,7 +558,7 @@ def init_virial_stress_tensor(energy_fn_template, ref_box_tensor=None,
         # Note: this workaround with the energy_template was needed to keep
         #       the function jitable when changing energy_params on-the-fly
         # TODO function to transform box to box-tensor
-        box = _dyn_box(ref_box_tensor, **kwargs)
+        box, kwargs = _dyn_box(ref_box_tensor, **kwargs)
         energy_fn = energy_fn_template(energy_params)
         virial_tensor = virial_potential_part(energy_fn, state, neighbor, box,
                                               **kwargs)

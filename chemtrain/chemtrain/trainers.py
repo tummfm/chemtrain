@@ -313,8 +313,7 @@ class Difftre(reweighting.PropagationBase):
         if loss_fn is None:
             loss_fn = reweighting.independent_mse_loss_fn_init(targets)
         else:
-            print('Using custom loss function. '
-                  'Ignoring \'gamma\' and \'target\' in  \"quantities\".')
+            print('Using custom loss function. Ignoring "target" dict.')
 
         reweighting.checkpoint_quantities(quantities)
 

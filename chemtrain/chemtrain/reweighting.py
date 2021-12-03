@@ -353,7 +353,7 @@ class PropagationBase(util.MLETrainerTemplate):
         # is there a better differentiator? kbT could be same for 2 simulations
         key = self.n_statepoints
         self.n_statepoints += 1
-        npt_ensemble = util.is_npt_ensemble(reference_state)
+        npt_ensemble = util.is_npt_ensemble(reference_state[0])
 
         initial_traj_generator, compute_weights, propagate = \
             init_pot_reweight_propagation_fns(energy_fn_template,
