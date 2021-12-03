@@ -161,7 +161,7 @@ def init_rdf(displacement_fn, rdf_params, reference_box=None):
         each particle pair contributes exactly 1.
         """
         n_particles = position.shape[0]
-        metric = partial(distance_metric, box=box)
+        metric = partial(distance_metric, box=box)  # TODO could this be problematic? Encode box into displacement as in ADF?
         metric = space.map_product(metric)
         dr = metric(position, position)
         # neglect same particles i.e. distance = 0.
