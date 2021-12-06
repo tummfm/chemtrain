@@ -264,7 +264,7 @@ class ResidualLayer(hk.Module):
 
 class EmbeddingBlock(hk.Module):
     def __init__(self, embed_size, n_species, type_embed_size=None, activation=jax.nn.swish,
-                 init_kwargs=None, name='Embedding'):
+                 init_kwargs=None, kbt_dependent=False, name='Embedding'):
         super().__init__(name=name,)
 
         if type_embed_size is None:
@@ -273,13 +273,17 @@ class EmbeddingBlock(hk.Module):
         embed_init = hk.initializers.RandomUniform(minval=-jnp.sqrt(3), maxval=jnp.sqrt(3))
         self.embedding_vect = hk.get_parameter('Embedding_vect', [n_species, type_embed_size],
                                                init=embed_init, dtype=jnp.float32)
+        self.kbt_dependent = kbt_dependent
+        if kbt_dependent:
+            self.kbt_embedding = hk.get_parameter('Embedding_kbt', [1, type_embed_size],
+                                                  init=embed_init, dtype=jnp.float32)
 
         # unlike the original DimeNet implementation, there is no activation and bias in RBF_Dense as shown in the
         # network sketch. This is consistent with other Layers processing rbf values throughout the network
         self.rbf_dense = hk.Linear(embed_size, name='RBF_Dense', with_bias=False, **init_kwargs)
         self.dense_after_concat = hk.Sequential([hk.Linear(embed_size, name='Concat_Dense', **init_kwargs), activation])
 
-    def __call__(self, rbf, species, pair_connectivity):
+    def __call__(self, rbf, species, pair_connectivity, **kwargs):
         idx_i, idx_j, _ = pair_connectivity
         transformed_rbf = self.rbf_dense(rbf)
 
@@ -290,6 +294,13 @@ class EmbeddingBlock(hk.Module):
         h_j = self.embedding_vect[type_j]
 
         edge_embedding = jnp.concatenate([h_i, h_j, transformed_rbf], axis=-1)
+        if self.kbt_dependent:
+            assert 'kT' in kwargs, ('If potential should be kbt-dependent. '
+                                    '"kT" needs to be provided as kwarg.')
+            kbt_embeds = jnp.tile(self.kbt_embedding, (h_j.shape[0], 1))
+            kbt_embeds *= kwargs['kT']
+            edge_embedding = jnp.concatenate([edge_embedding, kbt_embeds],
+                                             axis=-1)
         embedded_messages = self.dense_after_concat(edge_embedding)
         return embedded_messages
 
@@ -412,6 +423,7 @@ class DimeNetPPEnergy(hk.Module):
                  r_cutoff: float,
                  n_species: int,
                  n_particles: int,
+                 kbt_dependent=False,
                  embed_size: int = 32,
                  n_interaction_blocks: int = 4,
                  num_residual_before_skip: int = 1,
@@ -438,7 +450,7 @@ class DimeNetPPEnergy(hk.Module):
         self.output_blocks = []
         self.int_blocks = []
         self.embedding_layer = EmbeddingBlock(embed_size, n_species, type_embed_size=type_embed_size,
-                                              activation=activation, init_kwargs=init_kwargs)
+                                              activation=activation, init_kwargs=init_kwargs, kbt_dependent=kbt_dependent)
         self.output_blocks.append(OutputBlock(embed_size, n_particles, out_embed_size, num_dense=num_dense_out,
                                               num_targets=1, activation=activation, init_kwargs=init_kwargs))
 
@@ -449,11 +461,11 @@ class DimeNetPPEnergy(hk.Module):
             self.output_blocks.append(OutputBlock(embed_size, n_particles, out_embed_size, num_dense=num_dense_out,
                                                   num_targets=1, activation=activation, init_kwargs=init_kwargs))
 
-    def __call__(self, distances, angles, species, pair_connections, angular_connections) -> jnp.ndarray:
+    def __call__(self, distances, angles, species, pair_connections, angular_connections, **dyn_kwargs) -> jnp.ndarray:
         rbf = self.rbf_layer(distances)  # correctly masked by construction: masked distances are 2 * cut-off --> rbf=0
         sbf = self.sbf_layer(distances, angles, angular_connections)  # is masked too
 
-        messages = self.embedding_layer(rbf, species, pair_connections)
+        messages = self.embedding_layer(rbf, species, pair_connections, **dyn_kwargs)
         per_atom_quantities = self.output_blocks[0](messages, rbf, pair_connections)
 
         for i in range(self.n_interactions):

@@ -377,6 +377,7 @@ def DimeNetPP_neighborlist(displacement: DisplacementFn,
                            R_test: Array,
                            neighbor_test,
                            r_cutoff: float,
+                           kbt_dependent=False,
                            embed_size: int = 32,
                            n_interaction_blocks: int = 4,
                            num_residual_before_skip: int = 1,
@@ -486,6 +487,7 @@ def DimeNetPP_neighborlist(displacement: DisplacementFn,
         net = custom_nn.DimeNetPPEnergy(r_cutoff,
                                         n_particles=N,
                                         n_species=n_species,
+                                        kbt_dependent=kbt_dependent,
                                         embed_size=embed_size,
                                         n_interaction_blocks=n_interaction_blocks,
                                         num_residual_before_skip=num_residual_before_skip,
@@ -500,7 +502,7 @@ def DimeNetPP_neighborlist(displacement: DisplacementFn,
                                         activation=activation,
                                         envelope_p=envelope_p,
                                         init_kwargs=init_kwargs)
-        gnn_energy = net(pair_distances_sparse, angles, species, pair_connections, angular_connectivity)
+        gnn_energy = net(pair_distances_sparse, angles, species, pair_connections, angular_connectivity, **dynamic_kwargs)
         gnn_energy = gnn_energy[0]  # the net returns a 1D array as output, but grad needs a scalar for differentiation
         return gnn_energy
 

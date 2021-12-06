@@ -244,13 +244,14 @@ def quantity_traj(traj_state, quantities, energy_params=None):
     npt_ensemble = util.is_npt_ensemble(last_state)
 
     @jit
-    def quantity_trajectory(_, state):
+    def single_state_quantities(_, single_snapshot):
+        state, kbt = single_snapshot
         nbrs = fixed_reference_nbrs.update(state.position)
-        kwargs = {'neighbor': nbrs, 'energy_params': energy_params}
+        kwargs = {'neighbor': nbrs, 'energy_params': energy_params, 'kT': kbt}
         if npt_ensemble:
             box = simulate.npt_box(state)
             kwargs['box'] = box
-        # TODO input kbT as well for temperature-dependent potential
+
         computed_quantities = {
             quantity_fn_key: quantities[quantity_fn_key](state, **kwargs)
             for quantity_fn_key in quantities
@@ -260,5 +261,8 @@ def quantity_traj(traj_state, quantities, energy_params=None):
     # TODO vectorization of might provide some computational gains at the
     #  expense of providing an additional parameter for batch-size, which
     #  can lead to OOM errors if not chosen properly.
-    _, quantity_trajs = lax.scan(quantity_trajectory, 0., traj_state.trajectory)
+    _, quantity_trajs = lax.scan(
+        single_state_quantities, 0., (traj_state.trajectory,
+                                      traj_state.thermostat_kbt)
+    )
     return quantity_trajs
