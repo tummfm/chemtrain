@@ -170,7 +170,10 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
         state of the previous trajectory to save equilibration time.
         """
         params, traj_state = inputs
-        updated_traj = trajectory_generator(params, traj_state.sim_state)
+        # give kT here as additional input to be handed through to energy_fn
+        # for kbt-dependent potentials
+        updated_traj = trajectory_generator(params, traj_state.sim_state,
+                                            kT=ref_kbt)
         return updated_traj
 
     @jit
@@ -365,7 +368,8 @@ class PropagationBase(util.MLETrainerTemplate):
                                               npt_ensemble)
         if initialize_traj:
             t_start = time.time()
-            init_traj = initial_traj_generator(self.params, reference_state)
+            init_traj = initial_traj_generator(self.params, reference_state,
+                                               kT=kbt)
             runtime = (time.time() - t_start) / 60.
             print(f'Time for trajectory initialization {key}: {runtime} mins')
             self.trajectory_states[key] = init_traj

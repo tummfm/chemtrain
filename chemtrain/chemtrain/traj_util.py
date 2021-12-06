@@ -86,7 +86,7 @@ def process_printouts(time_step, total_time, t_equilib, print_every):
     return timings
 
 
-def _run_to_next_printout_neighbors(apply_fn, timings, **schedule_kwargs):
+def _run_to_next_printout_neighbors(apply_fn, timings, **kwargs):
     """Initializes a function that runs simulation to next printout
     state and returns that state.
 
@@ -98,7 +98,7 @@ def _run_to_next_printout_neighbors(apply_fn, timings, **schedule_kwargs):
       neighbor_fn: Neighbor function
       timings: Instance of TimingClass containing information
                about which states to retain and simulation time
-      schedule_kwargs: Kwargs to supply 'kT' and/or 'pressure' time-dependent
+      kwargs: Kwargs to supply 'kT' and/or 'pressure' time-dependent
                        functions to allow for non-equilibrium MD
 
     Returns:
@@ -107,10 +107,10 @@ def _run_to_next_printout_neighbors(apply_fn, timings, **schedule_kwargs):
     """
     def do_step(cur_state, t):
         apply_kwargs = {}
-        if 'kt_schedule' in schedule_kwargs:
-            apply_kwargs['kT'] = schedule_kwargs['kT'](t)
-        if 'press_schedule' in schedule_kwargs:
-            apply_kwargs['pressure'] = schedule_kwargs['pressure'](t)
+        if 'kT' in kwargs:
+            apply_kwargs['kT'] = kwargs['kT'](t)
+        if 'pressure' in kwargs:
+            apply_kwargs['pressure'] = kwargs['pressure'](t)
 
         state, nbrs = cur_state
         new_state = apply_fn(state, neighbor=nbrs, **apply_kwargs)
