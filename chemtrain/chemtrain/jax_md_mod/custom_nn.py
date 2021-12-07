@@ -298,7 +298,7 @@ class EmbeddingBlock(hk.Module):
             assert 'kT' in kwargs, ('If potential should be kbt-dependent. '
                                     '"kT" needs to be provided as kwarg.')
             kbt_embeds = jnp.tile(self.kbt_embedding, (h_j.shape[0], 1))
-            kbt_embeds *= kwargs['kT']
+            kbt_embeds /= kwargs['kT']
             edge_embedding = jnp.concatenate([edge_embedding, kbt_embeds],
                                              axis=-1)
         embedded_messages = self.dense_after_concat(edge_embedding)
