@@ -1,30 +1,89 @@
 
-def _small_uncertainty(state, uncertainty_fn, uncertainty_threshold):
-    """A function returning True if the uncertainty/error of the current
-     state is below a threshold, otherwise false.
-     """
-    uncertainty_estimate = uncertainty_fn(state)
-    small = uncertainty_estimate < uncertainty_threshold
-    return small
+from jax import jit, numpy as jnp
+
+from chemtrain import traj_util, reweighting
 
 
-def init_uq_md(get_energy_fn, simulator_template, neighbor_fn,
-               timesteps_per_printout, uncertainty_fn, uncertainty_threshold,
-               temperature_schedule=None):
+def _continue_md(uncertainties, uncertainty_threshold, time, t_end):
+    max_uncertainty = jnp.max(uncertainties)
+    small_uncertainty = max_uncertainty < uncertainty_threshold
+    end_not_reached = time < t_end
+    return jnp.alltrue(jnp.stack([small_uncertainty, end_not_reached]))
 
-    def uq_md(state):
-        # TODO add time varying temperature schedule
-        energy_fn = get_energy_fn(state.params)
-        _, apply_fn = simulator_template(energy_fn)
-        run_to_printout = run_to_next_printout_neighbors(apply_fn,
-                                                         neighbor_fn,
-                                                         timesteps_per_printout)
-        # TODO change to lax.while_loop
-        while uncertainty_small(state):
-            new_sim_state = run_to_printout(state.sim_state)
-            state.sim_state = new_sim_state  # TODO check this is compatible with jax/jit
 
-        return state
+def _forward_prod_times(old_timings, t_production):
+    """Increase simulation time for next part of non-equilibrium MD."""
+    new_t_start = old_timings.t_production_start + t_production
+    new_t_end = old_timings.t_production_end + t_production
+    return old_timings.replace(t_production_start=new_t_start,
+                               t_production_end=new_t_end)
+
+
+def init_estimate_uncertainty(quantities, statepoint_grid, uncertainty_fn=None):
+
+    if uncertainty_fn is None:
+        uncertainty_fn = reweighting.independent_mse_loss_fn_init
+
+    def statepoint_uncertainty(traj, quantity_traj, target_kbt, target_press):
+        weights = reweighting.reweight_trajectory(traj, kT=target_kbt,
+                                                  pressure=target_press)
+        uncertainty, predictions = uncertainty_fn(quantity_traj, weights, targets)
+
+
+    def estimate_uncertainty(traj, energy_params):
+        quantity_traj = traj_util.quantity_traj(traj, quantities, energy_params)
+
+
+
+        return statepoints, uncertainties
+
+    return estimate_uncertainty
+
+
+def init_uq_md(energy_fn_template, simulator_template, timings, t_end,
+               uncertainty_fn, uncertainty_threshold, kt_schedule=None,
+               press_schedule=None):
+    # Doc: if returned statepoint=None: Simulation ran through without
+
+    trajectory_generator = traj_util.trajectory_generator_init(
+        simulator_template, energy_fn_template)
+    t_production = (timings.t_production_start[0]
+                    - timings.t_production_end[-1])
+    zero_array = jnp.array([], dtype=jnp.float32)
+
+    # Not jitting the while-loop gives more freedom in postprocessing results,
+    # i.e. storing all uncertainty values over the whole non-equilibrium MD
+    # trajectory. We therefore only jit the expensive body functions
+    trajectory_generator = jit(trajectory_generator)
+
+    # TODO orient initialization more like trainers
+
+    def uq_md(params, init_sim_state):
+
+        # init trajectory responsible for initial equilibration
+        equilib_timings = timings.replace(t_production_start=zero_array)
+        traj = trajectory_generator(
+            params, init_sim_state, timings=equilib_timings, kT=kt_schedule,
+            pressure=press_schedule)
+
+        # after initial, no more equilibration needed during non-equilibrium MD
+        prod_timings = timings.replace(t_equilib_start=zero_array)
+
+        continue_md = True
+        while continue_md:
+            traj = trajectory_generator(
+                params, traj.sim_state, timings=prod_timings,  kT=kt_schedule,
+                pressure=press_schedule)
+            prod_timings = _forward_prod_times(prod_timings, t_production)
+            cur_time = prod_timings.t_production_start[0]
+            statepoints, uncertainties = uncertainty_fn(traj)
+            continue_md = _continue_md(uncertainties, uncertainty_threshold,
+                                       cur_time, t_end)
+
+
+        converged = (cur_time >= t_end)
+
+        return state, converged
 
     return uq_md
 
