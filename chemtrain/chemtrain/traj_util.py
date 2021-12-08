@@ -86,7 +86,7 @@ def process_printouts(time_step, total_time, t_equilib, print_every):
     return timings
 
 
-def _run_to_next_printout_neighbors(apply_fn, timings, **schedule_kwargs):
+def _run_to_next_printout_neighbors(apply_fn, timings, **kwargs):
     """Initializes a function that runs simulation to next printout
     state and returns that state.
 
@@ -98,7 +98,7 @@ def _run_to_next_printout_neighbors(apply_fn, timings, **schedule_kwargs):
       neighbor_fn: Neighbor function
       timings: Instance of TimingClass containing information
                about which states to retain and simulation time
-      schedule_kwargs: Kwargs to supply 'kT' and/or 'pressure' time-dependent
+      kwargs: Kwargs to supply 'kT' and/or 'pressure' time-dependent
                        functions to allow for non-equilibrium MD
 
     Returns:
@@ -107,10 +107,10 @@ def _run_to_next_printout_neighbors(apply_fn, timings, **schedule_kwargs):
     """
     def do_step(cur_state, t):
         apply_kwargs = {}
-        if 'kt_schedule' in schedule_kwargs:
-            apply_kwargs['kT'] = schedule_kwargs['kT'](t)
-        if 'press_schedule' in schedule_kwargs:
-            apply_kwargs['pressure'] = schedule_kwargs['pressure'](t)
+        if 'kT' in kwargs:
+            apply_kwargs['kT'] = kwargs['kT'](t)
+        if 'pressure' in kwargs:
+            apply_kwargs['pressure'] = kwargs['pressure'](t)
 
         state, nbrs = cur_state
         new_state = apply_fn(state, neighbor=nbrs, **apply_kwargs)
@@ -238,13 +238,14 @@ def quantity_traj(traj_state, quantities, energy_params=None):
     npt_ensemble = util.is_npt_ensemble(last_state)
 
     @jit
-    def quantity_trajectory(_, state):
+    def single_state_quantities(_, single_snapshot):
+        state, kbt = single_snapshot
         nbrs = fixed_reference_nbrs.update(state.position)
-        kwargs = {'neighbor': nbrs, 'energy_params': energy_params}
+        kwargs = {'neighbor': nbrs, 'energy_params': energy_params, 'kT': kbt}
         if npt_ensemble:
             box = simulate.npt_box(state)
             kwargs['box'] = box
-        # TODO input kbT as well for temperature-dependent potential
+
         computed_quantities = {
             quantity_fn_key: quantities[quantity_fn_key](state, **kwargs)
             for quantity_fn_key in quantities
@@ -254,5 +255,8 @@ def quantity_traj(traj_state, quantities, energy_params=None):
     # TODO vectorization of might provide some computational gains at the
     #  expense of providing an additional parameter for batch-size, which
     #  can lead to OOM errors if not chosen properly.
-    _, quantity_trajs = lax.scan(quantity_trajectory, 0., traj_state.trajectory)
+    _, quantity_trajs = lax.scan(
+        single_state_quantities, 0., (traj_state.trajectory,
+                                      traj_state.thermostat_kbt)
+    )
     return quantity_trajs
