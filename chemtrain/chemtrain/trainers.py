@@ -350,6 +350,7 @@ class Difftre(reweighting.PropagationBase):
         # TODO parallelization? Maybe lift batch requirement and only
         #  sync sporadically?
         # https://jax.readthedocs.io/en/latest/faq.html#controlling-data-and-computation-placement-on-devices
+        # https://github.com/mpi4jax/mpi4jax
         # TODO split gradient and loss computation from stepping optimizer for
         #  building hybrid trainers?
 

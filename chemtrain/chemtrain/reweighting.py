@@ -49,7 +49,7 @@ def _build_weights(exponents):
     return weights, n_eff
 
 
-def reweight_trajectory(traj, targets, npt_ensemble=False):
+def reweight_trajectory(traj, **targets):
     """Computes weights to reweight a trajectory from one thermodynamic
     state point to another.
 
@@ -68,24 +68,24 @@ def reweight_trajectory(traj, targets, npt_ensemble=False):
 
     Args:
         traj: Reference trajectory to be reweighted
-        targets: A dict containing the targets under 'kbT' and/or 'pressure'.
+        targets: Kwargs containing the targets under 'kT' and/or 'pressure'.
                  If a keyword is not provided, the qunatity is assumed to be
                  and remain constant.
-        npt_ensemble: Whether 'traj' was generated in NPT, default False is NVT.
 
     Returns:
         A tuple (weights, n_eff). Weights can be used to compute
         reweighted observables and n_eff judges the expected
         statistical error from reweighting.
     """
+    npt_ensemble = util.is_npt_ensemble(traj.sim_state[0])
     if not npt_ensemble:
-        assert 'kbT' in targets, 'For NVT, a kbT target needs to be provided.'
+        assert 'kT' in targets, 'For NVT, a "kT" target needs to be provided.'
     # Note: if temperature / pressure are supposed to remain constant and are
     # hence not provided in the targets, we set them to the respective reference
     # values. Hence, their contribution to reweighting cancels. This should
     # even be at no additional cost under jit as XLA should easily detect the
     # zero contribution. Same applies to combinations in the NPT ensemble.
-    target_kbt = targets.get('kbT', traj.thermostat_kbt)
+    target_kbt = targets.get('kT', traj.thermostat_kbt)
     target_beta = 1. / target_kbt
     reference_betas = 1. / traj.thermostat_kbt
 
@@ -224,6 +224,8 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
 
 
 def independent_mse_loss_fn_init(targets):
+    # TODO maybe for improved flexibility, give targets during call and
+    #  bake in targets in difftre via partial
     """Initializes the default loss function, where MSE errors of
     destinct quantities are added.
 

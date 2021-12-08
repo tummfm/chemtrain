@@ -54,15 +54,19 @@ class TrajectoryState:
     aux: Dict = None
 
 
-def process_printouts(time_step, total_time, t_equilib, print_every):
+def process_printouts(time_step, total_time, t_equilib, print_every, t_start=0):
     """Initializes a dataclass containing information for the simulator
     on simulation time and saving states.
 
+    This function is not jitable as array sizes depend on input values.
+
     Args:
         time_step: Time step size
-        total_time: Total simulation time
-        t_equilib: Equilibration time
+        total_time: Total simulation run length
+        t_equilib: Equilibration run length
         print_every: Time after which a state is saved
+        t_start: Starting time. Only relevant for time-dependent
+                 thermostat/barostat.
 
     Returns:
         A class containing information for the simulator
@@ -75,8 +79,9 @@ def process_printouts(time_step, total_time, t_equilib, print_every):
     timesteps_per_printout = int(print_every / time_step)
     n_production = int((total_time - t_equilib) / print_every)
     n_dumped = int(t_equilib / print_every)
-    equilibration_t_start = jnp.arange(n_dumped) * print_every
-    production_t_start = jnp.arange(n_production) * print_every + t_equilib
+    equilibration_t_start = jnp.arange(n_dumped) * print_every + t_start
+    production_t_start = (jnp.arange(n_production) * print_every
+                          + t_equilib + t_start)
     production_t_end = production_t_start + print_every
     timings = TimingClass(t_equilib_start=equilibration_t_start,
                           t_production_start=production_t_start,
@@ -132,8 +137,8 @@ def _run_to_next_printout_neighbors(apply_fn, timings, **kwargs):
 
 def _canonicalize_dynamic_state_kwargs(state_kwargs, t_snapshots, *keys):
     """Converts constant state_kwargs, such as 'kT' and 'pressure' to constant
-    functions over time. Additionally return the values of state_kwargs at
-    production printout times.
+    functions over time and deletes None kwargs. Additionally, return the
+    values of state_kwargs at production printout times.
     """
     def constant_fn(_, c):
         return c
@@ -141,6 +146,9 @@ def _canonicalize_dynamic_state_kwargs(state_kwargs, t_snapshots, *keys):
     state_point_vals = []
     for key in keys:
         if key in state_kwargs:
+            if state_kwargs[key] is None:
+                state_kwargs.pop(key)  # ignore kwarg if None is provided
+                continue
             if jnp.isscalar(state_kwargs[key]):
                 state_kwargs[key] = partial(constant_fn, c=state_kwargs[key])
             state_points = vmap(state_kwargs[key])(t_snapshots)
@@ -151,7 +159,7 @@ def _canonicalize_dynamic_state_kwargs(state_kwargs, t_snapshots, *keys):
 
 
 def trajectory_generator_init(simulator_template, energy_fn_template,
-                              timings, quantities=None):
+                              ref_timings=None, quantities=None):
     """Initializes a trajectory_generator function that computes a new
     trajectory stating at the last state.
 
@@ -159,8 +167,8 @@ def trajectory_generator_init(simulator_template, energy_fn_template,
         simulator_template: Function returning new simulator given
                             current energy function
         energy_fn_template: Energy function template
-        timings: Instance of TimingClass containing information
-                 about which states to retain
+        ref_timings: Instance of TimingClass containing information about the
+                     times states need to be retained
         quantities: Quantities dict to compute and store auxilary quantities
                     alongside trajectory. This is particularly helpful for
                     storing energy and pressure in a reweighting context.
@@ -187,13 +195,18 @@ def trajectory_generator_init(simulator_template, energy_fn_template,
         Returns:
             TrajectoryState object containing the newly generated trajectory
         """
+        # TODO unify with dyn_box
+        timings = kwargs.pop('timings', ref_timings)
+        assert timings is not None
 
         kwargs, (kbt, barostat_press) = _canonicalize_dynamic_state_kwargs(
             kwargs, timings.t_production_end, 'kT', 'pressure')
+
         energy_fn = energy_fn_template(params)
         _, apply_fn = simulator_template(energy_fn)
         run_to_printout = _run_to_next_printout_neighbors(apply_fn, timings,
                                                           **kwargs)
+        # TODO possibly need to skip if t_equilib is 0
         sim_state, _ = lax.scan(run_to_printout,  # equilibrate
                                 sim_state,
                                 xs=timings.t_equilib_start)
