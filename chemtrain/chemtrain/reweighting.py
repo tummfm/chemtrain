@@ -11,7 +11,7 @@ from jax import (checkpoint, jit, lax, random, grad, tree_multimap, tree_map,
                  numpy as jnp)
 from jax_md import util as jax_md_util
 
-from chemtrain import util, traj_util
+from chemtrain import util, traj_util, traj_quantity
 from chemtrain.jax_md_mod import custom_quantity
 
 
@@ -103,7 +103,7 @@ def reweight_trajectory(traj, targets, npt_ensemble=False):
         target_press = targets.get('pressure', traj.barostat_press)
         target_beta_p = target_beta * target_press
         ref_beta_p = reference_betas * traj.barostat_press
-        volumes = traj_util.volumes(traj)
+        volumes = traj_quantity.volumes(traj)
 
         # For constant p, reduces to -V * P_ref * (beta_target - beta_ref)
         # For constant T, reduces to -V * beta_ref * (p_target - p_ref)
