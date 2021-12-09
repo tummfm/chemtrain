@@ -24,6 +24,11 @@ def energy_wrapper(energy_fn_template):
     return energy
 
 
+def temperature(state, **unused_kwargs):
+    """Temperature function that is consistent with quantity_traj interface."""
+    return quantity.temperature(state.velocity, state.mass)
+
+
 def _dyn_box(reference_box, **kwargs):
     """Gets box dynamically from kwargs, if provided, otherwise defaults to
     reference. Ensures that a box is provided.
