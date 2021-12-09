@@ -169,9 +169,9 @@ class ForceMatching(util.MLETrainerTemplate):
                               ) / self.batches_per_epoch
         mean_val_loss = sum(self.val_losses[-self.batches_per_epoch:]
                             ) / self.batches_per_epoch
-        print(f'Epoch {self._epoch}: Average train loss: {mean_train_loss} '
-              f'Average val loss: {mean_val_loss} '
-              f'Elapsed time = {duration} min')
+        print(f'Epoch {self._epoch}: Average train loss: {mean_train_loss:.5f} '
+              f'Average val loss: {mean_val_loss:.5f} '
+              f'Elapsed time = {duration:.3f} min')
 
         improvement = self.best_val_loss - mean_val_loss
         if improvement > 0.:
@@ -388,8 +388,10 @@ class Difftre(reweighting.PropagationBase):
         last_losses = jnp.array(self.batch_losses[-self.sim_batch_size:])
         epoch_loss = jnp.mean(last_losses)
         self.epoch_losses.append(epoch_loss)
-        print(f'Epoch {self._epoch}: Epoch loss = {epoch_loss}, Elapsed time = '
-              f'{duration} min')
+        print(f'Epoch {self._epoch}: Epoch loss = {epoch_loss:.5f}, '
+              f'Elapsed time = {duration:.3f} min')
+
+        self._print_measured_statepoint()
 
         # save parameter set that resulted in smallest loss up to this point
         if jnp.argmin(jnp.array(self.epoch_losses)) == len(self.epoch_losses)-1:
@@ -548,7 +550,10 @@ class RelativeEntropy(reweighting.PropagationBase):
         self._step_optimizer(batch_grad)
 
     def _evaluate_convergence(self, duration, thresh):
-        print(f'Epoch {self._epoch}: Elapsed time = {duration} min')
+        print(f'Epoch {self._epoch}: Elapsed time = {duration:.3f} min')
+
+        self._print_measured_statepoint()
+
         converged = False  # TODO implement convergence test
         if thresh is not None:
             raise NotImplementedError('Currently there is no convergence '
