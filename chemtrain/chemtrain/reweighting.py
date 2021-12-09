@@ -369,8 +369,16 @@ class PropagationBase(util.MLETrainerTemplate):
                                               self.reweight_ratio,
                                               npt_ensemble)
         if initialize_traj:
+            # Note: we dump the initial trajectory for equilibration, as initial
+            # equilibration usually takes much longer than equilibration time
+            # of each trajectory. If this is still not sufficient, the
+            # simulation should equilibrate over the course of subsequent
+            # updates.
+            dump_traj = initial_traj_generator(self.params, reference_state,
+                                               kT=kbt)
+
             t_start = time.time()
-            init_traj = initial_traj_generator(self.params, reference_state,
+            init_traj = initial_traj_generator(self.params, dump_traj.sim_state,
                                                kT=kbt)
             runtime = (time.time() - t_start) / 60.
             print(f'Time for trajectory initialization {key}: {runtime} mins')
