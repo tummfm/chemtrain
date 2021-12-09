@@ -9,6 +9,7 @@ from jax import jit, lax, vmap, numpy as jnp
 from jax_md import simulate, util as jax_md_util
 
 from chemtrain import util
+from chemtrain.jax_md_mod import custom_quantity
 
 Array = jax_md_util.Array
 
@@ -220,6 +221,8 @@ def trajectory_generator_init(simulator_template, energy_fn_template,
                                 thermostat_kbt=kbt,
                                 barostat_press=barostat_press)
 
+        # temperature is inexpensive and generally useful: compute it by default
+        quantities['kbT'] = custom_quantity.temperature
         aux_trajectory = quantity_traj(state, quantities, params)
         return state.replace(aux=aux_trajectory)
 

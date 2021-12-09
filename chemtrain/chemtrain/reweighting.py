@@ -345,7 +345,7 @@ class PropagationBase(util.MLETrainerTemplate):
 
         # store for each state point corresponding traj_state and grad_fn
         # save in distinct dicts as grad_fns need to be deleted for checkpoint
-        self.grad_fns, self.trajectory_states = {}, {}
+        self.grad_fns, self.trajectory_states, self.statepoints = {}, {}, {}
         self.n_statepoints = 0
         self.shuffle_key = random.PRNGKey(0)
 
@@ -358,7 +358,9 @@ class PropagationBase(util.MLETrainerTemplate):
         # is there a better differentiator? kbT could be same for 2 simulations
         key = self.n_statepoints
         self.n_statepoints += 1
+        self.statepoints[key] = {'kbT': kbt}
         npt_ensemble = util.is_npt_ensemble(reference_state[0])
+        if npt_ensemble: self.statepoints[key]['pressure'] = 0  # TODO pressure
 
         initial_traj_generator, compute_weights, propagate = \
             init_pot_reweight_propagation_fns(energy_fn_template,
@@ -369,8 +371,16 @@ class PropagationBase(util.MLETrainerTemplate):
                                               self.reweight_ratio,
                                               npt_ensemble)
         if initialize_traj:
+            # Note: we dump the initial trajectory for equilibration, as initial
+            # equilibration usually takes much longer than equilibration time
+            # of each trajectory. If this is still not sufficient, the
+            # simulation should equilibrate over the course of subsequent
+            # updates.
+            dump_traj = initial_traj_generator(self.params, reference_state,
+                                               kT=kbt)
+
             t_start = time.time()
-            init_traj = initial_traj_generator(self.params, reference_state,
+            init_traj = initial_traj_generator(self.params, dump_traj.sim_state,
                                                kT=kbt)
             runtime = (time.time() - t_start) / 60.
             print(f'Time for trajectory initialization {key}: {runtime} mins')
@@ -407,6 +417,25 @@ class PropagationBase(util.MLETrainerTemplate):
             raise NotImplementedError('Only batch_size = 1 or -1 implemented.')
 
         return (batch for batch in batch_list)
+
+    def _print_measured_statepoint(self):
+        """Print meausured kbT (and pressure for npt ensemble) for all
+        statepoints to ensure the simulation is indeed carried out at the
+        prescribed state point.
+        """
+        for sim_key, traj in self.trajectory_states.items():
+            statepoint = self.statepoints[sim_key]
+            measured_kbt = jnp.mean(traj.aux['kbT'])
+            if 'pressure' in statepoint:  # NPT
+                measured_press = jnp.mean(traj.aux['pressure'])
+                press_print = (f' press = {measured_press:.2f} ref_press = '
+                               f'{statepoint["pressure"]:.2f}')
+            else:
+                press_print = ''
+            print(f'Statepoint {sim_key}: kbT = {measured_kbt:.3f} ref_kbt = '
+                  f'{statepoint["kbT"]:.3f}' + press_print)
+
+        print('')  # to visually differentiate between epochs
 
     def train(self, epochs, checkpoint_freq=None, thresh=None):
         assert self.n_statepoints > 0, ('Add at least 1 state point via '
