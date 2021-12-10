@@ -166,7 +166,7 @@ def init_rdf(displacement_fn, rdf_params, reference_box=None):
         each particle pair contributes exactly 1.
         """
         n_particles = position.shape[0]
-        metric = partial(distance_metric, box=box)  # TODO could this be problematic? Encode box into displacement as in ADF?
+        metric = partial(distance_metric, box=box)
         metric = space.map_product(metric)
         dr = metric(position, position)
         # neglect same particles i.e. distance = 0.
@@ -623,6 +623,42 @@ def energy_under_strain(epsilon, energy_fn, box_tensor, state, neighbor,
     return energy
 
 
+def init_sigma_born(energy_fn_template, ref_box_tensor=None):
+    """Initialiizes a function that computes the Born contribution to the
+    stress tensor.
+
+    sigma^B_ij = d U / d epsilon_ij
+
+    Can also be computed to compute the stress tensor at kbT = 0, when called
+    on the state of minimum energy. This function requires that `energy_fn`
+    takes a `box` keyword argument, usually alongside `periodic_general`
+    boundary conditions.
+
+    Args:
+        energy_fn_template: A function that takes energy parameters as input
+                            and returns an energy function
+        ref_box_tensor: The transformation T of general periodic boundary
+                        conditions. If None, box_tensor needs to be provided as
+                        'box' during function call, e.g. for the NPT ensemble.
+
+    Returns:
+        A function that takes a simulation state with neighbor list,
+        energy_params and box (if applicable) and returns the instantaneous
+        Born contribution to the stress tensor.
+    """
+    def sigma_born(state, neighbor, energy_params, **kwargs):
+        box, kwargs = _dyn_box(ref_box_tensor, **kwargs)
+        spatial_dim = box.shape[-1]
+        volume = quantity.volume(spatial_dim, box)
+        epsilon0 = jnp.zeros((spatial_dim, spatial_dim))
+
+        energy_fn = energy_fn_template(energy_params)
+        sigma_b = jacrev(energy_under_strain)(
+            epsilon0, energy_fn, box, state, neighbor, **kwargs)
+        return sigma_b / volume
+    return sigma_born
+
+
 def init_stiffness_tensor_stress_fluctuation(energy_fn_template, box_tensor,
                                              kbt, n_particles):
     """Initializes all functions necessary to compute the elastic stiffness
@@ -673,15 +709,6 @@ def init_stiffness_tensor_stress_fluctuation(energy_fn_template, box_tensor,
             epsilon0, energy_fn, box_tensor, state, neighbor, **kwargs)
         return born_stiffness_contribution / volume
 
-    def sigma_born(state, neighbor, energy_params, **kwargs):
-        """Born contribution to the stress tensor:
-        sigma^B_ij = d U / d epsilon_ij
-        """
-        energy_fn = energy_fn_template(energy_params)
-        sigma_b = jacrev(energy_under_strain)(
-            epsilon0, energy_fn, box_tensor, state, neighbor, **kwargs)
-        return sigma_b / volume
-
     @vmap
     def sigma_tensor_prod(sigma):
         """A function that computes sigma_ij * sigma_kl for a whole trajectory
@@ -703,6 +730,8 @@ def init_stiffness_tensor_stress_fluctuation(energy_fn_template, box_tensor,
                 delta_ik_delta_jl + delta_il_delta_jk)
         delta_sigma = mean_sig_ij_sig_kl - sigma_prod
         return mean_born - volume / kbt * delta_sigma + kinetic_term
+
+    sigma_born = init_sigma_born(energy_fn_template, box_tensor)
 
     return born_term_fn, sigma_born, sigma_tensor_prod, stiffness_tensor_fn
 
