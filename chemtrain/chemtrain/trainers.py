@@ -242,8 +242,8 @@ class Difftre(reweighting.PropagationBase):
 
     def add_statepoint(self, energy_fn_template, simulator_template,
                        neighbor_fn, timings, kbt, quantities,
-                       reference_state, targets=None, loss_fn=None,
-                       initialize_traj=True):
+                       reference_state, targets=None, ref_press=None,
+                       loss_fn=None, initialize_traj=True):
         """
         Adds a state point to the pool of simulations with respective targets.
 
@@ -307,6 +307,7 @@ class Difftre(reweighting.PropagationBase):
                                                            neighbor_fn,
                                                            timings,
                                                            kbt,
+                                                           ref_press,
                                                            initialize_traj)
 
         # build loss function for current state point
@@ -558,4 +559,3 @@ class RelativeEntropy(reweighting.PropagationBase):
                                       'implementation might be based on the '
                                       'variation of params or reweigting '
                                       'effective sample size.')
-        return converged
