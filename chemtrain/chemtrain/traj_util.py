@@ -149,10 +149,12 @@ def _canonicalize_dynamic_state_kwargs(state_kwargs, t_snapshots, *keys):
         if key in state_kwargs:
             if state_kwargs[key] is None:
                 state_kwargs.pop(key)  # ignore kwarg if None is provided
-                continue
-            if jnp.isscalar(state_kwargs[key]):
-                state_kwargs[key] = partial(constant_fn, c=state_kwargs[key])
-            state_points = vmap(state_kwargs[key])(t_snapshots)
+                state_points = None
+            else:
+                if jnp.isscalar(state_kwargs[key]):
+                    state_kwargs[key] = partial(constant_fn,
+                                                c=state_kwargs[key])
+                state_points = vmap(state_kwargs[key])(t_snapshots)
         else:
             state_points = None
         state_point_vals.append(state_points)
