@@ -11,7 +11,7 @@ from jax import (checkpoint, jit, lax, random, grad, tree_multimap, tree_map,
                  numpy as jnp)
 from jax_md import util as jax_md_util
 
-from chemtrain import util, traj_util
+from chemtrain import util, traj_util, traj_quantity
 from chemtrain.jax_md_mod import custom_quantity
 
 
@@ -103,7 +103,7 @@ def reweight_trajectory(traj, **targets):
         target_press = targets.get('pressure', traj.barostat_press)
         target_beta_p = target_beta * target_press
         ref_beta_p = reference_betas * traj.barostat_press
-        volumes = traj_util.volumes(traj)
+        volumes = traj_quantity.volumes(traj)
 
         # For constant p, reduces to -V * P_ref * (beta_target - beta_ref)
         # For constant T, reduces to -V * beta_ref * (p_target - p_ref)
@@ -114,7 +114,8 @@ def reweight_trajectory(traj, **targets):
 
 def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
                                       neighbor_fn, timings, ref_kbt,
-                                      reweight_ratio=0.9, npt_ensemble=False):
+                                      ref_press=None, reweight_ratio=0.9,
+                                      npt_ensemble=False):
     """
     Initializes all functions necessary for trajectory reweighting for
     a single state point.
@@ -130,8 +131,7 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
 
     if npt_ensemble:
         # kinetic energy contribution to pressure cancels in reweighting
-        pressure_fn = custom_quantity.init_pressure(energy_fn_template,
-                                                    include_kinetic=False)
+        pressure_fn = custom_quantity.init_pressure(energy_fn_template)
         reweighting_quantities['pressure'] = pressure_fn
 
     trajectory_generator = traj_util.trajectory_generator_init(
@@ -155,9 +155,47 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
 
         if npt_ensemble:  # we need to correct for the change in pressure
             # TODO test this
-            volumes = traj_util.volumes(traj_state)
-            exponent -= beta * volumes * (reweight_properties['pressure']
+            volumes = traj_quantity.volumes(traj_state)
+
+            kappa = traj_quantity.isothermal_compressibility(traj_state,
+                                                             ref_kbt)
+            # TODO prune these computations
+            case = 'pressure'
+            if case == 'pressure':
+                exponent -= beta * volumes * (reweight_properties['pressure']
+                                              - traj_state.aux['pressure'])
+            elif case == 'neglect':
+                pass
+            elif case == 'both_var_pressure':  # volume-based
+                scaling_factor = kappa * (reweight_properties['pressure']
                                           - traj_state.aux['pressure'])
+                new_volumes = volumes * scaling_factor
+                exponent -= beta * traj_state.aux['pressure'] * (
+                        new_volumes - volumes)  # TODO real or barostat press?
+            elif case == 'only_first_baro':
+                scaling_factor = kappa * (reweight_properties['pressure']
+                                          - traj_state.aux['pressure'])
+                new_volumes = volumes * scaling_factor
+                exponent -= beta * traj_state.barostat_press * (
+                        new_volumes - volumes)
+            elif case == 'both_baro':
+                scaling_factor = kappa * (reweight_properties['pressure']
+                                          - traj_state.barostat_press)
+                new_volumes = volumes * scaling_factor
+                exponent -= beta * traj_state.barostat_press * (
+                        new_volumes - volumes)
+            elif case == 'both_volume_scale':
+                scaling_factor = kappa * (reweight_properties['pressure']
+                                          - traj_state.barostat_press)
+                new_volumes = volumes * scaling_factor
+
+                ref_scaling = kappa * (traj_state.aux['pressure']
+                                       - traj_state.barostat_press)
+                ref_volumes = volumes * ref_scaling
+                exponent -= beta * traj_state.barostat_press * (
+                        new_volumes - ref_volumes)
+            else:
+                raise NotImplementedError
         return _build_weights(exponent)
 
     def trajectory_identity_mapping(inputs):
@@ -173,7 +211,7 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
         # give kT here as additional input to be handed through to energy_fn
         # for kbt-dependent potentials
         updated_traj = trajectory_generator(params, traj_state.sim_state,
-                                            kT=ref_kbt)
+                                            kT=ref_kbt, pressure=ref_press)
         return updated_traj
 
     @jit
@@ -345,20 +383,25 @@ class PropagationBase(util.MLETrainerTemplate):
 
         # store for each state point corresponding traj_state and grad_fn
         # save in distinct dicts as grad_fns need to be deleted for checkpoint
-        self.grad_fns, self.trajectory_states = {}, {}
+        self.grad_fns, self.trajectory_states, self.statepoints = {}, {}, {}
         self.n_statepoints = 0
         self.shuffle_key = random.PRNGKey(0)
 
     def _init_statepoint(self, reference_state, energy_fn_template,
                          simulator_template, neighbor_fn, timings, kbt,
-                         initialize_traj=True):
+                         ref_press=None, initialize_traj=True):
         """Initializes the simulation and reweighting functions as well
         as the initial trajectory for a statepoint."""
 
         # is there a better differentiator? kbT could be same for 2 simulations
         key = self.n_statepoints
         self.n_statepoints += 1
-        npt_ensemble = util.is_npt_ensemble(reference_state)
+        self.statepoints[key] = {'kbT': kbt}
+        npt_ensemble = util.is_npt_ensemble(reference_state[0])
+        if npt_ensemble: self.statepoints[key]['pressure'] = ref_press
+        # TODO ref pressure only used in print and to have barostat values.
+        #  Reevaluate this parameter of barostat values not used in reweighting
+        # TODO document ref_press accordingly
 
         initial_traj_generator, compute_weights, propagate = \
             init_pot_reweight_propagation_fns(energy_fn_template,
@@ -366,12 +409,21 @@ class PropagationBase(util.MLETrainerTemplate):
                                               neighbor_fn,
                                               timings,
                                               kbt,
+                                              ref_press,
                                               self.reweight_ratio,
                                               npt_ensemble)
         if initialize_traj:
+            # Note: we dump the initial trajectory for equilibration, as initial
+            # equilibration usually takes much longer than equilibration time
+            # of each trajectory. If this is still not sufficient, the
+            # simulation should equilibrate over the course of subsequent
+            # updates.
+            dump_traj = initial_traj_generator(self.params, reference_state,
+                                               kT=kbt, pressure=ref_press)
+
             t_start = time.time()
-            init_traj = initial_traj_generator(self.params, reference_state,
-                                               kT=kbt)
+            init_traj = initial_traj_generator(self.params, dump_traj.sim_state,
+                                               kT=kbt, pressure=ref_press)
             runtime = (time.time() - t_start) / 60.
             print(f'Time for trajectory initialization {key}: {runtime} mins')
             self.trajectory_states[key] = init_traj
@@ -407,6 +459,25 @@ class PropagationBase(util.MLETrainerTemplate):
             raise NotImplementedError('Only batch_size = 1 or -1 implemented.')
 
         return (batch for batch in batch_list)
+
+    def _print_measured_statepoint(self):
+        """Print meausured kbT (and pressure for npt ensemble) for all
+        statepoints to ensure the simulation is indeed carried out at the
+        prescribed state point.
+        """
+        for sim_key, traj in self.trajectory_states.items():
+            statepoint = self.statepoints[sim_key]
+            measured_kbt = jnp.mean(traj.aux['kbT'])
+            if 'pressure' in statepoint:  # NPT
+                measured_press = jnp.mean(traj.aux['pressure'])
+                press_print = (f' press = {measured_press:.2f} ref_press = '
+                               f'{statepoint["pressure"]:.2f}')
+            else:
+                press_print = ''
+            print(f'Statepoint {sim_key}: kbT = {measured_kbt:.3f} ref_kbt = '
+                  f'{statepoint["kbT"]:.3f}' + press_print)
+
+        print('')  # to visually differentiate between epochs
 
     def train(self, epochs, checkpoint_freq=None, thresh=None):
         assert self.n_statepoints > 0, ('Add at least 1 state point via '

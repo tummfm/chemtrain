@@ -6,9 +6,10 @@ from typing import Any, Dict
 
 import chex
 from jax import jit, lax, vmap, numpy as jnp
-from jax_md import quantity, simulate, util as jax_md_util
+from jax_md import simulate, util as jax_md_util
 
 from chemtrain import util
+from chemtrain.jax_md_mod import custom_quantity
 
 Array = jax_md_util.Array
 
@@ -148,10 +149,12 @@ def _canonicalize_dynamic_state_kwargs(state_kwargs, t_snapshots, *keys):
         if key in state_kwargs:
             if state_kwargs[key] is None:
                 state_kwargs.pop(key)  # ignore kwarg if None is provided
-                continue
-            if jnp.isscalar(state_kwargs[key]):
-                state_kwargs[key] = partial(constant_fn, c=state_kwargs[key])
-            state_points = vmap(state_kwargs[key])(t_snapshots)
+                state_points = None
+            else:
+                if jnp.isscalar(state_kwargs[key]):
+                    state_kwargs[key] = partial(constant_fn,
+                                                c=state_kwargs[key])
+                state_points = vmap(state_kwargs[key])(t_snapshots)
         else:
             state_points = None
         state_point_vals.append(state_points)
@@ -220,16 +223,12 @@ def trajectory_generator_init(simulator_template, energy_fn_template,
                                 thermostat_kbt=kbt,
                                 barostat_press=barostat_press)
 
+        # temperature is inexpensive and generally useful: compute it by default
+        quantities['kbT'] = custom_quantity.temperature
         aux_trajectory = quantity_traj(state, quantities, params)
         return state.replace(aux=aux_trajectory)
 
     return generate_reference_trajectory
-
-
-def volumes(traj_state):
-    dim = traj_state.sim_state[0].position.shape[-1]
-    boxes = vmap(simulate.npt_box)(traj_state.trajectory)
-    return vmap(quantity.volume, (None, 0))(dim, boxes)
 
 
 def quantity_traj(traj_state, quantities, energy_params=None):

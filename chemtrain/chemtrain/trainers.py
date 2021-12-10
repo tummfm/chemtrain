@@ -169,20 +169,18 @@ class ForceMatching(util.MLETrainerTemplate):
                               ) / self.batches_per_epoch
         mean_val_loss = sum(self.val_losses[-self.batches_per_epoch:]
                             ) / self.batches_per_epoch
-        print(f'Epoch {self._epoch}: Average train loss: {mean_train_loss} '
-              f'Average val loss: {mean_val_loss} '
-              f'Elapsed time = {duration} min')
+        print(f'Epoch {self._epoch}: Average train loss: {mean_train_loss:.5f} '
+              f'Average val loss: {mean_val_loss:.5f} '
+              f'Elapsed time = {duration:.3f} min')
 
         improvement = self.best_val_loss - mean_val_loss
         if improvement > 0.:
             self.best_val_loss = mean_val_loss
             self.best_params = copy.copy(self.params)
 
-        converged = False
         if thresh is not None:
             if improvement < thresh:
-                converged = True
-        return converged
+                self.converged = True
 
 
 class Difftre(reweighting.PropagationBase):
@@ -244,8 +242,8 @@ class Difftre(reweighting.PropagationBase):
 
     def add_statepoint(self, energy_fn_template, simulator_template,
                        neighbor_fn, timings, kbt, quantities,
-                       reference_state, targets=None, loss_fn=None,
-                       initialize_traj=True):
+                       reference_state, targets=None, ref_press=None,
+                       loss_fn=None, initialize_traj=True):
         """
         Adds a state point to the pool of simulations with respective targets.
 
@@ -309,14 +307,14 @@ class Difftre(reweighting.PropagationBase):
                                                            neighbor_fn,
                                                            timings,
                                                            kbt,
+                                                           ref_press,
                                                            initialize_traj)
 
         # build loss function for current state point
         if loss_fn is None:
             loss_fn = reweighting.independent_mse_loss_fn_init(targets)
         else:
-            print('Using custom loss function. '
-                  'Ignoring \'gamma\' and \'target\' in  \"quantities\".')
+            print('Using custom loss function. Ignoring "target" dict.')
 
         reweighting.checkpoint_quantities(quantities)
 
@@ -378,6 +376,7 @@ class Difftre(reweighting.PropagationBase):
                               f'{self._epoch} is NaN. This was likely caused by'
                               f' divergence of the optimization or a bad model '
                               f'setup causing a NaN trajectory.')
+                self.converged = True  # ends training
                 break
 
         self.batch_losses.append(sum(losses) / self.sim_batch_size)
@@ -388,19 +387,20 @@ class Difftre(reweighting.PropagationBase):
         last_losses = jnp.array(self.batch_losses[-self.sim_batch_size:])
         epoch_loss = jnp.mean(last_losses)
         self.epoch_losses.append(epoch_loss)
-        print(f'Epoch {self._epoch}: Epoch loss = {epoch_loss}, Elapsed time = '
-              f'{duration} min')
+        print(f'Epoch {self._epoch}: Epoch loss = {epoch_loss:.5f}, '
+              f'Elapsed time = {duration:.3f} min')
+
+        self._print_measured_statepoint()
 
         # save parameter set that resulted in smallest loss up to this point
         if jnp.argmin(jnp.array(self.epoch_losses)) == len(self.epoch_losses)-1:
             self.best_params = copy.copy(self.params)
 
-        converged = False
         if thresh is not None:
             if self.criterion == 'max_loss':
-                if max(last_losses) < thresh: converged = True
+                if max(last_losses) < thresh: self.converged = True
             elif self.criterion == 'ave_loss':
-                if epoch_loss < thresh: converged = True
+                if epoch_loss < thresh: self.converged = True
             elif self.criterion == 'std':
                 raise NotImplementedError('Currently, there is no criterion '
                                           'based on the std of the loss '
@@ -409,7 +409,6 @@ class Difftre(reweighting.PropagationBase):
                 raise ValueError(f'Convergence criterion {self.criterion} '
                                  f'unknown. Select "max_loss", "ave_loss" or '
                                  f'"std".')
-        return converged
 
 
 class RelativeEntropy(reweighting.PropagationBase):
@@ -548,8 +547,11 @@ class RelativeEntropy(reweighting.PropagationBase):
         self._step_optimizer(batch_grad)
 
     def _evaluate_convergence(self, duration, thresh):
-        print(f'Epoch {self._epoch}: Elapsed time = {duration} min')
-        converged = False  # TODO implement convergence test
+        print(f'Epoch {self._epoch}: Elapsed time = {duration:.3f} min')
+
+        self._print_measured_statepoint()
+
+        self.converged = False  # TODO implement convergence test
         if thresh is not None:
             raise NotImplementedError('Currently there is no convergence '
                                       'criterion implemented for relative '
@@ -557,4 +559,3 @@ class RelativeEntropy(reweighting.PropagationBase):
                                       'implementation might be based on the '
                                       'variation of params or reweigting '
                                       'effective sample size.')
-        return converged

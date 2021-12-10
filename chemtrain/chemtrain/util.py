@@ -123,13 +123,7 @@ class MLETrainerTemplate(abc.ABC):
         self._epoch = 0
         self.reference_energy_fn_template = reference_energy_fn_template
         self.update_times = []
-
-        if checkpoint_format == '.pkl':
-            print('Pickle is useful for checkpointing as the whole trainer '
-                  '(except for jitted functions) can be saved. However, using'
-                  '(cloud-)pickle for long-term storage is highly discouraged. '
-                  'Consider saving learned energy_params in a different '
-                  'format, e.g. using the save_energy_params function.')
+        self.converged = False
 
     @property
     def energy_fn(self):
@@ -248,6 +242,7 @@ class MLETrainerTemplate(abc.ABC):
         _evaluate_convergence(), respectively, depending on the exact trainer
         details to be implemented.
         """
+        self.converged = False
         start_epoch = self._epoch
         end_epoch = start_epoch + epochs
         for _ in range(start_epoch, end_epoch):
@@ -256,11 +251,11 @@ class MLETrainerTemplate(abc.ABC):
                 self._update(batch)
             duration = (time.time() - start_time) / 60.
             self.update_times.append(duration)
-            converged = self._evaluate_convergence(duration, thresh)
+            self._evaluate_convergence(duration, thresh)
             self._epoch += 1
             self._dump_checkpoint_occasionally(frequency=checkpoint_freq)
 
-            if converged:
+            if self.converged:
                 break
         if thresh is not None:
             print('Maximum number of epochs reached without convergence.')
@@ -282,7 +277,7 @@ class MLETrainerTemplate(abc.ABC):
 
     @abc.abstractmethod
     def _evaluate_convergence(self, duration, thresh):
-        """Returns whether a convergence criterion has been met. Can also be
+        """Checks whether a convergence criterion has been met. Can also be
         used to print callbacks, such as time per epoch and loss vales.
         """
 

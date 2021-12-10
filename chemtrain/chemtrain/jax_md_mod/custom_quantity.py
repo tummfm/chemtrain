@@ -7,7 +7,7 @@ from functools import partial
 
 from jax import jit, grad, vmap, lax, jacrev, jacfwd, numpy as jnp
 from jax.scipy.stats import norm
-from jax_md import space, util, dataclasses, quantity
+from jax_md import space, util, dataclasses, quantity, simulate
 
 from chemtrain.jax_md_mod import custom_nn
 
@@ -24,14 +24,38 @@ def energy_wrapper(energy_fn_template):
     return energy
 
 
+def temperature(state, **unused_kwargs):
+    """Temperature function that is consistent with quantity_traj interface."""
+    return quantity.temperature(state.velocity, state.mass)
+
+
 def _dyn_box(reference_box, **kwargs):
     """Gets box dynamically from kwargs, if provided, otherwise defaults to
-    reference. Ensures that a box is provided.
+    reference. Ensures that a box is provided and deletes from kwargs.
     """
-    box = kwargs.get('box', reference_box)
+    box = kwargs.pop('box', reference_box)
     assert box is not None, ('If no reference box is given, needs to be '
                              'given as kwarg "box".')
-    return box
+    return box, kwargs
+
+
+def _canonicalized_masses(state):
+    if state.mass.ndim == 0:
+        masses = jnp.ones(state.position.shape[0]) * state.mass
+    else:
+        masses = state.mass
+    return masses
+
+
+def density(state, **unused_kwargs):
+    """Returns density of a single snapshot of the NPT ensemble."""
+    dim = state.position.shape[-1]
+    masses = _canonicalized_masses(state)
+    box = simulate.npt_box(state)
+    volume = quantity.volume(dim, box)
+    total_mass = jnp.sum(masses)
+    return total_mass / volume
+
 
 # TODO distinct classes and discretization functions don't seem optimal
 #  --> possible refactor
@@ -159,7 +183,7 @@ def init_rdf(displacement_fn, rdf_params, reference_box=None):
         return mean_pair_corr
 
     def rdf_compute_fun(state, **kwargs):
-        box = _dyn_box(reference_box, **kwargs)
+        box, _ = _dyn_box(reference_box, **kwargs)
         # Note: we cannot use neighbor list since RDF cutoff and
         # neighbor list cut-off don't coincide in general
         n_particles, spatial_dim = state.position.shape
@@ -539,7 +563,7 @@ def init_virial_stress_tensor(energy_fn_template, ref_box_tensor=None,
         # Note: this workaround with the energy_template was needed to keep
         #       the function jitable when changing energy_params on-the-fly
         # TODO function to transform box to box-tensor
-        box = _dyn_box(ref_box_tensor, **kwargs)
+        box, kwargs = _dyn_box(ref_box_tensor, **kwargs)
         energy_fn = energy_fn_template(energy_params)
         virial_tensor = virial_potential_part(energy_fn, state, neighbor, box,
                                               **kwargs)
@@ -599,6 +623,42 @@ def energy_under_strain(epsilon, energy_fn, box_tensor, state, neighbor,
     return energy
 
 
+def init_sigma_born(energy_fn_template, ref_box_tensor=None):
+    """Initialiizes a function that computes the Born contribution to the
+    stress tensor.
+
+    sigma^B_ij = d U / d epsilon_ij
+
+    Can also be computed to compute the stress tensor at kbT = 0, when called
+    on the state of minimum energy. This function requires that `energy_fn`
+    takes a `box` keyword argument, usually alongside `periodic_general`
+    boundary conditions.
+
+    Args:
+        energy_fn_template: A function that takes energy parameters as input
+                            and returns an energy function
+        ref_box_tensor: The transformation T of general periodic boundary
+                        conditions. If None, box_tensor needs to be provided as
+                        'box' during function call, e.g. for the NPT ensemble.
+
+    Returns:
+        A function that takes a simulation state with neighbor list,
+        energy_params and box (if applicable) and returns the instantaneous
+        Born contribution to the stress tensor.
+    """
+    def sigma_born(state, neighbor, energy_params, **kwargs):
+        box, kwargs = _dyn_box(ref_box_tensor, **kwargs)
+        spatial_dim = box.shape[-1]
+        volume = quantity.volume(spatial_dim, box)
+        epsilon0 = jnp.zeros((spatial_dim, spatial_dim))
+
+        energy_fn = energy_fn_template(energy_params)
+        sigma_b = jacrev(energy_under_strain)(
+            epsilon0, energy_fn, box, state, neighbor, **kwargs)
+        return sigma_b / volume
+    return sigma_born
+
+
 def init_stiffness_tensor_stress_fluctuation(energy_fn_template, box_tensor,
                                              kbt, n_particles):
     """Initializes all functions necessary to compute the elastic stiffness
@@ -649,15 +709,6 @@ def init_stiffness_tensor_stress_fluctuation(energy_fn_template, box_tensor,
             epsilon0, energy_fn, box_tensor, state, neighbor, **kwargs)
         return born_stiffness_contribution / volume
 
-    def sigma_born(state, neighbor, energy_params, **kwargs):
-        """Born contribution to the stress tensor:
-        sigma^B_ij = d U / d epsilon_ij
-        """
-        energy_fn = energy_fn_template(energy_params)
-        sigma_b = jacrev(energy_under_strain)(
-            epsilon0, energy_fn, box_tensor, state, neighbor, **kwargs)
-        return sigma_b / volume
-
     @vmap
     def sigma_tensor_prod(sigma):
         """A function that computes sigma_ij * sigma_kl for a whole trajectory
@@ -679,6 +730,8 @@ def init_stiffness_tensor_stress_fluctuation(energy_fn_template, box_tensor,
                 delta_ik_delta_jl + delta_il_delta_jk)
         delta_sigma = mean_sig_ij_sig_kl - sigma_prod
         return mean_born - volume / kbt * delta_sigma + kinetic_term
+
+    sigma_born = init_sigma_born(energy_fn_template, box_tensor)
 
     return born_term_fn, sigma_born, sigma_tensor_prod, stiffness_tensor_fn
 
