@@ -12,7 +12,7 @@ import cloudpickle as pickle
 import numpy as onp
 import optax
 from jax import lax, tree_map, tree_leaves, numpy as jnp
-from jax_md import util
+from jax_md import util, simulate
 
 from chemtrain.jax_md_mod import custom_space
 
@@ -25,6 +25,47 @@ class TrainerState:
     """
     params: Any
     opt_state: Any
+
+
+def _get_box_kwargs_if_npt(state):
+    kwargs = {}
+    if is_npt_ensemble(state):
+        box = simulate.npt_box(state)
+        kwargs['box'] = box
+    return kwargs
+
+
+def neighbor_update(neighbors, state):
+    """Update neighbor lists irrespective of the ensemble.
+
+    Fetches the box to the neighbor list update function in case of the
+    NPT ensemble.
+
+    Args:
+        neighbors: Neighbor list to be updated
+        state: Simulation state
+
+    Returns:
+        Updated neighbor list
+    """
+    kwargs = _get_box_kwargs_if_npt(state)
+    nbrs = neighbors.update(state.position, **kwargs)
+    return nbrs
+
+
+def neighbor_allocate(neighbor_fn, state):
+    """Re-allocates neighbor lost irrespective of ensemble. Not jitable.
+
+    Args:
+        neighbor_fn: Neighbor function to re-allocate neighbor list
+        state: Simulation state
+
+    Returns:
+        Updated neighbor list
+    """
+    kwargs = _get_box_kwargs_if_npt(state)
+    nbrs = neighbor_fn.allocate(state.position, **kwargs)
+    return nbrs
 
 
 def mse_loss(predictions, targets):

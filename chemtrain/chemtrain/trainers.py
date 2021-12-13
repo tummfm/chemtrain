@@ -12,7 +12,8 @@ from chemtrain import util, force_matching, traj_util, reweighting
 class ForceMatching(util.MLETrainerTemplate):
     """Force-matching trainer.
 
-    This implementation assumes a constant number of particles per box.
+    This implementation assumes a constant number of particles per box and
+    constant box sizes for each snapshot.
     If this is not the case, please use the ForceMatchingPrecomputed trainer
     based on padded sparse neighborlists.
     Caution: Currently neighborlist overflow is not checked.

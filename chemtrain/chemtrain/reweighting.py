@@ -245,11 +245,10 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
                                    'not yield a trajectory without overflow. '
                                    'Consider increasing the neighbor list '
                                    'capacity multiplier.')
-            last_sim_snapshot, _ = traj_state.sim_state
-            # TODO supply box in case of npt ensemble
-            enlarged_nbrs = neighbor_fn.allocate(last_sim_snapshot.position)
+            last_state, _ = traj_state.sim_state
+            enlarged_nbrs = util.neighbor_allocate(neighbor_fn, last_state)
             reset_traj_state = traj_state.replace(
-                sim_state=(last_sim_snapshot, enlarged_nbrs))
+                sim_state=(last_state, enlarged_nbrs))
             traj_state = recompute_trajectory((params, reset_traj_state))
             reset_counter += 1
         return traj_state
@@ -344,6 +343,8 @@ def init_rel_entropy_gradient(energy_fn_template, compute_weights, kbt):
 
         def energy(params, position):
             energy_fn = energy_fn_template(params)
+            # Note: nbrs update requires constant box, i.e. not yet
+            # applicable to npt ensemble
             nbrs = nbrs_init.update(position)
             return energy_fn(position, neighbor=nbrs)
 
