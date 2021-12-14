@@ -120,7 +120,7 @@ def _run_to_next_printout_neighbors(apply_fn, timings, **kwargs):
 
         state, nbrs = cur_state
         new_state = apply_fn(state, neighbor=nbrs, **apply_kwargs)
-        nbrs = nbrs.update(new_state.position)
+        nbrs = util.neighbor_update(nbrs, state)
         new_sim_state = (new_state, nbrs)
         return new_sim_state, t
 
@@ -258,7 +258,7 @@ def quantity_traj(traj_state, quantities, energy_params=None):
     @jit
     def single_state_quantities(_, single_snapshot):
         state, kbt = single_snapshot
-        nbrs = fixed_reference_nbrs.update(state.position)
+        nbrs = util.neighbor_update(fixed_reference_nbrs, state)
         kwargs = {'neighbor': nbrs, 'energy_params': energy_params, 'kT': kbt}
         if npt_ensemble:
             box = simulate.npt_box(state)

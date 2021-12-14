@@ -154,13 +154,12 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
                             - traj_state.aux['energy'])
 
         if npt_ensemble:  # we need to correct for the change in pressure
-            # TODO test this
             volumes = traj_quantity.volumes(traj_state)
 
             kappa = traj_quantity.isothermal_compressibility(traj_state,
                                                              ref_kbt)
             # TODO prune these computations
-            case = 'pressure'
+            case = 'neglect'
             if case == 'pressure':
                 exponent -= beta * volumes * (reweight_properties['pressure']
                                               - traj_state.aux['pressure'])
@@ -171,7 +170,7 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
                                           - traj_state.aux['pressure'])
                 new_volumes = volumes * scaling_factor
                 exponent -= beta * traj_state.aux['pressure'] * (
-                        new_volumes - volumes)  # TODO real or barostat press?
+                        new_volumes - volumes)
             elif case == 'only_first_baro':
                 scaling_factor = kappa * (reweight_properties['pressure']
                                           - traj_state.aux['pressure'])
@@ -232,6 +231,40 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
                                     (params, traj_state))
         return propagated_state
 
+    def safe_propagate_traj(params, traj_state):
+        """Recomputes trajectory and neighbor list until a trajectory without
+        overflow was obtained.
+        """
+        reset_counter = 0
+        while traj_state.overflow:
+            warnings.warn('Neighborlist buffer overflowed. '
+                          'Initializing larger neighborlist.')
+            if reset_counter == 3:  # still overflow after multiple resets
+                raise RuntimeError('Multiple neighbor list re-computations did '
+                                   'not yield a trajectory without overflow. '
+                                   'Consider increasing the neighbor list '
+                                   'capacity multiplier.')
+
+            # Note: We restart the simulation from the last trajectory, where
+            # we know that no overflow has occured. Re-starting from a state
+            # that was generated with overflow is dangerous as overflown
+            # particles could cause exploding forces once re-considered.
+            # TODO is this smart? Last simstate could be very bad state as it
+            #  was computed with overflowing neighborlist
+            last_state, _ = traj_state.sim_state
+            if jnp.any(jnp.isnan(last_state.position)):
+                raise RuntimeError('Last state is NaN. Currently there is no '
+                                   'recovering from this. Restart from the last'
+                                   ' non-overflown state might help, but comes'
+                                   ' at the cost that the reference state is '
+                                   'likely not representative.')
+            enlarged_nbrs = util.neighbor_allocate(neighbor_fn, last_state)
+            reset_traj_state = traj_state.replace(
+                sim_state=(last_state, enlarged_nbrs))
+            traj_state = recompute_trajectory((params, reset_traj_state))
+            reset_counter += 1
+        return traj_state
+
     def propagate(params, old_traj_state):
         """Wrapper around jitted propagation function that ensures that
         if neighbor list buffer overflowed, the trajectory is recomputed and
@@ -240,25 +273,28 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
         jit.
         """
         new_traj_state = propagation_fn(params, old_traj_state)
-
-        reset_counter = 0
-        while new_traj_state.overflow:
-            warnings.warn('Neighborlist buffer overflowed. '
-                          'Initializing larger neighborlist.')
-            if reset_counter == 3:  # still overflow after multiple resets
-                raise RuntimeError('Multiple neighbor list re-computations did '
-                                   'not yield a trajectory without overflow. '
-                                   'Consider increasing the neighbor list '
-                                   'capacity multiplier.')
-            last_sim_snapshot, _ = new_traj_state.sim_state
-            enlarged_nbrs = neighbor_fn.allocate(last_sim_snapshot.position)
-            reset_traj_state = old_traj_state.replace(
-                sim_state=(last_sim_snapshot, enlarged_nbrs))
-            new_traj_state = recompute_trajectory((params, reset_traj_state))
-            reset_counter += 1
+        new_traj_state = safe_propagate_traj(params, new_traj_state)
         return new_traj_state
 
-    return trajectory_generator, compute_weights, propagate
+    def init_first_traj(params, reference_state):
+        """Initializes initial trajectory to start optimization from.
+
+        We dump the initial trajectory for equilibration, as initial
+        equilibration usually takes much longer than equilibration time
+        of each trajectory. If this is still not sufficient, the simulation
+        should equilibrate over the course of subsequent updates.
+        """
+        dump_traj = trajectory_generator(params, reference_state,
+                                         kT=ref_kbt, pressure=ref_press)
+
+        t_start = time.time()
+        init_traj = trajectory_generator(params, dump_traj.sim_state,
+                                         kT=ref_kbt, pressure=ref_press)
+        runtime = (time.time() - t_start) / 60.  # in mins
+        init_traj = safe_propagate_traj(params, init_traj)
+        return init_traj, runtime
+
+    return init_first_traj, compute_weights, propagate
 
 
 def independent_mse_loss_fn_init(targets):
@@ -319,6 +355,8 @@ def init_rel_entropy_gradient(energy_fn_template, compute_weights, kbt):
 
         def energy(params, position):
             energy_fn = energy_fn_template(params)
+            # Note: nbrs update requires constant box, i.e. not yet
+            # applicable to npt ensemble
             nbrs = nbrs_init.update(position)
             return energy_fn(position, neighbor=nbrs)
 
@@ -403,7 +441,7 @@ class PropagationBase(util.MLETrainerTemplate):
         #  Reevaluate this parameter of barostat values not used in reweighting
         # TODO document ref_press accordingly
 
-        initial_traj_generator, compute_weights, propagate = \
+        gen_init_traj, compute_weights, propagate = \
             init_pot_reweight_propagation_fns(energy_fn_template,
                                               simulator_template,
                                               neighbor_fn,
@@ -413,18 +451,7 @@ class PropagationBase(util.MLETrainerTemplate):
                                               self.reweight_ratio,
                                               npt_ensemble)
         if initialize_traj:
-            # Note: we dump the initial trajectory for equilibration, as initial
-            # equilibration usually takes much longer than equilibration time
-            # of each trajectory. If this is still not sufficient, the
-            # simulation should equilibrate over the course of subsequent
-            # updates.
-            dump_traj = initial_traj_generator(self.params, reference_state,
-                                               kT=kbt, pressure=ref_press)
-
-            t_start = time.time()
-            init_traj = initial_traj_generator(self.params, dump_traj.sim_state,
-                                               kT=kbt, pressure=ref_press)
-            runtime = (time.time() - t_start) / 60.
+            init_traj, runtime = gen_init_traj(self.params, reference_state)
             print(f'Time for trajectory initialization {key}: {runtime} mins')
             self.trajectory_states[key] = init_traj
         else:
@@ -432,6 +459,7 @@ class PropagationBase(util.MLETrainerTemplate):
                   'a checkpoint is loaded. In this case, please be use to add '
                   'state points in the same sequence, otherwise loaded '
                   'trajectories will not match its respective simulations.')
+
         return key, compute_weights, propagate
 
     @abstractmethod
