@@ -154,13 +154,12 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
                             - traj_state.aux['energy'])
 
         if npt_ensemble:  # we need to correct for the change in pressure
-            # TODO test this
             volumes = traj_quantity.volumes(traj_state)
 
             kappa = traj_quantity.isothermal_compressibility(traj_state,
                                                              ref_kbt)
             # TODO prune these computations
-            case = 'pressure'
+            case = 'neglect'
             if case == 'pressure':
                 exponent -= beta * volumes * (reweight_properties['pressure']
                                               - traj_state.aux['pressure'])
@@ -171,7 +170,7 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
                                           - traj_state.aux['pressure'])
                 new_volumes = volumes * scaling_factor
                 exponent -= beta * traj_state.aux['pressure'] * (
-                        new_volumes - volumes)  # TODO real or barostat press?
+                        new_volumes - volumes)
             elif case == 'only_first_baro':
                 scaling_factor = kappa * (reweight_properties['pressure']
                                           - traj_state.aux['pressure'])
@@ -245,7 +244,20 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
                                    'not yield a trajectory without overflow. '
                                    'Consider increasing the neighbor list '
                                    'capacity multiplier.')
+
+            # Note: We restart the simulation from the last trajectory, where
+            # we know that no overflow has occured. Re-starting from a state
+            # that was generated with overflow is dangerous as overflown
+            # particles could cause exploding forces once re-considered.
+            # TODO is this smart? Last simstate could be very bad state as it
+            #  was computed with overflowing neighborlist
             last_state, _ = traj_state.sim_state
+            if jnp.any(jnp.isnan(last_state.position)):
+                raise RuntimeError('Last state is NaN. Currently there is no '
+                                   'recovering from this. Restart from the last'
+                                   ' non-overflown state might help, but comes'
+                                   ' at the cost that the reference state is '
+                                   'likely not representative.')
             enlarged_nbrs = util.neighbor_allocate(neighbor_fn, last_state)
             reset_traj_state = traj_state.replace(
                 sim_state=(last_state, enlarged_nbrs))

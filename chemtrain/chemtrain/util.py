@@ -53,18 +53,19 @@ def neighbor_update(neighbors, state):
     return nbrs
 
 
-def neighbor_allocate(neighbor_fn, state):
+def neighbor_allocate(neighbor_fn, state, extra_capacity=0):
     """Re-allocates neighbor lost irrespective of ensemble. Not jitable.
 
     Args:
         neighbor_fn: Neighbor function to re-allocate neighbor list
         state: Simulation state
+        extra_capacity: Additional capacity of new neighbor list
 
     Returns:
         Updated neighbor list
     """
     kwargs = _get_box_kwargs_if_npt(state)
-    nbrs = neighbor_fn.allocate(state.position, **kwargs)
+    nbrs = neighbor_fn.allocate(state.position, extra_capacity, **kwargs)
     return nbrs
 
 
