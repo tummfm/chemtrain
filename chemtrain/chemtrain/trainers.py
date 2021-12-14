@@ -411,6 +411,45 @@ class Difftre(reweighting.PropagationBase):
                                  f'"std".')
 
 
+class DifftreActive:
+    """Active learning of state-transferable potentials from experimental data
+     via DiffTRe.
+     """
+    # TODO Ckeckpointing functions here not very useful here: Override those
+    #  and use checkpointing of difftre trainer
+    def __init__(self, init_params, optimizer, reweight_ratio=0.9,
+                 sim_batch_size=1, energy_fn_template=None,
+                 convergence_criterion='max_loss',
+                 checkpoint_folder='Checkpoints', checkpoint_format='pkl'):
+        # Init DiffTre trainer
+        self.trainer = Difftre(
+            init_params, optimizer, reweight_ratio, sim_batch_size,
+            energy_fn_template, convergence_criterion, checkpoint_folder,
+            checkpoint_format
+        )
+        # other inits
+        pass
+
+    def add_statepoint(self, *args, **kwargs):
+        """Add another statepoint to the target state points.
+
+        Predominantly used to add statepoints with more / different targets
+        not covered in  the on-the-fly tepoint addition, e.g. for an extensive
+        initial statepoint. Please refer to :obj:'Difftre.add_statepoint
+        <chemtrain.trainers.Difftre.add_statepoint>' for the full documentation.
+        """
+        self.trainer.add_statepoint(*args, **kwargs)
+
+    def train(self):
+
+        # checkpoint: call checkpoint of trainer
+        pass
+
+    def load_checkpoint(self, file_path):
+        self.trainer = util.MLETrainerTemplate.load_trainer(file_path)
+        # TODO load rest?
+
+
 class RelativeEntropy(reweighting.PropagationBase):
     """Trainer for relative entropy minimization."""
     def __init__(self, init_params, optimizer,
