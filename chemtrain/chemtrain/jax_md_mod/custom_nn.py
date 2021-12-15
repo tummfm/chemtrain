@@ -474,3 +474,34 @@ class DimeNetPPEnergy(hk.Module):
 
         predicted_quantities = util.high_precision_sum(per_atom_quantities, axis=0)  # sum over all atoms
         return predicted_quantities
+
+
+class PairwiseNNEnergy(hk.Module):
+    def __init__(self,
+                 r_cutoff: float,
+                 hidden_layers,
+                 init_kwargs,
+                 activation=jax.nn.swish,
+                 num_rbf: int = 6,
+                 envelope_p: int = 6,
+                 name: str = 'PairNN'):
+        super().__init__(name=name)
+        self.embedding = RadialBesselLayer(r_cutoff, num_radial=num_rbf,
+                                           envelope_p=envelope_p)
+        self.pair_nn = hk.nets.MLP(hidden_layers, activation=activation,
+                                   **init_kwargs)
+        self.rbf_transform = hk.Linear(1, with_bias=False, name='RBF_Transform',
+                                       **init_kwargs)
+
+    def __call__(self, distances, species=None, **kwargs):
+        # ensure differentiability construction: rbf=0 for r > r_cut
+        rbf = self.embedding(distances)
+        predicted_energies = self.pair_nn(rbf)
+
+        # rbf_transform has no bias: masked pairs remain 0 and counteract
+        # possible non-zero contribution from biases in MPL (in a continuously
+        # differentiable manner)
+        per_pair_energy = predicted_energies * self.rbf_transform(rbf)
+        # pairs are counted twice
+        total_energy = util.high_precision_sum(per_pair_energy) / 2.
+        return total_energy
