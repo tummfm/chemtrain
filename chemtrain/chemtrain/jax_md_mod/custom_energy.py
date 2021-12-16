@@ -373,6 +373,72 @@ def tabulated_neighbor_list(displacement_or_metric: DisplacementOrMetricFn,
     return energy_fn
 
 
+def pair_interaction_nn(displacement: DisplacementFn,
+                        r_cutoff: float,
+                        hidden_layers,
+                        activation=jax.nn.swish,
+                        num_rbf: int = 6,
+                        envelope_p: int = 6,
+                        init_kwargs: Dict = None):
+    """An MLP acting on pairwise distances independently and
+    summing the contributions.
+
+    Embeds pairwise distances via radial Bessel functions (RBF). The
+    RBF is also used to enforce a differentiable cut-off.
+
+    Args:
+        displacement: Displacement function
+        r_cutoff: Radial cut-off of pairwise interactions and neighbor list
+        hidden_layers: A list (or scalar in the case of a single hidden layer)
+                       of number of neurons for each hidden layer in the MLP
+        activation: Activation function
+        num_rbf: Number of radial Bessel embedding functions
+        envelope_p: Power of envelope polynomial
+        init_kwargs: Kwargs for initializaion of MLP
+
+    Returns:
+        A tuple of 2 functions: A init_fn that initializes the model parameters
+        and an energy function that computes the energy for a particular state
+        given model parameters.
+    """
+
+    if init_kwargs is None:
+        init_kwargs = {
+          'w_init': custom_nn.OrthogonalVarianceScalingInit(scale=1.),
+          'b_init': hk.initializers.Constant(0.),
+        }
+
+    if jnp.isscalar(hidden_layers):
+        hidden_layers = [hidden_layers]
+    hidden_layers.append(1)  # output layer is scalar energy
+
+    @hk.without_apply_rng
+    @hk.transform
+    def model(position, neighbor, species=None, **dynamic_kwargs):
+        n_particles, _ = neighbor.idx.shape
+        if species is not None:
+            smap._check_species_dtype(species)  # assert species are int
+            raise NotImplementedError('Add species embedding to distance '
+                                      'embedding.')
+
+        dynamic_displacement = partial(displacement, **dynamic_kwargs)
+        dyn_neighbor_displacement_fn = space.map_neighbor(dynamic_displacement)
+
+        # compute pairwise distances
+        neighbor_mask = neighbor.idx != n_particles
+        r_neigh = position[neighbor.idx]
+        pair_displacement = dyn_neighbor_displacement_fn(position, r_neigh)
+        pair_distances = space.distance(pair_displacement)
+        pair_distances = jnp.where(neighbor_mask, pair_distances,
+                                   2. * r_cutoff)
+
+        net = custom_nn.PairwiseNNEnergy(r_cutoff, hidden_layers, init_kwargs,
+                                         activation, num_rbf, envelope_p)
+        nn_energy = net(pair_distances, species, **dynamic_kwargs)
+        return nn_energy
+    return model.init, model.apply
+
+
 def DimeNetPP_neighborlist(displacement: DisplacementFn,
                            R_test: Array,
                            neighbor_test,
@@ -457,9 +523,9 @@ def DimeNetPP_neighborlist(displacement: DisplacementFn,
     @hk.without_apply_rng
     @hk.transform
     def model(R: Array, neighbor, species=None, **dynamic_kwargs) -> Array:
-        N, max_neighbors = neighbor.idx.shape
+        n_particles, _ = neighbor.idx.shape
         if species is None:  # dummy species to allow streamlined use of different species
-            species = jnp.zeros(N, dtype=jnp.int32)
+            species = jnp.zeros(n_particles, dtype=jnp.int32)
         else:
             smap._check_species_dtype(species)  # assert species are int
 
@@ -473,7 +539,7 @@ def DimeNetPP_neighborlist(displacement: DisplacementFn,
 
         # compute adjacency matrix via neighbor_list, then build sparse representation to avoid part of padding overhead
         # TODO new sparse neighborlist format would simplify building the connectivity
-        edge_idx_ji = jnp.where(pair_distances < r_cutoff, neighbor.idx, N)  # adds all edges > cut-off to masked edges
+        edge_idx_ji = jnp.where(pair_distances < r_cutoff, neighbor.idx, n_particles)  # adds all edges > cut-off to masked edges
         pair_distances_sparse, pair_connections, angle_idxs, angular_connectivity, (n_edges, n_angles) = \
             custom_nn.sparse_representation(pair_distances, edge_idx_ji, max_edges, max_angles)
         too_many_edges_error_code = lax.cond(jnp.bitwise_or(n_edges > max_edges, n_angles > max_angles),
@@ -485,7 +551,7 @@ def DimeNetPP_neighborlist(displacement: DisplacementFn,
         pair_distances_sparse = jnp.where(pair_mask[:, 0], pair_distances_sparse, 2. * r_cutoff)
         angles = custom_nn.angles_triplets(R, dynamic_displacement, angle_idxs, angular_connectivity)
         net = custom_nn.DimeNetPPEnergy(r_cutoff,
-                                        n_particles=N,
+                                        n_particles=n_particles,
                                         n_species=n_species,
                                         kbt_dependent=kbt_dependent,
                                         embed_size=embed_size,
