@@ -429,7 +429,6 @@ class DifftreActive:
             checkpoint_format
         )
         # other inits
-        pass
 
     def add_statepoint(self, *args, **kwargs):
         """Add another statepoint to the target state points.
@@ -449,6 +448,32 @@ class DifftreActive:
     def load_checkpoint(self, file_path):
         self.trainer = util.MLETrainerTemplate.load_trainer(file_path)
         # TODO load rest?
+
+    # Interface convenience functions from TrainerTemplate
+    @property
+    def energy_fn(self):
+        return self.trainer.energy_fn
+
+    def save_trainer(self, save_path):
+        raise NotImplementedError
+
+    @classmethod
+    def load_trainer(cls, filepath):
+        raise NotImplementedError
+
+    def save_energy_params(self, *args, **kwargs):
+        self.trainer.save_energy_params(*args, **kwargs)
+
+    def load_energy_params(self, *args, **kwargs):
+        self.trainer.load_energy_params(*args, **kwargs)
+
+    @property
+    def params(self):
+        return self.trainer.params
+
+    @params.setter
+    def params(self, loaded_params):
+        self.trainer.params = loaded_params
 
 
 class RelativeEntropy(reweighting.PropagationBase):
