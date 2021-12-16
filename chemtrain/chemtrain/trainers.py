@@ -415,19 +415,16 @@ class Difftre(reweighting.PropagationBase):
 class DifftreActive:
     """Active learning of state-transferable potentials from experimental data
      via DiffTRe.
+
+     The input trainer can be pre-trained or freshly initialized. Pre-training
+     usually comes with the advantage that the initial training from random
+     parameters is usually the most unstable one. Hence, special care can be
+     taken such as training on NVT initially to fix the pressure and swapping
+     to NPT afterwards. This active learning trainer then takes care of learning
+      statepoint transferability.
      """
-    # TODO Ckeckpointing functions here not very useful here: Override those
-    #  and use checkpointing of difftre trainer
-    def __init__(self, init_params, optimizer, reweight_ratio=0.9,
-                 sim_batch_size=1, energy_fn_template=None,
-                 convergence_criterion='max_loss',
-                 checkpoint_folder='Checkpoints', checkpoint_format='pkl'):
-        # Init DiffTre trainer
-        self.trainer = Difftre(
-            init_params, optimizer, reweight_ratio, sim_batch_size,
-            energy_fn_template, convergence_criterion, checkpoint_folder,
-            checkpoint_format
-        )
+    def __init__(self, trainer):
+        self.trainer = trainer
         # other inits
 
     def add_statepoint(self, *args, **kwargs):
@@ -440,11 +437,22 @@ class DifftreActive:
         """
         self.trainer.add_statepoint(*args, **kwargs)
 
-    def train(self):
+    def train(self, max_new_statepoints=100):
+        for added_statepoints in range(max_new_statepoints):
+            accuracy_met = False
+            if accuracy_met:
+                print('Visited state space covered with accuracy target met.')
+                break
 
-        # checkpoint: call checkpoint of trainer
-        pass
+            # checkpoint: call checkpoint of trainer
+        else:
+            warnings.warn('Maximum number of added statepoints added without '
+                          'reaching target accuracy over visited state space.')
 
+
+
+    # TODO Ckeckpointing functions here not very useful here: Override those
+    #  and use checkpointing of difftre trainer
     def load_checkpoint(self, file_path):
         self.trainer = util.MLETrainerTemplate.load_trainer(file_path)
         # TODO load rest?
