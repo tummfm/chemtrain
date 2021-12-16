@@ -475,6 +475,9 @@ class PropagationBase(util.MLETrainerTemplate):
     def params(self, loaded_params):
         self.state = self.state.replace(params=loaded_params)
 
+    def get_sim_state(self, key):
+        return self.trajectory_states[key].sim_state
+
     def _get_batch(self):
         """Helper function to re-shuffle simulations and split into batches."""
         self.shuffle_key, used_key = random.split(self.shuffle_key, 2)
