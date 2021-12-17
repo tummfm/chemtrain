@@ -299,8 +299,9 @@ class MLETrainerTemplate(abc.ABC):
 
             if self.converged:
                 break
-        if thresh is not None:
-            print('Maximum number of epochs reached without convergence.')
+        else:
+            if thresh is not None:
+                print('Maximum number of epochs reached without convergence.')
 
     @abc.abstractmethod
     def _get_batch(self):
