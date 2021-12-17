@@ -413,9 +413,9 @@ class PropagationBase(util.MLETrainerTemplate):
     """
     def __init__(self, init_trainer_state, optimizer, checkpoint_path,
                  reweight_ratio=0.9, sim_batch_size=1, checkpoint_format='pkl',
-                 energy_fn_template=None):
+                 energy_fn_template=None, **kwargs):
         super().__init__(optimizer, init_trainer_state, checkpoint_path,
-                         checkpoint_format, energy_fn_template)
+                         checkpoint_format, energy_fn_template, **kwargs)
         self.sim_batch_size = sim_batch_size
         self.reweight_ratio = reweight_ratio
 
@@ -510,10 +510,11 @@ class PropagationBase(util.MLETrainerTemplate):
 
         print('')  # to visually differentiate between epochs
 
-    def train(self, epochs, checkpoint_freq=None, thresh=None):
+    def train(self, max_epochs, thresh=None, checkpoint_freq=None):
         assert self.n_statepoints > 0, ('Add at least 1 state point via '
                                         '"add_statepoint" to start training.')
-        super().train(epochs, checkpoint_freq=checkpoint_freq, thresh=thresh)
+        super().train(max_epochs, thresh=thresh,
+                      checkpoint_freq=checkpoint_freq)
 
     @abstractmethod
     def _update(self, batch):

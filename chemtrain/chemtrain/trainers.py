@@ -9,7 +9,7 @@ import numpy as onp
 from chemtrain import util, force_matching, traj_util, reweighting
 
 
-class ForceMatching(util.MLETrainerTemplate):
+class ForceMatching(util.MLETrainerTemplate, util.EarlyStopping):
     """Force-matching trainer.
 
     This implementation assumes a constant number of particles per box and
@@ -23,6 +23,7 @@ class ForceMatching(util.MLETrainerTemplate):
                  optimizer, position_data, energy_data=None, force_data=None,
                  virial_data=None, box_tensor=None, gamma_f=1., gamma_p=1.e-6,
                  batch_per_device=1, batch_cache=10, train_ratio=0.875,
+                 convergence_criterion='window_median',
                  checkpoint_folder='Checkpoints', checkpoint_format='pkl'):
 
         # setup dataset
@@ -33,8 +34,6 @@ class ForceMatching(util.MLETrainerTemplate):
                                   force_data, virial_data, box_tensor,
                                   batch_per_device, batch_cache)
         self.train_losses, self.val_losses = [], []
-        self.best_params = None
-        self.best_val_loss = 1.e16
 
         opt_state = optimizer.init(init_params)  # initialize optimizer state
 
@@ -46,8 +45,12 @@ class ForceMatching(util.MLETrainerTemplate):
                                        opt_state=opt_state)
 
         checkpoint_path = 'output/force_matching/' + str(checkpoint_folder)
-        super().__init__(optimizer, init_state, checkpoint_path,
-                         checkpoint_format, energy_fn_template)
+        super().__init__(
+            optimizer=optimizer, init_state=init_state,
+            checkpoint_path=checkpoint_path,
+            checkpoint_format=checkpoint_format,
+            reference_energy_fn_template=energy_fn_template,
+            criterion=convergence_criterion)
 
         self.grad_fns = force_matching.init_update_fns(
             energy_fn_template, nbrs_init, optimizer, gamma_f=gamma_f,
@@ -78,6 +81,9 @@ class ForceMatching(util.MLETrainerTemplate):
             # we need to re-initialize grad_fns
             self.grad_fns = force_matching.init_update_fns(
                 include_virial=include_virial, **grad_fns_kwargs)
+
+        # reset convergence criterion as loss might not be comparable
+        self.reset_convergence_losses()
 
     @staticmethod
     def _process_dataset(position_data, train_ratio=0.875, energy_data=None,
@@ -174,21 +180,14 @@ class ForceMatching(util.MLETrainerTemplate):
               f'Average val loss: {mean_val_loss:.5f} '
               f'Elapsed time = {duration:.3f} min')
 
-        improvement = self.best_val_loss - mean_val_loss
-        if improvement > 0.:
-            self.best_val_loss = mean_val_loss
-            self.best_params = copy.copy(self.params)
-
-        if thresh is not None:
-            if improvement < thresh:
-                self.converged = True
+        self._converged = self.early_stopping(mean_val_loss, thresh)
 
 
-class Difftre(reweighting.PropagationBase):
+class Difftre(reweighting.PropagationBase, util.EarlyStopping):
     """Trainer class for parametrizing potentials via the DiffTRe method."""
     def __init__(self, init_params, optimizer, reweight_ratio=0.9,
                  sim_batch_size=1, energy_fn_template=None,
-                 convergence_criterion='max_loss',
+                 convergence_criterion='window_median',
                  checkpoint_folder='Checkpoints', checkpoint_format='pkl'):
         """Initializes a DiffTRe trainer instance.
 
@@ -233,15 +232,16 @@ class Difftre(reweighting.PropagationBase):
         # TODO doc: beware that for too short trajectory might have overfittet
         #  to single trajectory; if in doubt, set reweighting ratio = 1 towards
         #  end of optimization
-        self.best_params = None
-        self.best_loss = 1.e16
-        self.loss_window = []  # for convergence criteria based on windows
-        self.criterion = convergence_criterion
         checkpoint_path = 'output/difftre/' + str(checkpoint_folder)
         init_state = util.TrainerState(params=init_params,
                                        opt_state=optimizer.init(init_params))
-        super().__init__(init_state, optimizer, checkpoint_path, reweight_ratio,
-                         sim_batch_size, checkpoint_format, energy_fn_template)
+        super().__init__(
+            init_trainer_state=init_state, optimizer=optimizer,
+            checkpoint_path=checkpoint_path, reweight_ratio=reweight_ratio,
+            sim_batch_size=sim_batch_size, checkpoint_format=checkpoint_format,
+            energy_fn_template=energy_fn_template,
+            criterion=convergence_criterion
+        )
 
     def add_statepoint(self, energy_fn_template, simulator_template,
                        neighbor_fn, timings, kbt, quantities,
@@ -349,8 +349,7 @@ class Difftre(reweighting.PropagationBase):
 
         # Reset loss measures if new state point es added since loss values
         # are not necessarily comparable
-        self.best_loss = 1.e16
-        self.loss_window = []
+        self.reset_convergence_losses()
 
     def _update(self, batch):
         """Computes gradient averaged over the sim_batch by propagating
@@ -384,7 +383,7 @@ class Difftre(reweighting.PropagationBase):
                               f'{self._epoch} is NaN. This was likely caused by'
                               f' divergence of the optimization or a bad model '
                               f'setup causing a NaN trajectory.')
-                self.converged = True  # ends training
+                self._diverged = True  # ends training
                 break
 
         self.batch_losses.append(sum(losses) / self.sim_batch_size)
@@ -399,26 +398,7 @@ class Difftre(reweighting.PropagationBase):
               f'Elapsed time = {duration:.3f} min')
 
         self._print_measured_statepoint()
-
-        curr_epoch_loss = self.epoch_losses[-1]
-        improvement = self.best_loss - curr_epoch_loss
-        if improvement > 0.:
-            self.best_loss = curr_epoch_loss
-            self.best_params = copy.copy(self.params)
-
-        if thresh is not None:
-            if self.criterion == 'max_loss':
-                if max(last_losses) < thresh: self.converged = True
-            elif self.criterion == 'ave_loss':
-                if epoch_loss < thresh: self.converged = True
-            elif self.criterion == 'std':
-                raise NotImplementedError('Currently, there is no criterion '
-                                          'based on the std of the loss '
-                                          'implemented.')
-            else:
-                raise ValueError(f'Convergence criterion {self.criterion} '
-                                 f'unknown. Select "max_loss", "ave_loss" or '
-                                 f'"std".')
+        self._converged = self.early_stopping(epoch_loss, thresh)
 
 
 class DifftreActive:
@@ -457,8 +437,6 @@ class DifftreActive:
         else:
             warnings.warn('Maximum number of added statepoints added without '
                           'reaching target accuracy over visited state space.')
-
-
 
     # TODO Ckeckpointing functions here not very useful here: Override those
     #  and use checkpointing of difftre trainer

@@ -152,12 +152,14 @@ class MLETrainerTemplate(abc.ABC):
     """
 
     def __init__(self, optimizer, init_state, checkpoint_path,
-                 checkpoint_format='.pkl', reference_energy_fn_template=None):
+                 checkpoint_format='.pkl', reference_energy_fn_template=None,
+                 **kwargs):
         """Forces implementation of checkpointing routines. A reference
         energy_fn_template can be provided, but is not mandatory due to
         the dependence of the template on the box via the displacement
         function.
         """
+        super().__init__(**kwargs)
         self.state = init_state
         self.optimizer = optimizer
         self.checkpoint_path = checkpoint_path
@@ -165,7 +167,8 @@ class MLETrainerTemplate(abc.ABC):
         self._epoch = 0
         self.reference_energy_fn_template = reference_energy_fn_template
         self.update_times = []
-        self.converged = False
+        self._converged = False
+        self._diverged = False
 
     @property
     def energy_fn(self):
@@ -270,8 +273,8 @@ class MLETrainerTemplate(abc.ABC):
             format_not_recognized_error(file_path[-4:])
         self.params = tree_map(jnp.array, params)  # move state on device
 
-    def train(self, epochs, checkpoint_freq=None, thresh=None):
-        """Trains for a specified number of epochs, checkpoints after a
+    def train(self, max_epochs, thresh=None, checkpoint_freq=None):
+        """Trains for a maximum number of epochs, checkpoints after a
         specified number of epochs and ends training if a convergence
         criterion is met. This function can be called multiple times to extend
         training.
@@ -283,10 +286,21 @@ class MLETrainerTemplate(abc.ABC):
         needs to be implemented in _get_batch(), _update() and
         _evaluate_convergence(), respectively, depending on the exact trainer
         details to be implemented.
+
+        Args:
+            max_epochs: Maximum number of epochs for which training is
+                        continued. Training will end sooner if convergence
+                        criterion is met.
+            thresh: Threshold of the early stopping convergence criterion. If
+                    None, no early stopping is applied. Definition of thresh
+                    depends on specific convergence criterion.
+                    See EarlyStopping.
+            checkpoint_freq: Number of epochs after which a checkpoint is saved.
+                             No checkpoints are saved by default.
         """
-        self.converged = False
+        self._converged = False
         start_epoch = self._epoch
-        end_epoch = start_epoch + epochs
+        end_epoch = start_epoch + max_epochs
         for _ in range(start_epoch, end_epoch):
             start_time = time.time()
             for batch in self._get_batch():
@@ -297,7 +311,7 @@ class MLETrainerTemplate(abc.ABC):
             self._epoch += 1
             self._dump_checkpoint_occasionally(frequency=checkpoint_freq)
 
-            if self.converged:
+            if self._converged or self._diverged:
                 break
         else:
             if thresh is not None:
@@ -335,3 +349,102 @@ class MLETrainerTemplate(abc.ABC):
     @abc.abstractmethod
     def params(self, loaded_params):
         raise NotImplementedError()
+
+
+class EarlyStopping:
+    """A class that saves the best parameter obtained so far based on the
+    validation loss and determines whether the optimization can be stopped based
+    on some stopping criterion.
+
+    The following criteria are implemented:
+    * 'window_median': 2 windows are placed at the end of the loss history.
+                       Stops when the median of the latter window of size
+                       "thresh" exceeds the median of the prior window of the
+                       same size.
+    * 'PQ': Stops when the PQ criterion exceeds thresh
+    * 'max_loss': Stops when the loss decreased below the maximum allowed loss
+                  specified cia thresh.
+    """
+    def __init__(self, criterion, pq_window_size=5, **kwargs):
+        """Initialize EarlyStopping.
+
+        Args:
+            criterion: Convergence criterion to employ
+            pq_window_size: Window size for PQ method
+            **kwargs: Unused kwargs
+        """
+        super().__init__(**kwargs)
+        self.criterion = criterion
+
+        # own loss history that can be reset on the fly if needed.
+        self._epoch_losses = []
+        self.best_loss = 1.e16
+        self.best_params = None
+
+        self.pq_window_size = pq_window_size
+
+    def _is_converged(self, thresh):
+        converged = False
+        if thresh is not None:  # otherwise no early stopping used
+            if self.criterion == 'window_median':
+                window_size = thresh
+                if len(self._epoch_losses) >= 2 * window_size:
+                    prior_window = onp.array(
+                        self._epoch_losses[-2 * window_size:-window_size])
+                    latter_window = onp.array(self._epoch_losses[-window_size:])
+                    converged = (onp.median(latter_window)
+                                 > onp.median(prior_window))
+
+            elif self.criterion == 'PQ':
+                if len(self._epoch_losses) >= self.pq_window_size:
+                    best_loss = min(self._epoch_losses)
+                    loss_window = self._epoch_losses[-self.pq_window_size:]
+                    gen_loss = 100. * (loss_window[-1] / best_loss - 1.)
+                    window_average = sum(loss_window) / self.pq_window_size
+                    window_min = min(loss_window)
+                    progress = 1000. * (window_average / window_min - 1.)
+                    pq = gen_loss / progress
+                    converged = pq > thresh
+
+            elif self.criterion == 'max_loss':
+                converged = self._epoch_losses[-1] < thresh
+            else:
+                raise ValueError(f'Convergence criterion {self.criterion} '
+                                 f'unknown. Select "max_loss", "ave_loss" or '
+                                 f'"std".')
+        return converged
+
+    def early_stopping(self, curr_epoch_loss, thresh):
+        """Estimates whether convergence criterion was met and keeps track of
+        best parameters obtained so far.
+
+        Args:
+            curr_epoch_loss: Validation loss of the most recent epoch
+            thresh: Convergence threshold. Specific definition depends on the
+                    selected convergence criterion.
+
+        Returns:
+            True if the convergence criterion was met, else False.
+        """
+        self._epoch_losses.append(curr_epoch_loss)
+
+        improvement = self.best_loss - curr_epoch_loss
+        if improvement > 0.:
+            self.best_loss = curr_epoch_loss
+            self.best_params = copy.copy(self.params)
+
+        return self._is_converged(thresh)
+
+    def reset_convergence_losses(self):
+        """Resets loss history used for convergence estimation, e.g. to avoid
+        early stopping when loss increases due to on-the-fly changes in the
+        dataset or the loss fucntion.
+        """
+        self._epoch_losses = []
+        self.best_loss = 1.e16
+        self.best_params = None
+
+    @property
+    @abc.abstractmethod
+    def params(self):
+        """Short-cut for params to be implemented in child class."""
