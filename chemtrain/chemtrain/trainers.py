@@ -234,6 +234,8 @@ class Difftre(reweighting.PropagationBase):
         #  to single trajectory; if in doubt, set reweighting ratio = 1 towards
         #  end of optimization
         self.best_params = None
+        self.best_loss = 1.e16
+        self.loss_window = []  # for convergence criteria based on windows
         self.criterion = convergence_criterion
         checkpoint_path = 'output/difftre/' + str(checkpoint_folder)
         init_state = util.TrainerState(params=init_params,
@@ -345,6 +347,11 @@ class Difftre(reweighting.PropagationBase):
         self.grad_fns[key] = difftre_grad_and_propagation
         self.predictions[key] = {}  # init saving predictions for this point
 
+        # Reset loss measures if new state point es added since loss values
+        # are not necessarily comparable
+        self.best_loss = 1.e16
+        self.loss_window = []
+
     def _update(self, batch):
         """Computes gradient averaged over the sim_batch by propagating
         respective state points. Additionally saves predictions and loss
@@ -393,8 +400,10 @@ class Difftre(reweighting.PropagationBase):
 
         self._print_measured_statepoint()
 
-        # save parameter set that resulted in smallest loss up to this point
-        if jnp.argmin(jnp.array(self.epoch_losses)) == len(self.epoch_losses)-1:
+        curr_epoch_loss = self.epoch_losses[-1]
+        improvement = self.best_loss - curr_epoch_loss
+        if improvement > 0.:
+            self.best_loss = curr_epoch_loss
             self.best_params = copy.copy(self.params)
 
         if thresh is not None:
