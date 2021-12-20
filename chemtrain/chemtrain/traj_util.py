@@ -5,7 +5,8 @@ from functools import partial
 from typing import Any, Dict
 
 import chex
-from jax import jit, lax, vmap, numpy as jnp
+from coax.utils._jit import jit
+from jax import lax, vmap, numpy as jnp
 from jax_md import simulate, util as jax_md_util
 
 from chemtrain import util

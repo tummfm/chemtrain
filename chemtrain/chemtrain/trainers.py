@@ -2,7 +2,8 @@
 import copy
 import warnings
 
-from jax import device_count, jit, value_and_grad, numpy as jnp
+from coax.utils._jit import jit
+from jax import device_count, value_and_grad, numpy as jnp
 from jax_sgmc import data
 import numpy as onp
 

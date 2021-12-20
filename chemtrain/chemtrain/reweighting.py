@@ -7,7 +7,8 @@ from abc import abstractmethod
 import time
 import warnings
 
-from jax import (checkpoint, jit, lax, random, grad, tree_multimap, tree_map,
+from coax.utils._jit import jit
+from jax import (checkpoint, lax, random, grad, tree_multimap, tree_map,
                  numpy as jnp)
 from jax_md import util as jax_md_util
 
