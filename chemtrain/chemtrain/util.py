@@ -411,7 +411,7 @@ class EarlyStopping:
                                  f'"std".')
         return converged
 
-    def early_stopping(self, curr_epoch_loss, thresh):
+    def early_stopping(self, curr_epoch_loss, thresh, params):
         """Estimates whether convergence criterion was met and keeps track of
         best parameters obtained so far.
 
@@ -419,6 +419,7 @@ class EarlyStopping:
             curr_epoch_loss: Validation loss of the most recent epoch
             thresh: Convergence threshold. Specific definition depends on the
                     selected convergence criterion.
+            params: Optimization parameters to save in case of being best
 
         Returns:
             True if the convergence criterion was met, else False.
@@ -428,7 +429,7 @@ class EarlyStopping:
         improvement = self.best_loss - curr_epoch_loss
         if improvement > 0.:
             self.best_loss = curr_epoch_loss
-            self.best_params = copy.copy(self.params)
+            self.best_params = copy.copy(params)
 
         return self._is_converged(thresh)
 
