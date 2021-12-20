@@ -152,14 +152,12 @@ class MLETrainerTemplate(abc.ABC):
     """
 
     def __init__(self, optimizer, init_state, checkpoint_path,
-                 checkpoint_format='.pkl', reference_energy_fn_template=None,
-                 **kwargs):
+                 checkpoint_format='.pkl', reference_energy_fn_template=None):
         """Forces implementation of checkpointing routines. A reference
         energy_fn_template can be provided, but is not mandatory due to
         the dependence of the template on the box via the displacement
         function.
         """
-        super().__init__(**kwargs)
         self.state = init_state
         self.optimizer = optimizer
         self.checkpoint_path = checkpoint_path
@@ -365,7 +363,7 @@ class EarlyStopping:
     * 'max_loss': Stops when the loss decreased below the maximum allowed loss
                   specified cia thresh.
     """
-    def __init__(self, criterion, pq_window_size=5, **kwargs):
+    def __init__(self, criterion, pq_window_size=5):
         """Initialize EarlyStopping.
 
         Args:
@@ -373,7 +371,6 @@ class EarlyStopping:
             pq_window_size: Window size for PQ method
             **kwargs: Unused kwargs
         """
-        super().__init__(**kwargs)
         self.criterion = criterion
 
         # own loss history that can be reset on the fly if needed.

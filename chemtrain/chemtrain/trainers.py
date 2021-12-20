@@ -1,5 +1,4 @@
 """This file contains several Trainer classes as a quickstart for users."""
-import copy
 import warnings
 
 from jax import device_count, jit, value_and_grad, numpy as jnp
@@ -9,7 +8,7 @@ import numpy as onp
 from chemtrain import util, force_matching, traj_util, reweighting
 
 
-class ForceMatching(util.MLETrainerTemplate, util.EarlyStopping):
+class ForceMatching(util.MLETrainerTemplate):
     """Force-matching trainer.
 
     This implementation assumes a constant number of particles per box and
@@ -34,6 +33,7 @@ class ForceMatching(util.MLETrainerTemplate, util.EarlyStopping):
                                   force_data, virial_data, box_tensor,
                                   batch_per_device, batch_cache)
         self.train_losses, self.val_losses = [], []
+        self.early_stop = util.EarlyStopping(criterion=convergence_criterion)
 
         opt_state = optimizer.init(init_params)  # initialize optimizer state
 
@@ -49,8 +49,7 @@ class ForceMatching(util.MLETrainerTemplate, util.EarlyStopping):
             optimizer=optimizer, init_state=init_state,
             checkpoint_path=checkpoint_path,
             checkpoint_format=checkpoint_format,
-            reference_energy_fn_template=energy_fn_template,
-            criterion=convergence_criterion)
+            reference_energy_fn_template=energy_fn_template)
 
         self.grad_fns = force_matching.init_update_fns(
             energy_fn_template, nbrs_init, optimizer, gamma_f=gamma_f,
@@ -83,7 +82,7 @@ class ForceMatching(util.MLETrainerTemplate, util.EarlyStopping):
                 include_virial=include_virial, **grad_fns_kwargs)
 
         # reset convergence criterion as loss might not be comparable
-        self.reset_convergence_losses()
+        self.early_stop.reset_convergence_losses()
 
     @staticmethod
     def _process_dataset(position_data, train_ratio=0.875, energy_data=None,
@@ -180,10 +179,10 @@ class ForceMatching(util.MLETrainerTemplate, util.EarlyStopping):
               f'Average val loss: {mean_val_loss:.5f} '
               f'Elapsed time = {duration:.3f} min')
 
-        self._converged = self.early_stopping(mean_val_loss, thresh)
+        self._converged = self.early_stop.early_stopping(mean_val_loss, thresh)
 
 
-class Difftre(reweighting.PropagationBase, util.EarlyStopping):
+class Difftre(reweighting.PropagationBase):
     """Trainer class for parametrizing potentials via the DiffTRe method."""
     def __init__(self, init_params, optimizer, reweight_ratio=0.9,
                  sim_batch_size=1, energy_fn_template=None,
@@ -208,7 +207,7 @@ class Difftre(reweighting.PropagationBase, util.EarlyStopping):
                             batch. Gradients will be averaged over the batch
                             before stepping the optimizer.
             energy_fn_template: Function that takes energy parameters and
-                                initializes an new energy function. Here, the
+                                initializes a new energy function. Here, the
                                 energy_fn_template is only a reference that
                                 will be saved alongside the trainer. Each
                                 state point requires its own due to the
@@ -229,6 +228,7 @@ class Difftre(reweighting.PropagationBase, util.EarlyStopping):
 
         self.batch_losses, self.epoch_losses = [], []
         self.predictions = {}
+        self.early_stop = util.EarlyStopping(criterion=convergence_criterion)
         # TODO doc: beware that for too short trajectory might have overfittet
         #  to single trajectory; if in doubt, set reweighting ratio = 1 towards
         #  end of optimization
@@ -239,9 +239,7 @@ class Difftre(reweighting.PropagationBase, util.EarlyStopping):
             init_trainer_state=init_state, optimizer=optimizer,
             checkpoint_path=checkpoint_path, reweight_ratio=reweight_ratio,
             sim_batch_size=sim_batch_size, checkpoint_format=checkpoint_format,
-            energy_fn_template=energy_fn_template,
-            criterion=convergence_criterion
-        )
+            energy_fn_template=energy_fn_template)
 
     def add_statepoint(self, energy_fn_template, simulator_template,
                        neighbor_fn, timings, kbt, quantities,
@@ -349,7 +347,7 @@ class Difftre(reweighting.PropagationBase, util.EarlyStopping):
 
         # Reset loss measures if new state point es added since loss values
         # are not necessarily comparable
-        self.reset_convergence_losses()
+        self.early_stop.reset_convergence_losses()
 
     def _update(self, batch):
         """Computes gradient averaged over the sim_batch by propagating
@@ -398,7 +396,7 @@ class Difftre(reweighting.PropagationBase, util.EarlyStopping):
               f'Elapsed time = {duration:.3f} min')
 
         self._print_measured_statepoint()
-        self._converged = self.early_stopping(epoch_loss, thresh)
+        self._converged = self.early_stop.early_stopping(epoch_loss, thresh)
 
 
 class DifftreActive:
