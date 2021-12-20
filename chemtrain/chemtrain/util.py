@@ -1,6 +1,5 @@
 """Utility functions helpful in designing new trainers."""
 import abc
-import copy
 from functools import partial
 import pathlib
 import time
@@ -159,7 +158,7 @@ class MLETrainerTemplate(abc.ABC):
     """
 
     def __init__(self, optimizer, init_state, checkpoint_path,
-                 checkpoint_format='.pkl', reference_energy_fn_template=None):
+                 reference_energy_fn_template=None):
         """Forces implementation of checkpointing routines. A reference
         energy_fn_template can be provided, but is not mandatory due to
         the dependence of the template on the box via the displacement
@@ -168,7 +167,6 @@ class MLETrainerTemplate(abc.ABC):
         self.state = init_state
         self.optimizer = optimizer
         self.checkpoint_path = checkpoint_path
-        self.check_format = checkpoint_format
         self._epoch = 0
         self.reference_energy_fn_template = reference_energy_fn_template
         self.update_times = []
