@@ -181,6 +181,10 @@ class ForceMatching(util.MLETrainerTemplate):
 
         self._converged = self.early_stop.early_stopping(mean_val_loss, thresh)
 
+    @property
+    def best_params(self):
+        return self.early_stop.best_params
+
 
 class Difftre(reweighting.PropagationBase):
     """Trainer class for parametrizing potentials via the DiffTRe method."""
@@ -397,6 +401,10 @@ class Difftre(reweighting.PropagationBase):
 
         self._print_measured_statepoint()
         self._converged = self.early_stop.early_stopping(epoch_loss, thresh)
+
+    @property
+    def best_params(self):
+        return self.early_stop.best_params
 
 
 class DifftreActive:
