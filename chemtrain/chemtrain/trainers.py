@@ -438,6 +438,7 @@ class DifftreActive:
 
     # TODO Ckeckpointing functions here not very useful here: Override those
     #  and use checkpointing of difftre trainer
+    # TODO re-assess once checkpointing of jit functions works
     def load_checkpoint(self, file_path):
         self.trainer = util.MLETrainerTemplate.load_trainer(file_path)
         # TODO load rest?
