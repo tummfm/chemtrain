@@ -278,3 +278,21 @@ def quantity_traj(traj_state, quantities, energy_params=None):
                                       traj_state.thermostat_kbt)
     )
     return quantity_trajs
+
+
+def average_predictions(quantity_trajs):
+    """Computes average quantities for per-state quantiity_trajectories.
+
+    Args:
+        quantity_trajs: A dict containing per-state-quantities, e.g. as
+                        generated from traj_util.quantity_traj.
+
+    Returns:
+        A dict containing ensemble-averaged quantities under the same keys as
+        quantity_trajs.
+    """
+    average_quantities = {
+        quantity_key: jnp.mean(quant_traj, axis=0)
+        for quantity_key, quant_traj in quantity_trajs.items()
+    }
+    return average_quantities
