@@ -1,7 +1,9 @@
 """This file contains several Trainer classes as a quickstart for users."""
+import copy
 import warnings
 
-from jax import device_count, jit, value_and_grad, numpy as jnp
+from coax.utils._jit import jit
+from jax import device_count, value_and_grad, numpy as jnp
 from jax_sgmc import data
 import numpy as onp
 
@@ -23,7 +25,7 @@ class ForceMatching(util.MLETrainerTemplate):
                  virial_data=None, box_tensor=None, gamma_f=1., gamma_p=1.e-6,
                  batch_per_device=1, batch_cache=10, train_ratio=0.875,
                  convergence_criterion='window_median',
-                 checkpoint_folder='Checkpoints', checkpoint_format='pkl'):
+                 checkpoint_folder='Checkpoints'):
 
         # setup dataset
         self.n_devices, self.batches_per_epoch, self.get_train_batch, \
@@ -48,7 +50,6 @@ class ForceMatching(util.MLETrainerTemplate):
         super().__init__(
             optimizer=optimizer, init_state=init_state,
             checkpoint_path=checkpoint_path,
-            checkpoint_format=checkpoint_format,
             reference_energy_fn_template=energy_fn_template)
 
         self.grad_fns = force_matching.init_update_fns(
@@ -191,7 +192,7 @@ class Difftre(reweighting.PropagationBase):
     def __init__(self, init_params, optimizer, reweight_ratio=0.9,
                  sim_batch_size=1, energy_fn_template=None,
                  convergence_criterion='window_median',
-                 checkpoint_folder='Checkpoints', checkpoint_format='pkl'):
+                 checkpoint_folder='Checkpoints'):
         """Initializes a DiffTRe trainer instance.
 
         The implementation assumes a NVT ensemble in weight computation.
@@ -227,7 +228,6 @@ class Difftre(reweighting.PropagationBase):
                                    deviation 'std' might be implemented in the
                                    future.
             checkpoint_folder: Name of folders to store ckeckpoints in.
-            checkpoint_format: Checkpoint format, currently only .pkl supported.
         """
 
         self.batch_losses, self.epoch_losses = [], []
@@ -242,7 +242,7 @@ class Difftre(reweighting.PropagationBase):
         super().__init__(
             init_trainer_state=init_state, optimizer=optimizer,
             checkpoint_path=checkpoint_path, reweight_ratio=reweight_ratio,
-            sim_batch_size=sim_batch_size, checkpoint_format=checkpoint_format,
+            sim_batch_size=sim_batch_size,
             energy_fn_template=energy_fn_template)
 
     def add_statepoint(self, energy_fn_template, simulator_template,
@@ -482,7 +482,7 @@ class RelativeEntropy(reweighting.PropagationBase):
     """Trainer for relative entropy minimization."""
     def __init__(self, init_params, optimizer,
                  reweight_ratio=0.9, sim_batch_size=1, energy_fn_template=None,
-                 checkpoint_folder='Checkpoints', checkpoint_format='pkl'):
+                 checkpoint_folder='Checkpoints'):
         """
         Initializes a relative entropy trainer instance.
 
@@ -508,15 +508,13 @@ class RelativeEntropy(reweighting.PropagationBase):
                                 dependence on the box size via the displacement
                                 function, which can vary between state points.
             checkpoint_folder: Name of folders to store ckeckpoints in.
-            checkpoint_format: Checkpoint format, currently only .pkl supported.
         """
 
         checkpoint_path = 'output/rel_entropy/' + str(checkpoint_folder)
         init_trainer_state = util.TrainerState(
             params=init_params, opt_state=optimizer.init(init_params))
         super().__init__(init_trainer_state, optimizer, checkpoint_path,
-                         reweight_ratio, sim_batch_size, checkpoint_format,
-                         energy_fn_template)
+                         reweight_ratio, sim_batch_size, energy_fn_template)
 
         # in addition to the standard trajectory state, we also need to keep
         # track of dataloader states for reference snapshots

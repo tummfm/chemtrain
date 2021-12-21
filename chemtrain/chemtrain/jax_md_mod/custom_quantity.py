@@ -5,7 +5,8 @@ state and additional kwargs.
 """
 from functools import partial
 
-from jax import jit, grad, vmap, lax, jacrev, jacfwd, numpy as jnp
+from coax.utils._jit import jit
+from jax import grad, vmap, lax, jacrev, jacfwd, numpy as jnp
 from jax.scipy.stats import norm
 from jax_md import space, util, dataclasses, quantity, simulate
 

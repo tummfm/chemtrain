@@ -1,6 +1,5 @@
 """Utility functions helpful in designing new trainers."""
 import abc
-import copy
 from functools import partial
 import pathlib
 import time
@@ -131,10 +130,17 @@ def scale_dataset_fractional(traj, box):
     return scaled_traj
 
 
-def jit_fn_not_found_error(e):
-    raise AttributeError('Please store the (jit-compiled) function under '
-                         '"self.update" or "self.grad_fns", such that it '
-                         'can be deleted here as it cannot be pickled.') from e
+def load_trainer(file_path):
+    """Returns the trainer saved via 'trainer.save_trainer'.
+
+    Args:
+        file_path: Path of pickle file containing trainer.
+
+    """
+    with open(file_path, 'rb') as pickle_file:
+        trainer = pickle.load(pickle_file)
+    trainer.state = tree_map(jnp.array, trainer.state)  # move on device
+    return trainer
 
 
 def format_not_recognized_error(file_format):
@@ -152,7 +158,7 @@ class MLETrainerTemplate(abc.ABC):
     """
 
     def __init__(self, optimizer, init_state, checkpoint_path,
-                 checkpoint_format='.pkl', reference_energy_fn_template=None):
+                 reference_energy_fn_template=None):
         """Forces implementation of checkpointing routines. A reference
         energy_fn_template can be provided, but is not mandatory due to
         the dependence of the template on the box via the displacement
@@ -161,7 +167,6 @@ class MLETrainerTemplate(abc.ABC):
         self.state = init_state
         self.optimizer = optimizer
         self.checkpoint_path = checkpoint_path
-        self.check_format = checkpoint_format
         self._epoch = 0
         self.reference_energy_fn_template = reference_energy_fn_template
         self.update_times = []
@@ -191,70 +196,24 @@ class MLETrainerTemplate(abc.ABC):
             pathlib.Path(self.checkpoint_path).mkdir(parents=True,
                                                      exist_ok=True)
             if self._epoch % frequency == 0:  # checkpoint model
-                if self.check_format == 'pkl':
-                    file_path = (self.checkpoint_path +
-                                 f'/epoch{self._epoch - 1}.pkl')
-                    save_dict = self.__dict__.copy()
-                    # jitted function cannot be pickled
-                    try:
-                        save_dict.pop('grad_fns')  # for difftre / rel_entropy
-                    except KeyError as e:
-                        jit_fn_not_found_error(e)
-                    with open(file_path, 'wb') as f:
-                        pickle.dump(save_dict, f)
-
-                elif self.check_format == 'hdf5':
-                    # file_path = self.checkpoint_path + f'/checkpoints.hdf5'
-                    raise NotImplementedError
-                    # from jax_sgmc.io import pytree_dict_keys, dict_to_pytree
-                    # leaf_names = pytree_dict_keys(self.state)
-                    # leafes = tree_leaves(self.state)
-                    # with h5py.File(file_path, "w") as file:
-                    #     for leaf_name, value in zip(leaf_names, leafes):
-                    #         file[leaf_name] = value
-                else:
-                    format_not_recognized_error(self.check_format)
-
-    def load_checkpoint(self, file_path):
-        """Loads a saved checkpoint, if trainer was already initialized.
-        Allows continuation of training."""
-        if file_path.endswith('.pkl'):
-            with open(file_path, 'rb') as pickle_file:
-                loaded_dict = pickle.load(pickle_file)
-            self.__dict__.update(loaded_dict)
-        elif file_path.endswith('.hdf5'):
-            raise NotImplementedError
-            # state = dict_to_pytree(as_dict['b'], some_tree['b'])
-        else:
-            format_not_recognized_error(file_path[-4:])
-        self.state = tree_map(jnp.array, self.state)  # move state on device
+                file_path = (self.checkpoint_path +
+                             f'/epoch{self._epoch - 1}.pkl')
+                self.save_trainer(file_path)
 
     def save_trainer(self, save_path):
         """Saves whole trainer, e.g. for production after training."""
-        trainer_copy = copy.copy(self)
-        try:
-            trainer_copy.__delattr__('grad_fns')
-        except AttributeError as e:
-            jit_fn_not_found_error(e)
         with open(save_path, 'wb') as pickle_file:
-            pickle.dump(trainer_copy, pickle_file)
-
-    @classmethod
-    def load_trainer(cls, file_path):
-        """Loads a trainer saved via 'save_trainer'.
-        Does not require initialization of the trainer class,
-        but does not allow continuation of training because
-        update function cannot be used. Save checkpoints instead,
-        if re-training is needed.
-        """
-        with open(file_path, 'rb') as pickle_file:
-            trainer = pickle.load(pickle_file)
-        trainer.state = tree_map(jnp.array, trainer.state)  # move on device
-        return trainer
+            pickle.dump(self, pickle_file)
 
     def save_energy_params(self, file_path, save_format='.hdf5'):
         if save_format == '.hdf5':
             raise NotImplementedError  # TODO implement hdf5
+            # from jax_sgmc.io import pytree_dict_keys, dict_to_pytree
+            # leaf_names = pytree_dict_keys(self.state)
+            # leafes = tree_leaves(self.state)
+            # with h5py.File(file_path, "w") as file:
+            #     for leaf_name, value in zip(leaf_names, leafes):
+            #         file[leaf_name] = value
         elif save_format == '.pkl':
             with open(file_path, 'wb') as pickle_file:
                 pickle.dump(self.params, pickle_file)

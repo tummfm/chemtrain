@@ -7,7 +7,8 @@ from abc import abstractmethod
 import time
 import warnings
 
-from jax import (checkpoint, jit, lax, random, grad, tree_multimap, tree_map,
+from coax.utils._jit import jit
+from jax import (checkpoint, lax, random, grad, tree_multimap, tree_map,
                  numpy as jnp)
 from jax_md import util as jax_md_util
 
@@ -412,10 +413,9 @@ class PropagationBase(util.MLETrainerTemplate):
     the optimization.
     """
     def __init__(self, init_trainer_state, optimizer, checkpoint_path,
-                 reweight_ratio=0.9, sim_batch_size=1, checkpoint_format='pkl',
-                 energy_fn_template=None):
+                 reweight_ratio=0.9, sim_batch_size=1, energy_fn_template=None):
         super().__init__(optimizer, init_trainer_state, checkpoint_path,
-                         checkpoint_format, energy_fn_template)
+                         energy_fn_template)
         self.sim_batch_size = sim_batch_size
         self.reweight_ratio = reweight_ratio
 
