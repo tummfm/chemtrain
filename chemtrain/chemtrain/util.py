@@ -1,5 +1,6 @@
 """Utility functions helpful in designing new trainers."""
 import abc
+import copy
 from functools import partial
 import pathlib
 import time
