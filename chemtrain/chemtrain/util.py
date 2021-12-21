@@ -150,44 +150,25 @@ def format_not_recognized_error(file_format):
 
 
 class TrainerInterface(abc.ABC):
-    """Abstract class defining the user interface of trainers."""
-
-
-class MLETrainerTemplate(abc.ABC):
-    """Abstract class implementing common properties and methods of single
-    point estimate Trainers using optax optimizers.
+    """Abstract class defining the user interface of trainers as well as
+    checkpointing functionality.
     """
-
-    def __init__(self, optimizer, init_state, checkpoint_path,
-                 reference_energy_fn_template=None):
-        """Forces implementation of checkpointing routines. A reference
-        energy_fn_template can be provided, but is not mandatory due to
-        the dependence of the template on the box via the displacement
+    def __init__(self, checkpoint_path, reference_energy_fn_template=None):
+        """A reference energy_fn_template can be provided, but is not mandatory
+        due to the dependence of the template on the box via the displacement
         function.
         """
-        self.state = init_state
-        self.optimizer = optimizer
         self.checkpoint_path = checkpoint_path
         self._epoch = 0
         self.reference_energy_fn_template = reference_energy_fn_template
-        self.update_times = []
-        self._converged = False
-        self._diverged = False
 
     @property
     def energy_fn(self):
+        if self.reference_energy_fn_template is None:
+            raise ValueError('Cannot construct energy_fn as no reference '
+                             'energy_fn_template was provided during '
+                             'initialization.')
         return self.reference_energy_fn_template(self.params)
-
-    def _step_optimizer(self, curr_grad):
-        """Wrapper around step_optimizer that is useful whenever the
-        update of the optimizer can be done outside of jit-compiled functions.
-        """
-        new_params, new_opt_state = step_optimizer(self.params,
-                                                   self.state.opt_state,
-                                                   curr_grad,
-                                                   self.optimizer)
-        self.state = self.state.replace(params=new_params,
-                                        opt_state=new_opt_state)
 
     def _dump_checkpoint_occasionally(self, frequency=None):
         """Dumps a checkpoint during training, from which training can
@@ -230,6 +211,46 @@ class MLETrainerTemplate(abc.ABC):
         else:
             format_not_recognized_error(file_path[-4:])
         self.params = tree_map(jnp.array, params)  # move state on device
+
+    @property
+    @abc.abstractmethod
+    def params(self):
+        """Short-cut for parameters. Depends on specific trainer"""
+
+    @params.setter
+    @abc.abstractmethod
+    def params(self, loaded_params):
+        raise NotImplementedError()
+
+    @abc.abstractmethod
+    def train(self, *args, **kwargs):
+        """Training of any trainer should start by calling train."""
+
+
+class MLETrainerTemplate(TrainerInterface):
+    """Abstract class implementing common properties and methods of single
+    point estimate Trainers using optax optimizers.
+    """
+
+    def __init__(self, optimizer, init_state, checkpoint_path,
+                 reference_energy_fn_template=None):
+        super().__init__(checkpoint_path, reference_energy_fn_template)
+        self.state = init_state
+        self.optimizer = optimizer
+        self.update_times = []
+        self._converged = False
+        self._diverged = False
+
+    def _step_optimizer(self, curr_grad):
+        """Wrapper around step_optimizer that is useful whenever the
+        update of the optimizer can be done outside of jit-compiled functions.
+        """
+        new_params, new_opt_state = step_optimizer(self.params,
+                                                   self.state.opt_state,
+                                                   curr_grad,
+                                                   self.optimizer)
+        self.state = self.state.replace(params=new_params,
+                                        opt_state=new_opt_state)
 
     def train(self, max_epochs, thresh=None, checkpoint_freq=None):
         """Trains for a maximum number of epochs, checkpoints after a
