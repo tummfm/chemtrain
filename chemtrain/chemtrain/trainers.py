@@ -409,7 +409,7 @@ class Difftre(reweighting.PropagationBase):
         return self.early_stop.best_params
 
 
-class DifftreActive:
+class DifftreActive(util.TrainerInterface):
     """Active learning of state-transferable potentials from experimental data
      via DiffTRe.
 
@@ -420,7 +420,10 @@ class DifftreActive:
      to NPT afterwards. This active learning trainer then takes care of learning
       statepoint transferability.
      """
-    def __init__(self, trainer):
+    def __init__(self, trainer, checkpoint_folder='Checkpoints',
+                 energy_fn_template=None):
+        checkpoint_path = 'output/difftre_active/' + str(checkpoint_folder)
+        super().__init__(checkpoint_path, energy_fn_template)
         self.trainer = trainer
         # other inits
 
@@ -445,31 +448,6 @@ class DifftreActive:
         else:
             warnings.warn('Maximum number of added statepoints added without '
                           'reaching target accuracy over visited state space.')
-
-    # TODO Ckeckpointing functions here not very useful here: Override those
-    #  and use checkpointing of difftre trainer
-    # TODO re-assess once checkpointing of jit functions works
-    def load_checkpoint(self, file_path):
-        self.trainer = util.MLETrainerTemplate.load_trainer(file_path)
-        # TODO load rest?
-
-    # Interface convenience functions from TrainerTemplate
-    @property
-    def energy_fn(self):
-        return self.trainer.energy_fn
-
-    def save_trainer(self, save_path):
-        raise NotImplementedError
-
-    @classmethod
-    def load_trainer(cls, filepath):
-        raise NotImplementedError
-
-    def save_energy_params(self, *args, **kwargs):
-        self.trainer.save_energy_params(*args, **kwargs)
-
-    def load_energy_params(self, *args, **kwargs):
-        self.trainer.load_energy_params(*args, **kwargs)
 
     @property
     def params(self):
