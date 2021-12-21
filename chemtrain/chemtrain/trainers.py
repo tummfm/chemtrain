@@ -180,7 +180,8 @@ class ForceMatching(util.MLETrainerTemplate):
               f'Average val loss: {mean_val_loss:.5f} '
               f'Elapsed time = {duration:.3f} min')
 
-        self._converged = self.early_stop.early_stopping(mean_val_loss, thresh)
+        self._converged = self.early_stop.early_stopping(mean_val_loss, thresh,
+                                                         self.params)
 
     @property
     def best_params(self):
@@ -400,7 +401,8 @@ class Difftre(reweighting.PropagationBase):
               f'Elapsed time = {duration:.3f} min')
 
         self._print_measured_statepoint()
-        self._converged = self.early_stop.early_stopping(epoch_loss, thresh)
+        self._converged = self.early_stop.early_stopping(epoch_loss, thresh,
+                                                         self.params)
 
     @property
     def best_params(self):
