@@ -187,6 +187,10 @@ class ForceMatching(util.MLETrainerTemplate):
     def best_params(self):
         return self.early_stop.best_params
 
+    def move_to_device(self):
+        super().move_to_device()
+        self.early_stop.move_to_device()
+
 
 class Difftre(reweighting.PropagationBase):
     """Trainer class for parametrizing potentials via the DiffTRe method."""
@@ -407,6 +411,10 @@ class Difftre(reweighting.PropagationBase):
     @property
     def best_params(self):
         return self.early_stop.best_params
+
+    def move_to_device(self):
+        super().move_to_device()
+        self.early_stop.move_to_device()
 
 
 class DifftreActive(util.TrainerInterface):

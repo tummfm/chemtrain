@@ -140,7 +140,7 @@ def load_trainer(file_path):
     """
     with open(file_path, 'rb') as pickle_file:
         trainer = pickle.load(pickle_file)
-    trainer.state = tree_map(jnp.array, trainer.state)  # move on device
+    trainer.move_to_device()
     return trainer
 
 
@@ -225,6 +225,13 @@ class TrainerInterface(abc.ABC):
     @abc.abstractmethod
     def train(self, *args, **kwargs):
         """Training of any trainer should start by calling train."""
+
+    @abc.abstractmethod
+    def move_to_device(self):
+        """Move all attributes that are expected to be on device to device to
+         avoid TracerExceptions after loading trainers from disk, i.e.
+         loading numpy rather than device arrays.
+         """
 
 
 class MLETrainerTemplate(TrainerInterface):
@@ -329,6 +336,9 @@ class MLETrainerTemplate(TrainerInterface):
     def params(self, loaded_params):
         raise NotImplementedError()
 
+    def move_to_device(self):
+        self.state = tree_map(jnp.array, self.state)  # move on device
+
 
 class EarlyStopping:
     """A class that saves the best parameter obtained so far based on the
@@ -350,14 +360,13 @@ class EarlyStopping:
         Args:
             criterion: Convergence criterion to employ
             pq_window_size: Window size for PQ method
-            **kwargs: Unused kwargs
         """
         self.criterion = criterion
 
         # own loss history that can be reset on the fly if needed.
         self._epoch_losses = []
         self.best_loss = 1.e16
-        self.best_params = None
+        self.best_params = None  # need to be moved on device if loaded
 
         self.pq_window_size = pq_window_size
 
@@ -423,7 +432,6 @@ class EarlyStopping:
         self.best_loss = 1.e16
         self.best_params = None
 
-    @property
-    @abc.abstractmethod
-    def params(self):
-        """Short-cut for params to be implemented in child class."""
+    def move_to_device(self):
+        """Moves best_params to device to use them after loading trainer."""
+        self.best_params = tree_map(jnp.array, self.best_params)
