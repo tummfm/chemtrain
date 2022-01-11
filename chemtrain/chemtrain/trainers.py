@@ -29,7 +29,7 @@ class ForceMatching(util.MLETrainerTemplate):
         # setup dataset
         self.n_devices, self.batches_per_epoch, self.get_train_batch, \
             self.get_val_batch, self.train_batch_state, self.val_batch_state, \
-            include_virial, self.training_dict_keys = \
+            virial_type, self.training_dict_keys = \
             self._process_dataset(position_data, train_ratio, energy_data,
                                   force_data, virial_data, box_tensor,
                                   batch_per_device, batch_cache)
@@ -53,7 +53,7 @@ class ForceMatching(util.MLETrainerTemplate):
         self.grad_fns = force_matching.init_update_fns(
             energy_fn_template, nbrs_init, optimizer, gamma_f=gamma_f,
             gamma_p=gamma_p, box_tensor=box_tensor,
-            include_virial=include_virial
+            virial_type=virial_type
         )
 
     def update_dataset(self, position_data, train_ratio=0.875, energy_data=None,
@@ -64,7 +64,7 @@ class ForceMatching(util.MLETrainerTemplate):
         """
         self.n_devices, self.batches_per_epoch, self.get_train_batch, \
             self.get_val_batch, self.train_batch_state, self.val_batch_state, \
-            include_virial, training_dict_keys = \
+            virial_type, training_dict_keys = \
             self._process_dataset(position_data,
                                   train_ratio,
                                   energy_data,
@@ -78,7 +78,7 @@ class ForceMatching(util.MLETrainerTemplate):
             # the target quantities changes with respect to initialization
             # we need to re-initialize grad_fns
             self.grad_fns = force_matching.init_update_fns(
-                include_virial=include_virial, **grad_fns_kwargs)
+                virial_type=virial_type, **grad_fns_kwargs)
 
     @staticmethod
     def _process_dataset(position_data, train_ratio=0.875, energy_data=None,
@@ -105,14 +105,19 @@ class ForceMatching(util.MLETrainerTemplate):
             train_dict['F'] = f_train
             val_dict['F'] = f_val
         if virial_data is not None:
-            include_virial = True
+            if virial_data.ndim == 3:
+                virial_type = 'tensor'
+            elif virial_data.ndim in [1, 2]:
+                virial_type = 'scalar'
+            else:
+                raise ValueError('Format of virial dataset incompatible.')
             assert box_tensor is not None, ('If the virial is to be matched, '
                                             'box_tensor is a mandatory input.')
             p_train, p_val = onp.split(virial_data, [train_size])
             train_dict['p'] = p_train
             val_dict['p'] = p_val
         else:
-            include_virial = False
+            virial_type = None
 
         train_loader = data.NumpyDataLoader(**train_dict)
         val_loader = data.NumpyDataLoader(**val_dict)
@@ -123,7 +128,7 @@ class ForceMatching(util.MLETrainerTemplate):
         train_batch_state = init_train_batch()
         val_batch_state = init_val_batch()
         return n_devices, batches_per_epoch, get_train_batch, get_val_batch, \
-            train_batch_state, val_batch_state, include_virial, \
+            train_batch_state, val_batch_state, virial_type, \
             train_dict.keys()
 
     @property

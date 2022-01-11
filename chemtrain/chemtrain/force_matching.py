@@ -47,17 +47,22 @@ def init_single_prediction(nbrs_init, energy_fn_template, virial_fn=None):
     return single_prediction
 
 
-def init_update_fns(energy_fn_template, nbrs_init, optimizer,
-                    gamma_f=1., gamma_p=1.e-6, box_tensor=None,
-                    include_virial=False):
+def init_update_fns(energy_fn_template, nbrs_init, optimizer, gamma_f=1.,
+                    gamma_p=1.e-6, box_tensor=None, virial_type=False):
     """Initializes update functions for energy and/or force matching.
 
     The returned functions are jit and can therefore not be pickled.
     """
-    if include_virial:
-        virial_fn = custom_quantity.init_pressure(energy_fn_template,
-                                                  box_tensor,
-                                                  include_kinetic=False)
+    if virial_type is not None:
+        if virial_type == 'scalar':
+            virial_fn = custom_quantity.init_pressure(
+                energy_fn_template, box_tensor, include_kinetic=False)
+        elif virial_type == 'tensor':
+            virial_fn = custom_quantity.init_virial_stress_tensor(
+                energy_fn_template, box_tensor, include_kinetic=False)
+        else:
+            raise ValueError(f'Virial_type {virial_type} not recognized. Should'
+                             f' be "scalar" or "tensor".')
     else:
         virial_fn = None
 
