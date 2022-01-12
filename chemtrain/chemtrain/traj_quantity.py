@@ -18,16 +18,15 @@ def volumes(traj_state):
     return vmap(quantity.volume, (None, 0))(dim, boxes)
 
 
-def isothermal_compressibility(traj_state, kbt):
+def isothermal_compressibility_npt(volume_traj, kbt):
     """Returns isothermal compressibility of a system in the NPT ensemble
     via the fluctuation formula.
 
     Args:
-        traj_state: TrajectoryState containing the NPT trajectory
+        volume_traj: Trajectory of box volumes of a NPT simulation,
+                     e.g. computed via traj_quantity.volumes.
         kbt: Temperature * Boltzmann constant
     """
-    volume_traj = volumes(traj_state)
-    mean_volume = jnp.mean(volume_traj, axis=0)
-    mean_sq_volume = jnp.mean(volume_traj**2, axis=0)
-    kappa = (mean_sq_volume - mean_volume**2) / (mean_volume * kbt)
+    mean_volume = jnp.mean(volume_traj)
+    kappa = (jnp.mean(volume_traj**2) - mean_volume**2) / (mean_volume * kbt)
     return kappa
