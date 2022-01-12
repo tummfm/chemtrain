@@ -157,8 +157,9 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
         if npt_ensemble:  # we need to correct for the change in pressure
             volumes = traj_quantity.volumes(traj_state)
 
-            kappa = traj_quantity.isothermal_compressibility(traj_state,
-                                                             ref_kbt)
+            volume_traj = traj_quantity.volumes(traj_state)
+            kappa = traj_quantity.isothermal_compressibility_npt(volume_traj,
+                                                                 ref_kbt)
             # TODO prune these computations
             case = 'neglect'
             if case == 'pressure':
