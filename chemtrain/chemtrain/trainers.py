@@ -1,5 +1,4 @@
 """This file contains several Trainer classes as a quickstart for users."""
-import copy
 import warnings
 
 from coax.utils._jit import jit
@@ -327,7 +326,7 @@ class Difftre(reweighting.PropagationBase):
 
         # build loss function for current state point
         if loss_fn is None:
-            loss_fn = reweighting.independent_mse_loss_fn_init(targets)
+            loss_fn = reweighting.init_default_loss_fn(targets)
         else:
             print('Using custom loss function. Ignoring "target" dict.')
 

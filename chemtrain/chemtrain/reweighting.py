@@ -299,9 +299,7 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
     return init_first_traj, compute_weights, propagate
 
 
-def independent_mse_loss_fn_init(targets):
-    # TODO maybe for improved flexibility, give targets during call and
-    #  bake in targets in difftre via partial
+def init_default_loss_fn(targets):
     """Initializes the default loss function, where MSE errors of
     destinct quantities are added.
 
@@ -312,16 +310,22 @@ def independent_mse_loss_fn_init(targets):
     "quantities[quantity_key]['target']". This per-quantity loss
     is multiplied by gamma in "quantities[quantity_key]['gamma']".
     The final loss is then the sum over all of these weighted
-    per-quantity MSE losses. A pre-requisite for using this function is
-    that observables are simply ensemble averages of instantaneously
-    fluctuating quantities. If this is not the case, a custom loss_fn
-    needs to be defined. The custom loss_fn needs to have the same
-    input-output signuture as the loss_fn implemented here.
+    per-quantity MSE losses. This function allows both observables that
+    are simply ensemble averages of instantaneously fluctuating quantities
+    and observables that are more complex functions of one or more quantity
+    trajectories. The function computing the observable from trajectories of
+    instantaneous fluctuating quantities needs to be provided via in
+    "quantities[quantity_key]['traj_fn']". For the simple, but common case of
+    an average of a single quantity trajectory, 'traj_fn' is given by
+    traj_quantity.init_traj_mean_fn.
 
+    Alternatively, a custom loss_fn can be defined. The custom
+    loss_fn needs to have the same input-output signuture as the loss_fn
+    implemented here.
 
     Args:
-        targets: The target dict with 'gamma' and 'target' for each observable
-        defined in 'quantities'
+        targets: The target dict with 'gamma', 'target' and 'traj_fn'
+        for each observable defined in 'quantities'.
 
     Returns:
         The loss_fn taking trajectories of fluctuating properties,
@@ -331,16 +335,22 @@ def independent_mse_loss_fn_init(targets):
     def loss_fn(quantity_trajs, weights):
         loss = 0.
         predictions = {}
-        for quantity_key in targets:
-            if quantity_key not in quantity_trajs:
-                raise ValueError('Any target property defined in "tagets" needs'
-                                 ' to be provided in "quantities".')
-            quantity_snapshots = quantity_trajs[quantity_key]
-            weighted_snapshots = (quantity_snapshots.T * weights).T
-            average = jax_md_util.high_precision_sum(weighted_snapshots, axis=0)
-            predictions[quantity_key] = average
-            loss += targets[quantity_key]['gamma'] * util.mse_loss(
-                average, targets[quantity_key]['target'])
+        # multiply weights by N such that averages can be computed with jnp.mean
+        # rather than jnp.sum to allow for a unified formulation of
+        # functions that compute observables from a trajectory, whether they
+        # use weights or not (e.g. in postprocessing)
+        weights *= weights.size
+
+        weighted_quant_trajs = {
+            quantity_key: (quantity_snapshots.T * weights).T
+            for quantity_key, quantity_snapshots in quantity_trajs.items()
+        }
+
+        for target_key in targets:
+            average = targets[target_key]['traj_fn'](weighted_quant_trajs)
+            loss += targets[target_key]['gamma'] * util.mse_loss(
+                average, targets[target_key]['target'])
+            predictions[target_key] = average
         return loss, predictions
     return loss_fn
 

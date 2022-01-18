@@ -40,6 +40,16 @@ def _dyn_box(reference_box, **kwargs):
     return box, kwargs
 
 
+def volume_npt(state, **unused_kwargs):
+    """Returns volume of a single snapshot in the NPT ensemble, e.g. for use in
+     DiffTRe learning of thermodynamic fluctiations in chemtrain.traj_quantity.
+     """
+    dim = state.position.shape[-1]
+    box = simulate.npt_box(state)
+    volume = quantity.volume(dim, box)
+    return volume
+
+
 def _canonicalized_masses(state):
     if state.mass.ndim == 0:
         masses = jnp.ones(state.position.shape[0]) * state.mass
@@ -50,11 +60,9 @@ def _canonicalized_masses(state):
 
 def density(state, **unused_kwargs):
     """Returns density of a single snapshot of the NPT ensemble."""
-    dim = state.position.shape[-1]
     masses = _canonicalized_masses(state)
-    box = simulate.npt_box(state)
-    volume = quantity.volume(dim, box)
     total_mass = jnp.sum(masses)
+    volume = volume_npt(state)
     return total_mass / volume
 
 
@@ -697,6 +705,8 @@ def init_stiffness_tensor_stress_fluctuation(energy_fn_template, box_tensor,
                              sigma^B_ij and sigma^B_ij * sigma^B_kl and
                              returning the resulting stiffness tensor.
     """
+    # TODO this function simplifies a lot if split between per-snapshot
+    #  and per-trajectory functions
     spatial_dim = box_tensor.shape[-1]
     volume = quantity.volume(spatial_dim, box_tensor)
     epsilon0 = jnp.zeros((spatial_dim, spatial_dim))
