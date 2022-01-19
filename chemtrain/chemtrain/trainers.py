@@ -405,10 +405,19 @@ class Difftre(reweighting.PropagationBase):
         last_losses = jnp.array(self.batch_losses[-self.sim_batch_size:])
         epoch_loss = jnp.mean(last_losses)
         self.epoch_losses.append(epoch_loss)
-        print(f'Epoch {self._epoch}: Epoch loss = {epoch_loss:.5f}, '
+        print(f'\nEpoch {self._epoch}: Epoch loss = {epoch_loss:.5f}, '
               f'Elapsed time = {duration:.3f} min')
 
         self._print_measured_statepoint()
+
+        # print last scalar predictions
+        for statepoint, prediction_series in self.predictions.items():
+            last_predictions = prediction_series[self._epoch]
+            for quantity, value in last_predictions.items():
+                if value.ndim == 0:
+                    print(f'Statepoint {statepoint}: Predicted {quantity}:'
+                          f' {value}')
+
         self._converged = self.early_stop.early_stopping(epoch_loss, thresh,
                                                          self.params)
 
@@ -604,7 +613,7 @@ class RelativeEntropy(reweighting.PropagationBase):
         self._step_optimizer(batch_grad)
 
     def _evaluate_convergence(self, duration, thresh):
-        print(f'Epoch {self._epoch}: Elapsed time = {duration:.3f} min')
+        print(f'\nEpoch {self._epoch}: Elapsed time = {duration:.3f} min')
 
         self._print_measured_statepoint()
 

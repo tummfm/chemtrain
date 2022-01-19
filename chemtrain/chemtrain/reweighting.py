@@ -517,8 +517,6 @@ class PropagationBase(util.MLETrainerTemplate):
             print(f'Statepoint {sim_key}: kbT = {measured_kbt:.3f} ref_kbt = '
                   f'{statepoint["kbT"]:.3f}' + press_print)
 
-        print('')  # to visually differentiate between epochs
-
     def train(self, max_epochs, thresh=None, checkpoint_freq=None):
         assert self.n_statepoints > 0, ('Add at least 1 state point via '
                                         '"add_statepoint" to start training.')
