@@ -131,7 +131,8 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
     reweighting_quantities = {'energy': traj_energy_fn}
 
     if npt_ensemble:
-        # kinetic energy contribution to pressure cancels in reweighting
+        # pressure currently only used to print pressure of generated trajectory
+        # such that user can ensure correct statepoint of reference trajectory
         pressure_fn = custom_quantity.init_pressure(energy_fn_template)
         reweighting_quantities['pressure'] = pressure_fn
 
@@ -153,48 +154,6 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
         # as kinetic energy is the same and cancels
         exponent = -beta * (reweight_properties['energy']
                             - traj_state.aux['energy'])
-
-        if npt_ensemble:  # we need to correct for the change in pressure
-            volumes = traj_quantity.volumes(traj_state)
-            kappa = traj_quantity.isothermal_compressibility_npt(volumes,
-                                                                 ref_kbt)
-            # TODO prune these computations
-            case = 'neglect'
-            if case == 'pressure':
-                exponent -= beta * volumes * (reweight_properties['pressure']
-                                              - traj_state.aux['pressure'])
-            elif case == 'neglect':
-                pass
-            elif case == 'both_var_pressure':  # volume-based
-                scaling_factor = kappa * (reweight_properties['pressure']
-                                          - traj_state.aux['pressure'])
-                new_volumes = volumes * scaling_factor
-                exponent -= beta * traj_state.aux['pressure'] * (
-                        new_volumes - volumes)
-            elif case == 'only_first_baro':
-                scaling_factor = kappa * (reweight_properties['pressure']
-                                          - traj_state.aux['pressure'])
-                new_volumes = volumes * scaling_factor
-                exponent -= beta * traj_state.barostat_press * (
-                        new_volumes - volumes)
-            elif case == 'both_baro':
-                scaling_factor = kappa * (reweight_properties['pressure']
-                                          - traj_state.barostat_press)
-                new_volumes = volumes * scaling_factor
-                exponent -= beta * traj_state.barostat_press * (
-                        new_volumes - volumes)
-            elif case == 'both_volume_scale':
-                scaling_factor = kappa * (reweight_properties['pressure']
-                                          - traj_state.barostat_press)
-                new_volumes = volumes * scaling_factor
-
-                ref_scaling = kappa * (traj_state.aux['pressure']
-                                       - traj_state.barostat_press)
-                ref_volumes = volumes * ref_scaling
-                exponent -= beta * traj_state.barostat_press * (
-                        new_volumes - ref_volumes)
-            else:
-                raise NotImplementedError
         return _build_weights(exponent)
 
     def trajectory_identity_mapping(inputs):
