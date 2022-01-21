@@ -3,7 +3,7 @@ import warnings
 
 from coax.utils._jit import jit
 from jax import device_count, value_and_grad, numpy as jnp
-from jax_sgmc import data
+from jax_sgmc import data, potential, alias
 import numpy as onp
 
 from chemtrain import util, force_matching, traj_util, reweighting
@@ -625,3 +625,59 @@ class RelativeEntropy(reweighting.PropagationBase):
                                       'implementation might be based on the '
                                       'variation of params or reweigting '
                                       'effective sample size.')
+
+
+class SGTrainer(util.TrainerInterface):
+    # TODO: Where does alias.py get checkpoint_path info?
+    """
+    Class implementing common properties and methods for stochastic gradient Trainers.
+    """
+    def __init__(self, init_params, checkpoint_path, reference_energy_fn_template=None):
+        super().__init__(checkpoint_path, reference_energy_fn_template)
+        self.params = init_params
+        self.checkpoint_path = checkpoint_path
+        self.reference_energy_fn_template = reference_energy_fn_template
+        self.built_flag = False  # Is set to true by "build_trainer"
+
+    def build_trainer(self, prior, likelihood, data_loader):
+        """
+        Build trainer using the alias.py functionality from jax_sgmc. Input arguments
+        are simply passed to object to be called in "train" functionality. Has to be
+        split this way becaus alias.py requires constant inputs like potential/data/...
+        at the same time as potentially varying quantities such as step_sizes!
+        """
+        self.potential_fn = potential.minibatch_potential(prior, likelihood, strategy='vmap')
+        self.full_potential_fn = potential.full_potential(prior, likelihood, strategy='vmap')
+        self.data_loader = data_loader
+        self.built_flag = True
+
+    def train(self, reg_dic):
+        """Training of any trainer should start by calling train."""
+        if self.built_flag:
+            trainer = alias.amagold(self.potential_fn, self.full_potential_fn, self.data_loader,
+            cache_size=512, batch_size=64, first_step_size=reg_dic['first_step_size'],
+            last_step_size=reg_dic['last_step_size'], burn_in=reg_dic['burn_in'])
+            print("\n---------------------------------------------------")
+            print("Starting Optimization")
+            print("---------------------------------------------------\n")
+            sample = {"potential": self.params, "std": jnp.array(200.0)}
+            self.results = trainer(sample, init_model_state=0, iterations=reg_dic['iterations'])[0]['samples']['variables']
+            print("\n---------------------------------------------------")
+            print("Finished Optimization")
+            print("---------------------------------------------------\n")
+            self.params = self.results[0]["samples"]["variables"]["potential"]
+        else:
+            raise ValueError("Trainer not built! Run function build_trainer before function train!")
+        return self.results
+
+    """
+    @property
+    def params(self):
+        single_params = util.tree_get_single(self.state.params)
+        return single_params
+
+    @params.setter
+    def params(self, loaded_params):
+        replicated_params = util.tree_replicate(loaded_params, self.n_devices)
+        self.state = self.state.replace(params=replicated_params)
+    """
