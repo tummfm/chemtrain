@@ -403,12 +403,14 @@ class Difftre(reweighting.PropagationBase):
         self.batch_losses.append(sum(losses) / self.sim_batch_size)
         batch_grad = util.tree_mean(grads)
         self._step_optimizer(batch_grad)
+        self.gradient_norm_history.append(util.tree_norm(batch_grad))
 
     def _evaluate_convergence(self, duration, thresh):
         last_losses = jnp.array(self.batch_losses[-self.sim_batch_size:])
         epoch_loss = jnp.mean(last_losses)
         self.epoch_losses.append(epoch_loss)
-        print(f'\nEpoch {self._epoch}: Epoch loss = {epoch_loss:.5f}, '
+        print(f'\nEpoch {self._epoch}: Epoch loss = {epoch_loss:.5f}, Gradient '
+              f'norm: {self.gradient_norm_history[-1]}, '
               f'Elapsed time = {duration:.3f} min')
 
         self._print_measured_statepoint()
@@ -486,6 +488,7 @@ class RelativeEntropy(reweighting.PropagationBase):
     """Trainer for relative entropy minimization."""
     def __init__(self, init_params, optimizer,
                  reweight_ratio=0.9, sim_batch_size=1, energy_fn_template=None,
+                 convergence_criterion='window_median',
                  checkpoint_folder='Checkpoints'):
         """
         Initializes a relative entropy trainer instance.
@@ -511,6 +514,15 @@ class RelativeEntropy(reweighting.PropagationBase):
                                 state point requires its own due to the
                                 dependence on the box size via the displacement
                                 function, which can vary between state points.
+            convergence_criterion: Either 'max_loss' or 'ave_loss'.
+                                   If 'max_loss', stops if the gradient norm
+                                   across all batches in the epoch is smaller
+                                   than convergence_thresh. 'ave_loss' evaluates
+                                   the average gradient norm across the batch.
+                                   For a single state point, both are
+                                   equivalent. A criterion based on the rolling
+                                   standard deviation 'std' might be implemented
+                                   in the future.
             checkpoint_folder: Name of folders to store ckeckpoints in.
         """
 
@@ -523,6 +535,8 @@ class RelativeEntropy(reweighting.PropagationBase):
         # in addition to the standard trajectory state, we also need to keep
         # track of dataloader states for reference snapshots
         self.data_states = {}
+
+        self.early_stop = util.EarlyStopping(criterion=convergence_criterion)
 
     def _set_dataset(self, key, reference_data, reference_batch_size,
                      batch_cache=1):
@@ -614,17 +628,14 @@ class RelativeEntropy(reweighting.PropagationBase):
 
         batch_grad = util.tree_mean(grads)
         self._step_optimizer(batch_grad)
+        self.gradient_norm_history.append(util.tree_norm(batch_grad))
 
     def _evaluate_convergence(self, duration, thresh):
-        print(f'\nEpoch {self._epoch}: Elapsed time = {duration:.3f} min')
+        curr_grad_norm = self.gradient_norm_history[-1]
+        print(f'\nEpoch {self._epoch}: Gradient norm: '
+              f'{curr_grad_norm}, Elapsed time = {duration:.3f} min')
 
         self._print_measured_statepoint()
 
-        self.converged = False  # TODO implement convergence test
-        if thresh is not None:
-            raise NotImplementedError('Currently there is no convergence '
-                                      'criterion implemented for relative '
-                                      'entropy minimization. A possible '
-                                      'implementation might be based on the '
-                                      'variation of params or reweigting '
-                                      'effective sample size.')
+        self._converged = self.early_stop.early_stopping(curr_grad_norm, thresh,
+                                                         save_best_params=False)
