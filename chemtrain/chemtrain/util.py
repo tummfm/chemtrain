@@ -11,7 +11,7 @@ import cloudpickle as pickle
 # import h5py
 import numpy as onp
 import optax
-from jax import lax, tree_map, tree_leaves, numpy as jnp
+from jax import lax, tree_map, tree_leaves, tree_flatten, numpy as jnp
 from jax_md import util, simulate
 
 from chemtrain.jax_md_mod import custom_space
@@ -87,6 +87,12 @@ def step_optimizer(params, opt_state, grad, optimizer):
 def is_npt_ensemble(state):
     """Whether a state belongs to the NPT ensemble."""
     return hasattr(state, 'box_position')
+
+
+def tree_norm(tree):
+    """Returns the Euclidean norm of a PyTree."""
+    leaves, _ = tree_flatten(tree)
+    return sum(jnp.vdot(x, x) for x in leaves)
 
 
 def tree_get_single(tree):
@@ -245,6 +251,7 @@ class MLETrainerTemplate(TrainerInterface):
         self.state = init_state
         self.optimizer = optimizer
         self.update_times = []
+        self.gradient_norm_history = []
         self._converged = False
         self._diverged = False
 

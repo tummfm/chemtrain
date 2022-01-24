@@ -163,14 +163,16 @@ class ForceMatching(util.MLETrainerTemplate):
         update_fn, batched_loss_fn = self.grad_fns
 
         train_batch, val_batch = batch
-        params, opt_state, train_loss = update_fn(self.state.params,
-                                                  self.state.opt_state,
-                                                  train_batch)
+        params, opt_state, train_loss, curr_grad = update_fn(
+            self.state.params, self.state.opt_state, train_batch)
         val_loss = batched_loss_fn(params, val_batch)
 
         self.state = self.state.replace(params=params, opt_state=opt_state)
         self.train_losses.append(train_loss[0])  # only from single device
         self.val_losses.append(val_loss[0])
+
+        single_grad = util.tree_get_single(curr_grad)
+        self.gradient_norm_history.append(util.tree_norm(single_grad))
 
     def _evaluate_convergence(self, duration, thresh):
         """Prints progress, saves best obtained params and signals converged if
@@ -181,8 +183,9 @@ class ForceMatching(util.MLETrainerTemplate):
         mean_val_loss = sum(self.val_losses[-self.batches_per_epoch:]
                             ) / self.batches_per_epoch
         print(f'Epoch {self._epoch}: Average train loss: {mean_train_loss:.5f} '
-              f'Average val loss: {mean_val_loss:.5f} '
-              f'Elapsed time = {duration:.3f} min')
+              f'Average val loss: {mean_val_loss:.5f} Gradient norm:'
+              f' {self.gradient_norm_history[-1]}'
+              f' Elapsed time = {duration:.3f} min')
 
         self._converged = self.early_stop.early_stopping(mean_val_loss, thresh,
                                                          self.params)
