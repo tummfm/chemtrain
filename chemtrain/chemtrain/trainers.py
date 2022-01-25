@@ -600,57 +600,48 @@ class RelativeEntropy(reweighting.PropagationBase):
                                       'effective sample size.')
 
 
-class SGTrainer(util.TrainerInterface):
-    # TODO: Where does alias.py get checkpoint_path info?
-    """
-    Class implementing common properties and methods for stochastic gradient Trainers.
-    """
-    def __init__(self, init_params, checkpoint_path, reference_energy_fn_template=None):
-        super().__init__(checkpoint_path, reference_energy_fn_template)
-        self.params = init_params
-        self.checkpoint_path = checkpoint_path
-        self.reference_energy_fn_template = reference_energy_fn_template
-        self.built_flag = False  # Is set to true by "build_trainer"
+class SGMC(util.TrainerInterface):
+    """Trainer for stochastic gradient Markov-chain Monte Carlo training
+    based on force-matching.
 
-    def build_trainer(self, prior, likelihood, data_loader):
-        """
-        Build trainer using the alias.py functionality from jax_sgmc. Input arguments
-        are simply passed to object to be called in "train" functionality. Has to be
-        split this way becaus alias.py requires constant inputs like potential/data/...
-        at the same time as potentially varying quantities such as step_sizes!
-        """
-        self.potential_fn = potential.minibatch_potential(prior, likelihood, strategy='vmap')
-        self.full_potential_fn = potential.full_potential(prior, likelihood, strategy='vmap')
-        self.data_loader = data_loader
-        self.built_flag = True
+    init_samples: A list, possibly of size 1, of sets of initial MCMC samples,
+     where each spawns a dedicated MCMC chain,
+    """
+    def __init__(self, sgmc_solver, init_samples, checkpoint_path,
+                 val_dataloader=None, energy_fn_template=None):
+        # TODO: Where does alias.py get checkpoint_path info?
+        super().__init__(checkpoint_path, energy_fn_template)
+        self._params = [init_sample['params'] for init_sample in init_samples]
+        self.sgmcmc_run_fn = sgmc_solver
+        self.init_samples = init_samples
+        self.results = None
 
-    def train(self, reg_dic):
+        # TODO use val dataloader to compute posterior predictive p value or
+        #  other convergence metric
+
+    def train(self, iterations):
         """Training of any trainer should start by calling train."""
-        if self.built_flag:
-            trainer = alias.amagold(self.potential_fn, self.full_potential_fn, self.data_loader,
-            cache_size=512, batch_size=64, first_step_size=reg_dic['first_step_size'],
-            last_step_size=reg_dic['last_step_size'], burn_in=reg_dic['burn_in'])
-            print("\n---------------------------------------------------")
-            print("Starting Optimization")
-            print("---------------------------------------------------\n")
-            sample = {"potential": self.params, "std": jnp.array(200.0)}
-            self.results = trainer(sample, init_model_state=0, iterations=reg_dic['iterations'])[0]['samples']['variables']
-            print("\n---------------------------------------------------")
-            print("Finished Optimization")
-            print("---------------------------------------------------\n")
-            self.params = self.results[0]["samples"]["variables"]["potential"]
-        else:
-            raise ValueError("Trainer not built! Run function build_trainer before function train!")
-        return self.results
+        self.results = self.sgmcmc_run_fn(*self.init_samples,
+                                          iterations=iterations)
+        self.params = [chain['samples']['variables']['params']
+                       for chain in self.results[0]]
 
-    """
     @property
     def params(self):
-        single_params = util.tree_get_single(self.state.params)
-        return single_params
+        return self._params
 
     @params.setter
     def params(self, loaded_params):
-        replicated_params = util.tree_replicate(loaded_params, self.n_devices)
-        self.state = self.state.replace(params=replicated_params)
-    """
+        self._params = loaded_params
+
+    def move_to_device(self):
+        self.params = tree_map(jnp.array, self.params)  # move on device
+
+    @property
+    def aggregated_params(self):
+        # TODO what's the best format for postprocessing?
+        return
+
+    # TODO override save functions such that only saving parameters is allowed
+    #  - or whatever checkpointing jax-sgmc supports (or does checkpointing work
+    #  with more liberal coax._jit?)
