@@ -2,9 +2,8 @@
 import warnings
 
 from coax.utils._jit import jit
-from jax import device_count, value_and_grad, numpy as jnp
-from jax_sgmc import data, potential, alias
-import numpy as onp
+from jax import device_count, value_and_grad, tree_map, numpy as jnp
+from jax_sgmc import data
 
 from chemtrain import util, force_matching, traj_util, reweighting
 
@@ -29,10 +28,11 @@ class ForceMatching(util.MLETrainerTemplate):
         # setup dataset
         self.n_devices, self.batches_per_epoch, self.get_train_batch, \
             self.get_val_batch, self.train_batch_state, self.val_batch_state, \
-            virial_type, self.training_dict_keys = \
-            self._process_dataset(position_data, train_ratio, energy_data,
-                                  force_data, virial_data, box_tensor,
-                                  batch_per_device, batch_cache)
+            virial_fn, self.training_dict_keys = \
+            self._process_dataset(
+                position_data, energy_fn_template, train_ratio, energy_data,
+                force_data, virial_data, box_tensor, batch_per_device,
+                batch_cache)
         self.train_losses, self.val_losses = [], []
         self.early_stop = util.EarlyStopping(criterion=convergence_criterion)
 
@@ -53,8 +53,7 @@ class ForceMatching(util.MLETrainerTemplate):
 
         self.grad_fns = force_matching.init_update_fns(
             energy_fn_template, nbrs_init, optimizer, gamma_f=gamma_f,
-            gamma_p=gamma_p, box_tensor=box_tensor,
-            virial_type=virial_type
+            gamma_p=gamma_p, virial_fn=virial_fn
         )
 
     def update_dataset(self, position_data, train_ratio=0.875, energy_data=None,
@@ -65,7 +64,7 @@ class ForceMatching(util.MLETrainerTemplate):
         """
         self.n_devices, self.batches_per_epoch, self.get_train_batch, \
             self.get_val_batch, self.train_batch_state, self.val_batch_state, \
-            virial_type, training_dict_keys = \
+            virial_fn, training_dict_keys = \
             self._process_dataset(position_data,
                                   train_ratio,
                                   energy_data,
@@ -79,52 +78,26 @@ class ForceMatching(util.MLETrainerTemplate):
             # the target quantities changes with respect to initialization
             # we need to re-initialize grad_fns
             self.grad_fns = force_matching.init_update_fns(
-                virial_type=virial_type, **grad_fns_kwargs)
+                virial_fn=virial_fn, **grad_fns_kwargs)
 
         # reset convergence criterion as loss might not be comparable
         self.early_stop.reset_convergence_losses()
 
     @staticmethod
-    def _process_dataset(position_data, train_ratio=0.875, energy_data=None,
-                         force_data=None, virial_data=None, box_tensor=None,
-                         batch_per_device=1, batch_cache=10):
+    def _process_dataset(position_data, energy_fn_template, train_ratio=0.875,
+                         energy_data=None, force_data=None, virial_data=None,
+                         box_tensor=None, batch_per_device=1, batch_cache=10):
         # Default train_ratio represents 70-10-20 split, when 20 % test
         # data was already deducted
+
+        train_loader, val_loader = force_matching.init_dataloaders(
+            position_data, energy_data, force_data, virial_data, train_ratio)
+        virial_fn = force_matching.init_virial_fn(
+            virial_data, energy_fn_template, box_tensor)
+
         n_devices = device_count()
         batch_size = n_devices * batch_per_device
-        train_set_size = position_data.shape[0]
-        train_size = int(train_set_size * train_ratio)
-        batches_per_epoch = train_size // batch_size
-
-        # pylint: disable=unbalanced-tuple-unpacking
-        r_train, r_val = onp.split(position_data, [train_size])
-        train_dict = {'R': r_train}
-        val_dict = {'R': r_val}
-        if energy_data is not None:
-            u_train, u_val = onp.split(energy_data, [train_size])
-            train_dict['U'] = u_train
-            val_dict['U'] = u_val
-        if force_data is not None:
-            f_train, f_val = onp.split(force_data, [train_size])
-            train_dict['F'] = f_train
-            val_dict['F'] = f_val
-        if virial_data is not None:
-            if virial_data.ndim == 3:
-                virial_type = 'tensor'
-            elif virial_data.ndim in [1, 2]:
-                virial_type = 'scalar'
-            else:
-                raise ValueError('Format of virial dataset incompatible.')
-            assert box_tensor is not None, ('If the virial is to be matched, '
-                                            'box_tensor is a mandatory input.')
-            p_train, p_val = onp.split(virial_data, [train_size])
-            train_dict['p'] = p_train
-            val_dict['p'] = p_val
-        else:
-            virial_type = None
-
-        train_loader = data.NumpyDataLoader(**train_dict)
-        val_loader = data.NumpyDataLoader(**val_dict)
+        batches_per_epoch = train_loader._observation_count // batch_size
         init_train_batch, get_train_batch = data.random_reference_data(
             train_loader, batch_cache, batch_size)
         init_val_batch, get_val_batch = data.random_reference_data(
@@ -132,8 +105,8 @@ class ForceMatching(util.MLETrainerTemplate):
         train_batch_state = init_train_batch()
         val_batch_state = init_val_batch()
         return n_devices, batches_per_epoch, get_train_batch, get_val_batch, \
-            train_batch_state, val_batch_state, virial_type, \
-            train_dict.keys()
+            train_batch_state, val_batch_state, virial_fn, \
+            train_loader._reference_data.keys()
 
     @property
     def params(self):
