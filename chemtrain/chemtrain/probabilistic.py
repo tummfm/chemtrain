@@ -44,7 +44,8 @@ def init_elementwise_prior_fn(scale, distribution=jscipy.stats.norm.logpdf,
 
 def init_likelihood(energy_fn_template, nbrs_init, virial_fn=None,
                     distribution=jscipy.stats.norm.logpdf):
-    """Returns the likelihood function for Bayesian potential optimization.
+    """Returns the likelihood function for Bayesian potential optimization
+    based on a force-matching formulation.
 
     Args:
         energy_fn_template: Energy function template
@@ -91,45 +92,57 @@ def _set_or_draw_exponential_rv(rv_scale, draw=True):
     return jnp.array(rv)
 
 
-def dataloader_likelihood_fm(
+def init_force_matching(
         energy_param_prior, energy_fn_template, nbrs_init, init_params,
         position_data, energy_data=None, energy_scale=None, force_data=None,
         force_scale=None, virial_data=None, virial_scale=None, box_tensor=None,
         train_ratio=0.875, likelihood_distribution=jscipy.stats.norm.logpdf,
         draw_std=False):
-    """
-    Also multiple init samples possible, build list of samples following the
-    dict layout in this function.
+    """Initializes a compatible set of prior, likelihood, initial MCMC samples
+    as well as train and validation loaders  for learning probabilistic
+    potentials via force-matching.
 
     Data scales are used for parametrization of the exponential prior
-    distributions for the standard deviation of the likelihood distribution.
-    Note that scale = 1 / lambda for the common parametrization of the
-    exponential  distribution via the rate parameter lambda. See the
-    scipy.stats.expon documentation for more details.
-    This allows for accounting for the different scales of energies, forces and
+    distributions for the standard deviations of the (energy, force and/or
+    virial) likelihood distributions. Note that scale = 1 / lambda for the
+    common parametrization of the exponential  distribution via the rate
+    parameter lambda. See the scipy.stats.expon documentation for more details.
+    This allows accounting for the different scales of energies, forces and
     virial, similar to the los weights in standard force matching.
 
     Args:
-        energy_param_prior:
-        energy_fn_template:
-        nbrs_init:
-        init_params:
-        position_data:
-        energy_data:
-        energy_scale: Scale of energy data.
-        force_data:
-        force_scale:
-        virial_data:
-        virial_scale:
-        box_tensor:
-        train_ratio:
-        likelihood_distribution:
+        energy_param_prior: Prior function for , e.g. as generated from
+                            'init_elementwise_prior_fn'.
+        energy_fn_template: Energy function template
+        nbrs_init: Initial neighbor list
+        init_params: Initial energy params
+        position_data: (N_snapshots x N_particles x dim) array of particle
+                       positions
+        energy_data: (N_snapshots,) array of corresponding energy values,
+                     if applicable
+        energy_scale: Prior scale of energy data.
+        force_data: (N_snapshots x N_particles x dim) array of corresponding
+                    forces acting on particles, if applicable.
+        force_scale: Prior scale of force components.
+        virial_data: (N_snapshots,) or (N_snapshots, dim, dim) array of
+                     corresponding virial (tensor) values (without kinetic
+                     contribution), if applicable.
+        virial_scale: Prior scale of virial components.
+        box_tensor: Box tensor, only needed if virial_data used.
+        train_ratio: Ratio of dataset to be used for training. The remaining
+                     data can be used for validation.
+        likelihood_distribution: Likelihood distribution, defaults to Gaussian.
         draw_std: If True, draws initial likelihood std values from the
                   exponential prior distribution. If False, sets it to the
-                  mean of the prior distribution.
+                  mean of the prior distribution, i.e. the scale.
 
     Returns:
-
+        A tuple (prior_fn, likelihood_fn, init_samples, train_loader,
+        val_loader). Prior and likelihood can be used to construct the potential
+        function for Hamiltonian MCMC formulations. Init_samples is a list of
+        initial values for multiple MCMC chains, e.g. for SGMCMCTrainer. The
+        data loaders are jax-sgmc NumpyDataloaders used during training and for
+        validation.
     """
     train_loader, val_loader = force_matching.init_dataloaders(
         position_data, energy_data, force_data, virial_data, train_ratio)
