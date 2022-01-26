@@ -134,6 +134,6 @@ def init_update_fns(energy_fn_template, nbrs_init, optimizer, gamma_f=1.,
         loss = lax.pmean(loss, axis_name='devices')
         new_params, opt_state = util.step_optimizer(params, opt_state,
                                                     grad, optimizer)
-        return new_params, opt_state, loss
+        return new_params, opt_state, loss, grad
 
     return batch_update, batched_loss_fn
