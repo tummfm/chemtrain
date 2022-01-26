@@ -624,7 +624,7 @@ class SGMC(util.TrainerInterface):
         self.results = self.sgmcmc_run_fn(*self.init_samples,
                                           iterations=iterations)
         self.params = [chain['samples']['variables']['params']
-                       for chain in self.results[0]]
+                       for chain in self.results]
 
     @property
     def params(self):
