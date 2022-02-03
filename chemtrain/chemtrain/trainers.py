@@ -632,6 +632,7 @@ class SGMC(util.TrainerInterface):
 
         # TODO use val dataloader to compute posterior predictive p value or
         #  other convergence metric
+        #  Alternative: return error on forces, energy and virial separately
 
     def train(self, iterations):
         """Training of any trainer should start by calling train."""
