@@ -114,8 +114,7 @@ def quantity_traj(traj_state, quantities, neighbor_fn, energy_params=None):
     def quantity_trajectory(dummy_carry, state):
         R = state.position
         nbrs = neighbor_fn(R, fixed_reference_nbrs)
-        computed_quantities = {quantity_fn_key: quantities[quantity_fn_key]
-                               ['compute_fn'](state,
+        computed_quantities = {quantity_fn_key: quantities[quantity_fn_key](state,
                                               neighbor=nbrs,
                                               energy_params=energy_params)
                                for quantity_fn_key in quantities}
