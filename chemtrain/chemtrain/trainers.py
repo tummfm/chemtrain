@@ -515,9 +515,8 @@ class RelativeEntropy(reweighting.PropagationBase):
                      batch_cache=1):
         """Set dataset and loader corresponding to current state point."""
         reference_loader = data.NumpyDataLoader(R=reference_data)
-        cache_size = batch_cache * reference_batch_size
         init_reference_batch, get_reference_batch = data.random_reference_data(
-            reference_loader, cache_size, reference_batch_size)
+            reference_loader, batch_cache, reference_batch_size)
         init_reference_batch_state = init_reference_batch()
         self.data_states[key] = init_reference_batch_state
         return get_reference_batch
