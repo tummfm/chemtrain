@@ -77,6 +77,18 @@ def mse_loss(predictions, targets):
     return mean_of_squares
 
 
+def mae_loss(predictions, targets, mask=None):
+    """Computes the mean absolute error for given predictions and targets."""
+    abs_err = jnp.abs(targets - predictions)
+    if mask is None:
+        return jnp.mean(abs_err)
+    else:
+        non_masked_samples = jnp.sum(mask)
+        per_sample_err = jnp.mean(abs_err,
+                                  axis=tuple(range(1, predictions.ndim)))
+        return jnp.sum(per_sample_err * mask) / non_masked_samples
+
+
 def step_optimizer(params, opt_state, grad, optimizer):
     """Steps optimizer and updates state using the gradient."""
     scaled_grad, new_opt_state = optimizer.update(grad, opt_state)

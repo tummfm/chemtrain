@@ -17,39 +17,43 @@ class ForceMatching(util.MLETrainerTemplate):
     based on padded sparse neighborlists.
     Caution: Currently neighborlist overflow is not checked.
     Make sure to build nbrs_init large enough.
+
+    Beware that print_mae comes at additional computational cost.
     """
     def __init__(self, init_params, energy_fn_template, nbrs_init,
                  optimizer, position_data, energy_data=None, force_data=None,
                  virial_data=None, box_tensor=None, gamma_f=1., gamma_p=1.e-6,
                  batch_per_device=1, batch_cache=10, train_ratio=0.875,
                  convergence_criterion='window_median',
-                 checkpoint_folder='Checkpoints'):
-
-        # setup dataset
-        self.n_devices, self.batches_per_epoch, self.get_train_batch, \
-            self.get_val_batch, self.train_batch_state, self.val_batch_state, \
-            virial_fn, self.training_dict_keys = \
-            self._process_dataset(
-                position_data, energy_fn_template, train_ratio, energy_data,
-                force_data, virial_data, box_tensor, batch_per_device,
-                batch_cache)
-        self.train_losses, self.val_losses = [], []
-        self.early_stop = util.EarlyStopping(criterion=convergence_criterion)
-
-        opt_state = optimizer.init(init_params)  # initialize optimizer state
-
-        # replicate params and optimizer states for pmap
-        init_params = util.tree_replicate(init_params, self.n_devices)
-        opt_state = util.tree_replicate(opt_state, self.n_devices)
-
-        init_state = util.TrainerState(params=init_params,
-                                       opt_state=opt_state)
+                 checkpoint_folder='Checkpoints', print_mae=False):
 
         checkpoint_path = 'output/force_matching/' + str(checkpoint_folder)
+
+        # setup dataset
+        self.n_devices = device_count()
+        self.print_mae = print_mae
+        self.nbrs_init = nbrs_init
+
+        # replicate params and optimizer states for pmap
+        opt_state = optimizer.init(init_params)  # initialize optimizer state
+        init_params = util.tree_replicate(init_params, self.n_devices)
+        opt_state = util.tree_replicate(opt_state, self.n_devices)
+        init_state = util.TrainerState(params=init_params,
+                                       opt_state=opt_state)
         super().__init__(
             optimizer=optimizer, init_state=init_state,
             checkpoint_path=checkpoint_path,
             reference_energy_fn_template=energy_fn_template)
+
+        self.batches_per_epoch, self.get_train_batch, self.get_val_batch,\
+            self.train_batch_state, self.val_batch_state, virial_fn,\
+            self.training_dict_keys, self.mae_fn, self.mae_data_state = \
+            self._process_dataset(
+                position_data, train_ratio, energy_data, force_data,
+                virial_data, box_tensor, batch_per_device, batch_cache
+            )
+        self.train_losses, self.val_losses, self.validation_mae = [], [], []
+        self.early_stop = util.EarlyStopping(criterion=convergence_criterion)
 
         self.grad_fns = force_matching.init_update_fns(
             energy_fn_template, nbrs_init, optimizer, gamma_f=gamma_f,
@@ -62,9 +66,10 @@ class ForceMatching(util.MLETrainerTemplate):
         """Allows changing dataset on the fly, which is particularly
         useful for active learning applications.
         """
-        self.n_devices, self.batches_per_epoch, self.get_train_batch, \
+        self.n_devices = device_count()
+        self.batches_per_epoch, self.get_train_batch, \
             self.get_val_batch, self.train_batch_state, self.val_batch_state, \
-            virial_fn, training_dict_keys = \
+            virial_fn, training_dict_keys, self.mae_fn, self.mae_data_state = \
             self._process_dataset(position_data,
                                   train_ratio,
                                   energy_data,
@@ -83,20 +88,19 @@ class ForceMatching(util.MLETrainerTemplate):
         # reset convergence criterion as loss might not be comparable
         self.early_stop.reset_convergence_losses()
 
-    @staticmethod
-    def _process_dataset(position_data, energy_fn_template, train_ratio=0.875,
+    def _process_dataset(self, position_data, train_ratio=0.875,
                          energy_data=None, force_data=None, virial_data=None,
-                         box_tensor=None, batch_per_device=1, batch_cache=10):
+                         box_tensor=None, batch_per_device=1, batch_cache=10,
+                         ):
         # Default train_ratio represents 70-10-20 split, when 20 % test
         # data was already deducted
 
         train_loader, val_loader = force_matching.init_dataloaders(
             position_data, energy_data, force_data, virial_data, train_ratio)
         virial_fn = force_matching.init_virial_fn(
-            virial_data, energy_fn_template, box_tensor)
+            virial_data, self.reference_energy_fn_template, box_tensor)
 
-        n_devices = device_count()
-        batch_size = n_devices * batch_per_device
+        batch_size = self.n_devices * batch_per_device
         batches_per_epoch = train_loader._observation_count // batch_size
         init_train_batch, get_train_batch = data.random_reference_data(
             train_loader, batch_cache, batch_size)
@@ -104,9 +108,19 @@ class ForceMatching(util.MLETrainerTemplate):
             val_loader, batch_cache, batch_size)
         train_batch_state = init_train_batch()
         val_batch_state = init_val_batch()
-        return n_devices, batches_per_epoch, get_train_batch, get_val_batch, \
+
+        if self.print_mae:
+            mae_fn, mae_init_state = force_matching.init_mae_fn(
+                val_loader, self.nbrs_init, self.reference_energy_fn_template,
+                batch_size, batch_cache, virial_fn
+            )
+        else:
+            mae_fn = None
+            mae_init_state = None
+
+        return batches_per_epoch, get_train_batch, get_val_batch, \
             train_batch_state, val_batch_state, virial_fn, \
-            train_loader._reference_data.keys()
+            train_loader._reference_data.keys(), mae_fn, mae_init_state
 
     @property
     def params(self):
@@ -159,6 +173,13 @@ class ForceMatching(util.MLETrainerTemplate):
               f'Average val loss: {mean_val_loss:.5f} Gradient norm:'
               f' {self.gradient_norm_history[-1]}'
               f' Elapsed time = {duration:.3f} min')
+
+        if self.print_mae:
+            mae, self.mae_data_state = self.mae_fn(self.params,
+                                                   self.mae_data_state)
+            for key, mae_value in mae.items():
+                print(f'{key}: MAE = {mae_value:.4f}')
+            self.validation_mae.append(mae)
 
         self._converged = self.early_stop.early_stopping(mean_val_loss, thresh,
                                                          self.params)
