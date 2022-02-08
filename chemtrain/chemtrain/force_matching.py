@@ -65,6 +65,8 @@ def init_virial_fn(virial_data, energy_fn_template, box_tensor):
     type.
     """
     if virial_data is not None:
+        assert box_tensor is not None, ('If the virial is to be matched, '
+                                        'box_tensor is a mandatory input.')
         if virial_data.ndim == 3:
             virial_fn = custom_quantity.init_virial_stress_tensor(
                 energy_fn_template, box_tensor, include_kinetic=False)
@@ -73,8 +75,6 @@ def init_virial_fn(virial_data, energy_fn_template, box_tensor):
                 energy_fn_template, box_tensor, include_kinetic=False)
         else:
             raise ValueError('Format of virial dataset incompatible.')
-        assert box_tensor is not None, ('If the virial is to be matched, '
-                                        'box_tensor is a mandatory input.')
     else:
         virial_fn = None
 

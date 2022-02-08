@@ -192,6 +192,7 @@ class TrainerInterface(abc.ABC):
         """Dumps a checkpoint during training, from which training can
         be resumed.
         """
+        assert self.checkpoint_path is not None
         if frequency is not None:
             pathlib.Path(self.checkpoint_path).mkdir(parents=True,
                                                      exist_ok=True)
@@ -459,3 +460,22 @@ class EarlyStopping:
     def move_to_device(self):
         """Moves best_params to device to use them after loading trainer."""
         self.best_params = tree_map(jnp.array, self.best_params)
+
+
+class ProbabilisticFMTrainerTemplate(TrainerInterface):
+    """Trainer template for methods that result in multiple parameter sets for
+    Monte-Carlo-style uncertainty quantification, based on a force-matching
+    formulation.
+    """
+    def __init__(self, checkpoint_path, energy_fn_template, val_dataloader=None):
+        super().__init__(checkpoint_path, energy_fn_template)
+        self.results = []
+
+        # TODO use val_loader for some metrics that are interesting for MCMC
+        #  and SG-MCMC
+
+    def move_to_device(self):
+        params = []
+        for param_set in self.params:
+            params.append(tree_map(jnp.array, param_set))  # move on device
+        self.params = params
