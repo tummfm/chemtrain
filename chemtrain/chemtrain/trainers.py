@@ -21,6 +21,9 @@ class ForceMatching(util.MLETrainerTemplate):
     Make sure to build nbrs_init large enough.
 
     Beware that print_mae comes at additional computational cost.
+
+    Virial data is pressure tensor, i.e. negative stress tensor
+
     """
     def __init__(self, init_params, energy_fn_template, nbrs_init,
                  optimizer, position_data, energy_data=None, force_data=None,

@@ -69,7 +69,9 @@ def init_virial_fn(virial_data, energy_fn_template, box_tensor):
                                         'box_tensor is a mandatory input.')
         if virial_data.ndim == 3:
             virial_fn = custom_quantity.init_virial_stress_tensor(
-                energy_fn_template, box_tensor, include_kinetic=False)
+                energy_fn_template, box_tensor, include_kinetic=False,
+                pressure_tensor=True
+            )
         elif virial_data.ndim in [1, 2]:
             virial_fn = custom_quantity.init_pressure(
                 energy_fn_template, box_tensor, include_kinetic=False)
@@ -93,7 +95,7 @@ def init_single_prediction(nbrs_init, energy_fn_template, virial_fn=None):
                                                             neighbor=nbrs)
         predictions = {'U': energy, 'F': -negative_forces}
         if virial_fn is not None:
-            predictions['virial'] = virial_fn(State(positions), nbrs, params)
+            predictions['p'] = - virial_fn(State(positions), nbrs, params)
         return predictions
     return single_prediction
 
@@ -117,7 +119,7 @@ def init_update_fns(energy_fn_template, nbrs_init, optimizer, gamma_f=1.,
         if 'F' in batch.keys():  # forces loss component
             loss += gamma_f * util.mse_loss(predictions['F'], batch['F'])
         if 'p' in batch.keys():  # virial loss component
-            loss += gamma_p * util.mse_loss(predictions['virial'], batch['p'])
+            loss += gamma_p * util.mse_loss(predictions['p'], batch['p'])
         return loss
 
     @partial(pmap, axis_name='devices')
@@ -164,7 +166,7 @@ def init_mae_fn(val_loader, nbrs_init, energy_fn_template, batch_size=1,
         if 'F' in batch.keys():  # forces loss component
             maes['forces'] = util.mae_loss(predictions['F'], batch['F'], mask)
         if 'p' in batch.keys():  # virial loss component
-            maes['virial'] = util.mae_loss(predictions['virial'], batch['p'],
+            maes['pressure'] = util.mae_loss(predictions['p'], batch['p'],
                                            mask)
         return maes, unused_scan_carry
 
