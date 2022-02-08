@@ -1,11 +1,13 @@
 """This file contains several Trainer classes as a quickstart for users."""
 import warnings
 
+from blackjax import nuts, stan_warmup
 from coax.utils._jit import jit
-from jax import device_count, value_and_grad, tree_map, numpy as jnp
+from jax import device_count, value_and_grad, random, numpy as jnp
 from jax_sgmc import data
 
-from chemtrain import util, force_matching, traj_util, reweighting
+from chemtrain import (util, force_matching, traj_util, reweighting,
+                       probabilistic)
 
 
 class ForceMatching(util.MLETrainerTemplate):
@@ -634,49 +636,100 @@ class RelativeEntropy(reweighting.PropagationBase):
                                                          save_best_params=False)
 
 
-class SGMC(util.TrainerInterface):
+class SGMCForceMatching(util.ProbabilisticFMTrainerTemplate):
     """Trainer for stochastic gradient Markov-chain Monte Carlo training
     based on force-matching.
 
     init_samples: A list, possibly of size 1, of sets of initial MCMC samples,
      where each spawns a dedicated MCMC chain,
     """
-    def __init__(self, sgmc_solver, init_samples, checkpoint_path,
-                 val_dataloader=None, energy_fn_template=None):
+    def __init__(self, sgmc_solver, init_samples, val_dataloader=None,
+                 energy_fn_template=None):
         # TODO: Where does alias.py get checkpoint_path info?
-        super().__init__(checkpoint_path, energy_fn_template)
+        super().__init__(None, energy_fn_template)
         self._params = [init_sample['params'] for init_sample in init_samples]
         self.sgmcmc_run_fn = sgmc_solver
         self.init_samples = init_samples
-        self.results = None
 
         # TODO use val dataloader to compute posterior predictive p value or
-        #  other convergence metric
-        #  Alternative: return error on forces, energy and virial separately
+        #  other convergence metric. In ProbabilisticFMTrainerTemplate??
 
     def train(self, iterations):
         """Training of any trainer should start by calling train."""
         self.results = self.sgmcmc_run_fn(*self.init_samples,
                                           iterations=iterations)
-        self.params = [chain['samples']['variables']['params']
-                       for chain in self.results]
 
     @property
     def params(self):
-        return self._params
+        params = []
+        for chain in self.results:
+            for param_set in chain['samples']['variables']['params']:
+                params.append(param_set)
+        return params
 
     @params.setter
     def params(self, loaded_params):
-        self._params = loaded_params
-
-    def move_to_device(self):
-        self.params = tree_map(jnp.array, self.params)  # move on device
-
-    @property
-    def aggregated_params(self):
-        # TODO what's the best format for postprocessing?
-        return
+        raise NotImplementedError('Setting params seems not meaningful in'
+                                  ' the case of SG-MCMC samplers.')
 
     # TODO override save functions such that only saving parameters is allowed
     #  - or whatever checkpointing jax-sgmc supports (or does checkpointing work
     #  with more liberal coax._jit?)
+
+
+class NUTSForceMatching(probabilistic.MCMCForceMatchingTemplate):
+    """Trainer that samples from the posterior distribution of energy_params via
+    the No-U-Turn Sampler (NUTS), based on a force-matching formulation.
+    """
+    def __init__(self, prior, likelihood, train_loader, init_sample,
+                 batch_cache=1, batch_size=1, val_loader=None,
+                 warmup_steps=1000, step_size=None,
+                 inv_mass_matrix=None, checkpoint_folder='Checkpoints',
+                 ref_energy_fn_template=None, init_prng_key=random.PRNGKey(0)):
+        checkpoint_path = 'output/NUTS/' + str(checkpoint_folder)
+        init_state = nuts.new_state(init_sample, self.log_posterior_fn)
+
+        if step_size is None or inv_mass_matrix is None:
+            def warmup_gen_fn(step, inverse_mass_matrix):
+                return nuts.kernel(self.log_posterior_fn, step,
+                                   inverse_mass_matrix)
+
+            init_state, (step_size, inv_mass_matrix), info = stan_warmup.run(
+                init_prng_key, warmup_gen_fn, init_state, warmup_steps)
+            print('Finished warmup.\n', info)
+
+        kernel = nuts.kernel(self.log_posterior_fn, step_size,
+                             inv_mass_matrix)
+        super().__init__(init_state, prior, likelihood, kernel, train_loader,
+                         batch_cache, batch_size, checkpoint_path, val_loader,
+                         ref_energy_fn_template)
+
+
+class EnsembleOfModels(util.ProbabilisticFMTrainerTemplate):
+    """Train an ensemble of models by starting optimization from different
+    initial parameter sets, for use in uncertainty quantification applications.
+    """
+    def __init__(self, trainers, ref_energy_fn_template=None):
+        super().__init__(None, ref_energy_fn_template)
+        self.trainers = trainers
+
+    def train(self, *args, **kwargs):
+        for i, trainer in enumerate(self.trainers):
+            print(f'---------Starting trainer {i}-----------')
+            trainer.train(*args, **kwargs)
+        print('Finished training all models.')
+
+    @property
+    def params(self):
+        params = []
+        for trainer in self.trainers:
+            if hasattr(trainer, 'best_params'):
+                params.append(trainer.best_params)
+            else:
+                params.append(trainer.params)
+        return params
+
+    @params.setter
+    def params(self, loaded_params):
+        for i, params in enumerate(loaded_params):
+            self.trainers[i].params = params
