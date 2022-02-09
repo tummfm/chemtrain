@@ -1,11 +1,13 @@
 """This file contains several Trainer classes as a quickstart for users."""
 import warnings
 
+from blackjax import nuts, stan_warmup
 from coax.utils._jit import jit
-from jax import device_count, value_and_grad, tree_map, numpy as jnp
+from jax import device_count, value_and_grad, random, numpy as jnp
 from jax_sgmc import data
 
-from chemtrain import util, force_matching, traj_util, reweighting
+from chemtrain import (util, force_matching, traj_util, reweighting,
+                       probabilistic)
 
 
 class ForceMatching(util.MLETrainerTemplate):
@@ -17,39 +19,46 @@ class ForceMatching(util.MLETrainerTemplate):
     based on padded sparse neighborlists.
     Caution: Currently neighborlist overflow is not checked.
     Make sure to build nbrs_init large enough.
+
+    Beware that print_mae comes at additional computational cost.
+
+    Virial data is pressure tensor, i.e. negative stress tensor
+
     """
     def __init__(self, init_params, energy_fn_template, nbrs_init,
                  optimizer, position_data, energy_data=None, force_data=None,
                  virial_data=None, box_tensor=None, gamma_f=1., gamma_p=1.e-6,
                  batch_per_device=1, batch_cache=10, train_ratio=0.875,
                  convergence_criterion='window_median',
-                 checkpoint_folder='Checkpoints'):
-
-        # setup dataset
-        self.n_devices, self.batches_per_epoch, self.get_train_batch, \
-            self.get_val_batch, self.train_batch_state, self.val_batch_state, \
-            virial_fn, self.training_dict_keys = \
-            self._process_dataset(
-                position_data, energy_fn_template, train_ratio, energy_data,
-                force_data, virial_data, box_tensor, batch_per_device,
-                batch_cache)
-        self.train_losses, self.val_losses = [], []
-        self.early_stop = util.EarlyStopping(criterion=convergence_criterion)
-
-        opt_state = optimizer.init(init_params)  # initialize optimizer state
-
-        # replicate params and optimizer states for pmap
-        init_params = util.tree_replicate(init_params, self.n_devices)
-        opt_state = util.tree_replicate(opt_state, self.n_devices)
-
-        init_state = util.TrainerState(params=init_params,
-                                       opt_state=opt_state)
+                 checkpoint_folder='Checkpoints', print_mae=False):
 
         checkpoint_path = 'output/force_matching/' + str(checkpoint_folder)
+
+        # setup dataset
+        self.n_devices = device_count()
+        self.print_mae = print_mae
+        self.nbrs_init = nbrs_init
+
+        # replicate params and optimizer states for pmap
+        opt_state = optimizer.init(init_params)  # initialize optimizer state
+        init_params = util.tree_replicate(init_params, self.n_devices)
+        opt_state = util.tree_replicate(opt_state, self.n_devices)
+        init_state = util.TrainerState(params=init_params,
+                                       opt_state=opt_state)
         super().__init__(
             optimizer=optimizer, init_state=init_state,
             checkpoint_path=checkpoint_path,
             reference_energy_fn_template=energy_fn_template)
+
+        self.batches_per_epoch, self.get_train_batch, self.get_val_batch,\
+            self.train_batch_state, self.val_batch_state, virial_fn,\
+            self.training_dict_keys, self.mae_fn, self.mae_data_state = \
+            self._process_dataset(
+                position_data, train_ratio, energy_data, force_data,
+                virial_data, box_tensor, batch_per_device, batch_cache
+            )
+        self.train_losses, self.val_losses, self.validation_mae = [], [], []
+        self.early_stop = util.EarlyStopping(criterion=convergence_criterion)
 
         self.grad_fns = force_matching.init_update_fns(
             energy_fn_template, nbrs_init, optimizer, gamma_f=gamma_f,
@@ -62,9 +71,10 @@ class ForceMatching(util.MLETrainerTemplate):
         """Allows changing dataset on the fly, which is particularly
         useful for active learning applications.
         """
-        self.n_devices, self.batches_per_epoch, self.get_train_batch, \
+        self.n_devices = device_count()
+        self.batches_per_epoch, self.get_train_batch, \
             self.get_val_batch, self.train_batch_state, self.val_batch_state, \
-            virial_fn, training_dict_keys = \
+            virial_fn, training_dict_keys, self.mae_fn, self.mae_data_state = \
             self._process_dataset(position_data,
                                   train_ratio,
                                   energy_data,
@@ -83,20 +93,19 @@ class ForceMatching(util.MLETrainerTemplate):
         # reset convergence criterion as loss might not be comparable
         self.early_stop.reset_convergence_losses()
 
-    @staticmethod
-    def _process_dataset(position_data, energy_fn_template, train_ratio=0.875,
+    def _process_dataset(self, position_data, train_ratio=0.875,
                          energy_data=None, force_data=None, virial_data=None,
-                         box_tensor=None, batch_per_device=1, batch_cache=10):
+                         box_tensor=None, batch_per_device=1, batch_cache=10,
+                         ):
         # Default train_ratio represents 70-10-20 split, when 20 % test
         # data was already deducted
 
         train_loader, val_loader = force_matching.init_dataloaders(
             position_data, energy_data, force_data, virial_data, train_ratio)
         virial_fn = force_matching.init_virial_fn(
-            virial_data, energy_fn_template, box_tensor)
+            virial_data, self.reference_energy_fn_template, box_tensor)
 
-        n_devices = device_count()
-        batch_size = n_devices * batch_per_device
+        batch_size = self.n_devices * batch_per_device
         batches_per_epoch = train_loader._observation_count // batch_size
         init_train_batch, get_train_batch = data.random_reference_data(
             train_loader, batch_cache, batch_size)
@@ -104,9 +113,19 @@ class ForceMatching(util.MLETrainerTemplate):
             val_loader, batch_cache, batch_size)
         train_batch_state = init_train_batch()
         val_batch_state = init_val_batch()
-        return n_devices, batches_per_epoch, get_train_batch, get_val_batch, \
+
+        if self.print_mae:
+            mae_fn, mae_init_state = force_matching.init_mae_fn(
+                val_loader, self.nbrs_init, self.reference_energy_fn_template,
+                batch_size, batch_cache, virial_fn
+            )
+        else:
+            mae_fn = None
+            mae_init_state = None
+
+        return batches_per_epoch, get_train_batch, get_val_batch, \
             train_batch_state, val_batch_state, virial_fn, \
-            train_loader._reference_data.keys()
+            train_loader._reference_data.keys(), mae_fn, mae_init_state
 
     @property
     def params(self):
@@ -159,6 +178,13 @@ class ForceMatching(util.MLETrainerTemplate):
               f'Average val loss: {mean_val_loss:.5f} Gradient norm:'
               f' {self.gradient_norm_history[-1]}'
               f' Elapsed time = {duration:.3f} min')
+
+        if self.print_mae:
+            mae, self.mae_data_state = self.mae_fn(self.params,
+                                                   self.mae_data_state)
+            for key, mae_value in mae.items():
+                print(f'{key}: MAE = {mae_value:.4f}')
+            self.validation_mae.append(mae)
 
         self._converged = self.early_stop.early_stopping(mean_val_loss, thresh,
                                                          self.params)
@@ -515,9 +541,8 @@ class RelativeEntropy(reweighting.PropagationBase):
                      batch_cache=1):
         """Set dataset and loader corresponding to current state point."""
         reference_loader = data.NumpyDataLoader(R=reference_data)
-        cache_size = batch_cache * reference_batch_size
         init_reference_batch, get_reference_batch = data.random_reference_data(
-            reference_loader, cache_size, reference_batch_size)
+            reference_loader, batch_cache, reference_batch_size)
         init_reference_batch_state = init_reference_batch()
         self.data_states[key] = init_reference_batch_state
         return get_reference_batch
@@ -614,48 +639,100 @@ class RelativeEntropy(reweighting.PropagationBase):
                                                          save_best_params=False)
 
 
-class SGMC(util.TrainerInterface):
+class SGMCForceMatching(util.ProbabilisticFMTrainerTemplate):
     """Trainer for stochastic gradient Markov-chain Monte Carlo training
     based on force-matching.
 
     init_samples: A list, possibly of size 1, of sets of initial MCMC samples,
      where each spawns a dedicated MCMC chain,
     """
-    def __init__(self, sgmc_solver, init_samples, checkpoint_path,
-                 val_dataloader=None, energy_fn_template=None):
+    def __init__(self, sgmc_solver, init_samples, val_dataloader=None,
+                 energy_fn_template=None):
         # TODO: Where does alias.py get checkpoint_path info?
-        super().__init__(checkpoint_path, energy_fn_template)
+        super().__init__(None, energy_fn_template)
         self._params = [init_sample['params'] for init_sample in init_samples]
         self.sgmcmc_run_fn = sgmc_solver
         self.init_samples = init_samples
-        self.results = None
 
         # TODO use val dataloader to compute posterior predictive p value or
-        #  other convergence metric
+        #  other convergence metric. In ProbabilisticFMTrainerTemplate??
 
     def train(self, iterations):
         """Training of any trainer should start by calling train."""
         self.results = self.sgmcmc_run_fn(*self.init_samples,
                                           iterations=iterations)
-        self.params = [chain['samples']['variables']['params']
-                       for chain in self.results]
 
     @property
     def params(self):
-        return self._params
+        params = []
+        for chain in self.results:
+            for param_set in chain['samples']['variables']['params']:
+                params.append(param_set)
+        return params
 
     @params.setter
     def params(self, loaded_params):
-        self._params = loaded_params
-
-    def move_to_device(self):
-        self.params = tree_map(jnp.array, self.params)  # move on device
-
-    @property
-    def aggregated_params(self):
-        # TODO what's the best format for postprocessing?
-        return
+        raise NotImplementedError('Setting params seems not meaningful in'
+                                  ' the case of SG-MCMC samplers.')
 
     # TODO override save functions such that only saving parameters is allowed
     #  - or whatever checkpointing jax-sgmc supports (or does checkpointing work
     #  with more liberal coax._jit?)
+
+
+class NUTSForceMatching(probabilistic.MCMCForceMatchingTemplate):
+    """Trainer that samples from the posterior distribution of energy_params via
+    the No-U-Turn Sampler (NUTS), based on a force-matching formulation.
+    """
+    def __init__(self, prior, likelihood, train_loader, init_sample,
+                 batch_cache=1, batch_size=1, val_loader=None,
+                 warmup_steps=1000, step_size=None,
+                 inv_mass_matrix=None, checkpoint_folder='Checkpoints',
+                 ref_energy_fn_template=None, init_prng_key=random.PRNGKey(0)):
+        checkpoint_path = 'output/NUTS/' + str(checkpoint_folder)
+        init_state = nuts.new_state(init_sample, self.log_posterior_fn)
+
+        if step_size is None or inv_mass_matrix is None:
+            def warmup_gen_fn(step, inverse_mass_matrix):
+                return nuts.kernel(self.log_posterior_fn, step,
+                                   inverse_mass_matrix)
+
+            init_state, (step_size, inv_mass_matrix), info = stan_warmup.run(
+                init_prng_key, warmup_gen_fn, init_state, warmup_steps)
+            print('Finished warmup.\n', info)
+
+        kernel = nuts.kernel(self.log_posterior_fn, step_size,
+                             inv_mass_matrix)
+        super().__init__(init_state, prior, likelihood, kernel, train_loader,
+                         batch_cache, batch_size, checkpoint_path, val_loader,
+                         ref_energy_fn_template)
+
+
+class EnsembleOfModels(util.ProbabilisticFMTrainerTemplate):
+    """Train an ensemble of models by starting optimization from different
+    initial parameter sets, for use in uncertainty quantification applications.
+    """
+    def __init__(self, trainers, ref_energy_fn_template=None):
+        super().__init__(None, ref_energy_fn_template)
+        self.trainers = trainers
+
+    def train(self, *args, **kwargs):
+        for i, trainer in enumerate(self.trainers):
+            print(f'---------Starting trainer {i}-----------')
+            trainer.train(*args, **kwargs)
+        print('Finished training all models.')
+
+    @property
+    def params(self):
+        params = []
+        for trainer in self.trainers:
+            if hasattr(trainer, 'best_params'):
+                params.append(trainer.best_params)
+            else:
+                params.append(trainer.params)
+        return params
+
+    @params.setter
+    def params(self, loaded_params):
+        for i, params in enumerate(loaded_params):
+            self.trainers[i].params = params

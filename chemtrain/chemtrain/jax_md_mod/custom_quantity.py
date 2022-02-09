@@ -540,7 +540,7 @@ def virial_potential_part(energy_fn, state, nbrs, box_tensor, **kwargs):
 
 
 def init_virial_stress_tensor(energy_fn_template, ref_box_tensor=None,
-                              include_kinetic=True):
+                              include_kinetic=True, pressure_tensor=False):
     """Initializes a function that computes the virial stress tensor for a
     single state.
 
@@ -561,12 +561,20 @@ def init_virial_stress_tensor(energy_fn_template, ref_box_tensor=None,
                         conditions. If None, box_tensor needs to be provided as
                         'box' during function call, e.g. for the NPT ensemble.
         include_kinetic: Whether kinetic part of stress tensor should be added.
+        pressure_tensor: If False (default), returns the stress tensor. If True,
+                         returns the pressure tensor, i.e. the negative stress
+                         tensor.
 
     Returns:
         A function that takes a simulation state with neighbor list,
         energy_params and box (if applicable) and returns the instantaneous
         virial stress tensor.
     """
+    if pressure_tensor:
+        pressure_sign = -1.
+    else:
+        pressure_sign = 1.
+
     def virial_stress_tensor_neighborlist(state, neighbor, energy_params,
                                           **kwargs):
         # Note: this workaround with the energy_template was needed to keep
@@ -580,9 +588,9 @@ def init_virial_stress_tensor(energy_fn_template, ref_box_tensor=None,
         volume = quantity.volume(spatial_dim, box)
         if include_kinetic:
             kinetic_tensor = kinetic_energy_tensor(state)
-            return (kinetic_tensor + virial_tensor) / volume
+            return pressure_sign * (kinetic_tensor + virial_tensor) / volume
         else:
-            return virial_tensor / volume
+            return pressure_sign * virial_tensor / volume
 
     return virial_stress_tensor_neighborlist
 
@@ -608,14 +616,16 @@ def init_pressure(energy_fn_template, ref_box_tensor=None,
         energy_params and box (if applicable) and returns the instantaneous
         pressure.
     """
+    # pressure is negative hydrostatic stress
     stress_tensor_fn = init_virial_stress_tensor(
-        energy_fn_template, ref_box_tensor, include_kinetic=include_kinetic)
+        energy_fn_template, ref_box_tensor, include_kinetic=include_kinetic,
+        pressure_tensor=True
+    )
 
     def pressure_neighborlist(state, neighbor, energy_params, **kwargs):
-        stress_tensor = stress_tensor_fn(state, neighbor, energy_params,
-                                         **kwargs)
-        # pressure is negative hydrostatic stress
-        return - jnp.trace(stress_tensor) / 3.
+        pressure_tensor = stress_tensor_fn(state, neighbor, energy_params,
+                                           **kwargs)
+        return jnp.trace(pressure_tensor) / 3.
     return pressure_neighborlist
 
 

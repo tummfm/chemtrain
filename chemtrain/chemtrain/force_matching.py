@@ -4,7 +4,8 @@ such as energy, forces and virial pressure.
 from collections import namedtuple
 from functools import partial
 
-from jax import vmap, lax, value_and_grad, pmap
+from coax.utils._jit import jit
+from jax import vmap, lax, value_and_grad, pmap, numpy as jnp
 from jax_sgmc import data
 import numpy as onp
 
@@ -64,16 +65,18 @@ def init_virial_fn(virial_data, energy_fn_template, box_tensor):
     type.
     """
     if virial_data is not None:
+        assert box_tensor is not None, ('If the virial is to be matched, '
+                                        'box_tensor is a mandatory input.')
         if virial_data.ndim == 3:
             virial_fn = custom_quantity.init_virial_stress_tensor(
-                energy_fn_template, box_tensor, include_kinetic=False)
+                energy_fn_template, box_tensor, include_kinetic=False,
+                pressure_tensor=True
+            )
         elif virial_data.ndim in [1, 2]:
             virial_fn = custom_quantity.init_pressure(
                 energy_fn_template, box_tensor, include_kinetic=False)
         else:
             raise ValueError('Format of virial dataset incompatible.')
-        assert box_tensor is not None, ('If the virial is to be matched, '
-                                        'box_tensor is a mandatory input.')
     else:
         virial_fn = None
 
@@ -92,7 +95,7 @@ def init_single_prediction(nbrs_init, energy_fn_template, virial_fn=None):
                                                             neighbor=nbrs)
         predictions = {'U': energy, 'F': -negative_forces}
         if virial_fn is not None:
-            predictions['virial'] = virial_fn(State(positions), nbrs, params)
+            predictions['p'] = - virial_fn(State(positions), nbrs, params)
         return predictions
     return single_prediction
 
@@ -116,7 +119,7 @@ def init_update_fns(energy_fn_template, nbrs_init, optimizer, gamma_f=1.,
         if 'F' in batch.keys():  # forces loss component
             loss += gamma_f * util.mse_loss(predictions['F'], batch['F'])
         if 'p' in batch.keys():  # virial loss component
-            loss += gamma_p * util.mse_loss(predictions['virial'], batch['p'])
+            loss += gamma_p * util.mse_loss(predictions['p'], batch['p'])
         return loss
 
     @partial(pmap, axis_name='devices')
@@ -137,3 +140,43 @@ def init_update_fns(energy_fn_template, nbrs_init, optimizer, gamma_f=1.,
         return new_params, opt_state, loss, grad
 
     return batch_update, batched_loss_fn
+
+
+def init_mae_fn(val_loader, nbrs_init, energy_fn_template, batch_size=1,
+                batch_cache=1, virial_fn=None):
+    """Returns a function that computes for each observable - energy, forces and
+    virial (if applicable) - the individual mean absolute error on the
+    validation set. These metrics are usually better interpretable than a
+    (combined) MSE loss value.
+    """
+    single_prediction = init_single_prediction(nbrs_init, energy_fn_template,
+                                               virial_fn)
+
+    init_fun, map_fun = data.full_reference_data(val_loader, batch_cache,
+                                                 batch_size)
+    init_data_state = init_fun()
+
+    def abs_error(params, batch, mask, unused_scan_carry):
+        # batch = util.tree_split(batch, n_devices)  # TODO enable pmap
+        predictions = vmap(single_prediction, in_axes=(None, 0))(params,
+                                                                 batch['R'])
+        maes = {}
+        if 'U' in batch.keys():  # energy loss component
+            maes['energy'] = util.mae_loss(predictions['U'], batch['U'], mask)
+        if 'F' in batch.keys():  # forces loss component
+            maes['forces'] = util.mae_loss(predictions['F'], batch['F'], mask)
+        if 'p' in batch.keys():  # virial loss component
+            maes['pressure'] = util.mae_loss(predictions['p'], batch['p'],
+                                           mask)
+        return maes, unused_scan_carry
+
+    @jit
+    def mean_abs_error(params, data_state):
+        data_state, (batch_maes, _) = map_fun(partial(abs_error, params),
+                                              data_state, None, masking=True)
+        average_maes = {key: jnp.mean(values)
+                        for key, values in batch_maes.items()}
+        return average_maes, data_state
+
+    return mean_abs_error, init_data_state
+

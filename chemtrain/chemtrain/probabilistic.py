@@ -1,10 +1,13 @@
 """This module provides utilities for setting up probabilistic trainers,
  such as trainers.SGMC"""
-from jax import scipy as jscipy, numpy as jnp
+import time
+
+from jax import checkpoint, random, jit, scipy as jscipy, numpy as jnp
+from jax_sgmc import data, potential
 from scipy import stats
 import tree_math
 
-from chemtrain import force_matching
+from chemtrain import force_matching, util
 
 
 def uniform_prior(sample):
@@ -187,3 +190,90 @@ def init_force_matching(
         init_samples.append(sample)
 
     return prior_fn, likelihood_fn, init_samples, train_loader, val_loader
+
+
+def validation_mae_params_fm(params, val_loader, energy_fn_template, nbrs_init,
+                             box_tensor=None, batch_size=1, batch_cache=1):
+    """Evaluates the mean absolute error of a list of parameter sets generated
+    via sampling-based methods, based on validation data and a force-matching
+    likelihood.
+    """
+
+    # test if virial data is contained in val_loader and initialize virial_fn
+    # according to the virial data type.
+    test_batch = val_loader.initializer_batch(batch_size)
+    if 'p' in test_batch:
+        test_virial = test_batch['p']
+    else:
+        test_virial = None
+
+    virial_fn = force_matching.init_virial_fn(test_virial, energy_fn_template,
+                                              box_tensor)
+    mae_fn, mae_data_state = force_matching.init_mae_fn(
+        val_loader, nbrs_init, energy_fn_template,
+        batch_size, batch_cache, virial_fn
+    )
+
+    maes = []
+    for i, param_set in enumerate(params):
+        mae, mae_data_state = mae_fn(param_set, mae_data_state)
+        maes.append(mae)
+        for key, mae_value in mae.items():
+            print(f'Parameter set {i}: {key}: MAE = {mae_value:.4f}')
+    return maes
+
+
+class MCMCForceMatchingTemplate(util.ProbabilisticFMTrainerTemplate):
+    """Initializes log_posterior function to be used for MCMC with blackjax,
+    including batch-wise evaluation of the likelihood and re-materialization.
+    """
+    def __init__(self, init_state, prior, likelihood, kernel, train_loader,
+                 batch_cache, batch_size, checkpoint_path, val_loader=None,
+                 ref_energy_fn_template=None):
+        super().__init__(checkpoint_path, ref_energy_fn_template, val_loader)
+        # re-materialization of the likelihood for each batch of data allows
+        # circumventing the enormous memory requirements of backpropagating
+        # through the full potential - at the expense of additional
+        # computational cost.
+        likelihood = checkpoint(likelihood)
+        full_potential_fn = potential.full_potential(prior, likelihood,
+                                                     strategy='vmap')
+        init_fun, fmap_fun = data.full_reference_data(train_loader,
+                                                      batch_cache,
+                                                      batch_size)
+        data_state = init_fun()
+
+        def log_posterior_fn(sample):
+            # TODO this is not valid with dataloader; possibly use masked
+            #  epoch-wise loader
+            potential_val, _ = full_potential_fn(sample, data_state, fmap_fun)
+            return -potential_val  # potential is negative posterior
+
+        self.log_posterior_fn = log_posterior_fn
+        self.kernel = jit(kernel)
+        self.state = init_state
+
+    def train(self, num_samples, checkpoint_freq=None, init_samples=None,
+              rng_key=random.PRNGKey(0)):
+        if init_samples is not None:
+            # TODO implement multiple chains
+            raise NotImplementedError
+
+        for i in range(num_samples):
+            start_time = time.time()
+            rng_key, consumed_key = random.split(rng_key)
+            self.state, info = self.kernel(consumed_key, self.state)
+            self.results.append(self.state)
+            print(f'Time for sample {i}: {(time.time() - start_time) / 60.}'
+                  f' min.', info)
+            self._epoch += 1
+            self._dump_checkpoint_occasionally(frequency=checkpoint_freq)
+
+    @property
+    def params(self):
+        return [state.position['params'] for state in self.results]
+
+    @params.setter
+    def params(self, loaded_params):
+        raise NotImplementedError('Setting params seems not meaningful for MCMC'
+                                  ' samplers.')
