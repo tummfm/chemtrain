@@ -1,133 +1,14 @@
-"""
-Customn implementation of the outstanding DimeNet++ architecture in haiku.
+"""Jax / haiku implementation of the outstanding DimeNet++ architecture.
 https://github.com/klicperajo/dimenet.
-Includes functions computing a sparse edge / angle representation from neighbor lists.
 """
-
-import jax.nn
-from sympy import symbols  # to setup spherical basis functions
-from sympy.utilities.lambdify import lambdify
-import jax.scipy as jsp
-from jax import vmap, lax, ops
-import jax.numpy as jnp
-from jax_md import util
-import haiku as hk
-from chemtrain.jax_md_mod import custom_quantity, dimenet_basis_util, \
-    custom_util
 from typing import Dict, Any
 
-# sparse representation utility functions
+import haiku as hk
+from jax import nn, numpy as jnp, scipy as jsp
+from jax_md import util as jax_md_util
+from sympy import symbols, utilities
 
-
-def safe_angle_mask(R_ji, R_kj, angle_mask):
-    """Masking angles to ensure fifferentiablility."""
-    safe_ji = jnp.array([1., 0., 0.], dtype=jnp.float32)
-    safe_kj = jnp.array([0., 1., 0.], dtype=jnp.float32)
-    R_ji_safe = jnp.where(angle_mask, R_ji, safe_ji)
-    R_kj_safe = jnp.where(angle_mask, R_kj, safe_kj)
-    return R_ji_safe, R_kj_safe
-
-
-def angles_triplets(R, displacement_fn, angle_idxs, angular_connectivity):
-    """Computes the angle for all triplets between 0 and Pi. Masked angles are set to pi/2."""
-    angle_mask, _, _ = angular_connectivity
-    R_i = R[angle_idxs[:, 0]]
-    R_j = R[angle_idxs[:, 1]]
-    R_k = R[angle_idxs[:, 2]]
-
-    # Note: The DimeNet implementation uses R_ji, however R_ij is the correct vector to get the angle between
-    #       both vectors. With R_ji, Pi - Theta is computed. This is a known issue in DimeNet.
-    #       We apply the proper definition of the angle.
-    R_ij = vmap(displacement_fn)(R_i, R_j)  # R_i - R_j respecting periodic BCs
-    R_kj = vmap(displacement_fn)(R_k, R_j)
-    # we need to mask as the case R_ji is co-linear with R_kj would otherwise generate NaNs on the backward pass
-    R_ij_safe, R_kj_safe = safe_angle_mask(R_ij, R_kj, angle_mask)
-    angles = vmap(custom_quantity.angle)(R_ij_safe, R_kj_safe)
-    return angles
-
-
-def flatten_sort_and_capp(matrix, sorting_args, cap_size):
-    """
-    Takes a 2D array, flattens it, sorts it using the args (usually provided via argsort) and
-    capps the end of the resulting vect. Used to delete non-existing edges. Returns the capped vector.
-    """
-    vect = jnp.ravel(matrix)
-    sorted_vect = vect[sorting_args]
-    capped_vect = sorted_vect[0:cap_size]
-    return capped_vect
-
-
-def sparse_representation(pair_distances, edge_idx_ji, max_edges=None, max_angles=None):
-    """
-    Constructs a sparse representation of graph edges and angles to save memory and computations over neighbor list.
-
-    To allow for a representation of constant size required by jit, we pad the resulting vectors.
-
-    Args:
-        pair_distances: Pairwise distances of particles
-        cutoff: Cutoff value obove which edges are not included in graph
-        max_edges: Maximum number of edges storable in the graph
-        max_angles: Maximum number of edges storable in the graph
-
-    Returns:
-        Arrays defining sparse graph connectivity
-    """
-
-    # conservative estimates for initialization run
-    # use guess from initialization for tighter bound to save memory and computations during production runs
-    N, max_neighbors = edge_idx_ji.shape
-    if max_edges is None:
-        max_edges = N * max_neighbors
-    if max_angles is None:
-        max_angles = max_edges * max_neighbors
-
-    # sparse edge representation: construct vectors from adjacency matrix and only keep existing edges
-    # Target node (i) and source (j) of edges
-    pair_mask = edge_idx_ji != N  # non-existing neighbors are encoded as N
-    n_edges = jnp.count_nonzero(pair_mask)  # due to undirectedness, each edge is included twice
-    pair_mask_flat = jnp.ravel(pair_mask)
-    sorting_idxs = jnp.argsort(~pair_mask_flat)  # non-existing edges are sorted to end
-    _, yy = jnp.meshgrid(jnp.arange(max_neighbors), jnp.arange(N))
-    idx_i = flatten_sort_and_capp(yy, sorting_idxs, max_edges)
-    idx_j = flatten_sort_and_capp(edge_idx_ji, sorting_idxs, max_edges)
-    d_ij = flatten_sort_and_capp(pair_distances, sorting_idxs, max_edges)
-    sparse_pair_mask = flatten_sort_and_capp(pair_mask_flat, sorting_idxs, max_edges)
-    pair_indicies = (idx_i, idx_j, jnp.expand_dims(sparse_pair_mask, -1))  # edge connectivity
-
-    # build sparse angle combinations from adjacency matrix:
-    # angle defined for 3 particles with connections k->j and j->i
-    # directional message passing accumulates all k->j to update each m_ji
-    idx3_i = jnp.repeat(idx_i, max_neighbors)
-    idx3_j = jnp.repeat(idx_j, max_neighbors)
-    idx3_k_mat = edge_idx_ji[idx_j]  # retrieves for each j in idx_j its neighbors k: stored in 2nd axis
-    idx3_k = idx3_k_mat.ravel()
-    angle_idxs = jnp.column_stack([idx3_i, idx3_j, idx3_k])
-    # masking:
-    # k and j are different particles, by edge_idx_ji construction. The same applies to j - i, except for masked ones
-    mask_i_eq_k = idx3_i != idx3_k
-    mask_ij = jnp.repeat(sparse_pair_mask, max_neighbors)  # mask for ij known a priori
-    mask_k = idx3_k != N
-    angle_mask = mask_ij * mask_k * mask_i_eq_k  # union of masks
-    angle_mask, sorting_idx3 = lax.top_k(angle_mask, max_angles)
-    angle_idxs = angle_idxs[sorting_idx3]
-    n_angles = jnp.count_nonzero(angle_mask)
-
-    # retrieving edge_id m_ji from nodes i and j:
-    # idx_i < N by construction, but idx_j can be N: will override lookup[i, N-1],
-    # which is problematic if [i, N-1] is an existing edge
-    edge_id_lookup = jnp.zeros([N, N + 1], dtype=jnp.int32)
-    edge_id_lookup_direct = ops.index_update(edge_id_lookup, (idx_i, idx_j), jnp.arange(max_edges))
-
-    # stores for each angle kji edge index j->i to aggregate messages via a segment_sum:
-    # each m_ji is a distinct segment containing all incoming m_kj
-    reduce_to_ji = edge_id_lookup_direct[(angle_idxs[:, 0], angle_idxs[:, 1])]
-    # stores for each angle kji edge index k->j to gather all incoming edges for message passing
-    expand_to_kj = edge_id_lookup_direct[(angle_idxs[:, 1], angle_idxs[:, 2])]
-    angle_connectivity = (jnp.expand_dims(angle_mask, -1), reduce_to_ji, expand_to_kj)
-
-    return d_ij, pair_indicies, angle_idxs, angle_connectivity, (n_edges, n_angles)
-
-# Initializers
+from chemtrain.jax_md_mod import dimenet_basis_util, util
 
 
 class OrthogonalVarianceScalingInit(hk.initializers.Initializer):
@@ -146,8 +27,6 @@ class OrthogonalVarianceScalingInit(hk.initializers.Initializer):
         w_init = self.orth_init(shape, dtype)  # uniformly distributed orthogonal weight matrix
         w_init *= jnp.sqrt(self.scale / (max(1., (fan_in + fan_out)) * jnp.var(w_init)))
         return w_init
-
-# DimeNet++ Layers
 
 
 class SmoothingEnvelope(hk.Module):
@@ -218,12 +97,12 @@ class SphericalBesselLayer(hk.Module):
         theta = symbols('theta')
         for i in range(num_spherical):
             if i == 0:
-                first_sph = lambdify([theta], sph_harmonic_formulas[i][0], modules=[jnp, jsp.special])(0)
+                first_sph = utilities.lambdify([theta], sph_harmonic_formulas[i][0], modules=[jnp, jsp.special])(0)
                 self.sph_funcs.append(lambda input: jnp.zeros_like(input) + first_sph)
             else:
-                self.sph_funcs.append(lambdify([theta], sph_harmonic_formulas[i][0], modules=[jnp, jsp.special]))
+                self.sph_funcs.append(utilities.lambdify([theta], sph_harmonic_formulas[i][0], modules=[jnp, jsp.special]))
             for j in range(num_radial):
-                self.radual_bessel_funcs.append(lambdify([x], bessel_formulars[i][j], modules=[jnp, jsp.special]))
+                self.radual_bessel_funcs.append(utilities.lambdify([x], bessel_formulars[i][j], modules=[jnp, jsp.special]))
 
     def __call__(self, pair_distances, angles, angular_connectivity):
         angle_mask, _, expand_to_kj = angular_connectivity
@@ -250,7 +129,7 @@ class SphericalBesselLayer(hk.Module):
 
 
 class ResidualLayer(hk.Module):
-    def __init__(self, layer_size, activation=jax.nn.swish, init_kwargs=None, name='ResLayer'):
+    def __init__(self, layer_size, activation=nn.swish, init_kwargs=None, name='ResLayer'):
         super().__init__(name=name)
         self.residual = hk.Sequential([
             hk.Linear(layer_size, name='ResidualFirstLinear', **init_kwargs), activation,
@@ -263,7 +142,7 @@ class ResidualLayer(hk.Module):
 
 
 class EmbeddingBlock(hk.Module):
-    def __init__(self, embed_size, n_species, type_embed_size=None, activation=jax.nn.swish,
+    def __init__(self, embed_size, n_species, type_embed_size=None, activation=nn.swish,
                  init_kwargs=None, kbt_dependent=False, name='Embedding'):
         super().__init__(name=name,)
 
@@ -307,7 +186,7 @@ class EmbeddingBlock(hk.Module):
 
 class OutputBlock(hk.Module):
     def __init__(self, embed_size, n_particles, out_embed_size=None, num_dense=2, num_targets=1,
-                 activation=jax.nn.swish, init_kwargs=None, name='Output'):
+                 activation=nn.swish, init_kwargs=None, name='Output'):
         super().__init__(name=name)
 
         if out_embed_size is None:
@@ -331,7 +210,7 @@ class OutputBlock(hk.Module):
         messages *= transformed_rbf  # rbf is masked correctly, transformation only via weights --> rbf acts as mask
 
         # sum incoming messages for each atom: becomes a per-atom quantity
-        summed_messages = custom_util.high_precision_segment_sum(messages, idx_i, num_segments=self.n_particles)
+        summed_messages = util.high_precision_segment_sum(messages, idx_i, num_segments=self.n_particles)
 
         upsampled_messages = self.upprojection(summed_messages)
         for dense_layer in self.dense_layers:
@@ -342,7 +221,7 @@ class OutputBlock(hk.Module):
 
 
 class InteractionBlock(hk.Module):
-    def __init__(self, embed_size, num_res_before_skip, num_res_after_skip, activation=jax.nn.swish,
+    def __init__(self, embed_size, num_res_before_skip, num_res_after_skip, activation=nn.swish,
                  init_kwargs=None, angle_int_embed_size=None, basis_int_embed_size=8, name='Interaction'):
         super().__init__(name=name)
 
@@ -389,7 +268,7 @@ class InteractionBlock(hk.Module):
         sbf = self.sbf2(sbf)
         m_kj *= sbf  # automatic mask: sbf was masked during initial computation. Sbf1 and 2 only weights, no biases
 
-        aggregated_m_ji = custom_util.high_precision_segment_sum(m_kj, reduce_to_ji, num_segments=m_input.shape[0])
+        aggregated_m_ji = util.high_precision_segment_sum(m_kj, reduce_to_ji, num_segments=m_input.shape[0])
         propagated_messages = self.up_projection(aggregated_m_ji)
 
         # add directional messages to original ones; afterwards only independent edge transformations
@@ -435,7 +314,7 @@ class DimeNetPPEnergy(hk.Module):
                  num_dense_out: int = 3,
                  num_RBF: int = 6,
                  num_SBF: int = 7,
-                 activation=jax.nn.swish,
+                 activation=nn.swish,
                  envelope_p: int = 6,
                  init_kwargs: Dict[str, Any] = None,
                  name: str = 'Energy'):
@@ -472,7 +351,7 @@ class DimeNetPPEnergy(hk.Module):
             messages = self.int_blocks[i](messages, rbf, sbf, angular_connections)
             per_atom_quantities += self.output_blocks[i + 1](messages, rbf, pair_connections)
 
-        predicted_quantities = util.high_precision_sum(per_atom_quantities, axis=0)  # sum over all atoms
+        predicted_quantities = jax_md_util.high_precision_sum(per_atom_quantities, axis=0)  # sum over all atoms
         return predicted_quantities
 
 
@@ -481,7 +360,7 @@ class PairwiseNNEnergy(hk.Module):
                  r_cutoff: float,
                  hidden_layers,
                  init_kwargs,
-                 activation=jax.nn.swish,
+                 activation=nn.swish,
                  num_rbf: int = 6,
                  envelope_p: int = 6,
                  name: str = 'PairNN'):

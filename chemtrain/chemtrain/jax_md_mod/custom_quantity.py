@@ -10,7 +10,7 @@ from jax import grad, vmap, lax, jacrev, jacfwd, numpy as jnp
 from jax.scipy.stats import norm
 from jax_md import space, util, dataclasses, quantity, simulate
 
-from chemtrain.jax_md_mod import custom_nn
+from chemtrain.jax_md_mod import sparse_graph
 
 Array = util.Array
 
@@ -206,26 +206,6 @@ def init_rdf(displacement_fn, rdf_params, reference_box=None):
     return rdf_compute_fun
 
 
-def angle(r_ij, r_kj):
-    """Computes the angle (kj, ij) from vectors r_kj and r_ij,
-    correctly selecting the quadrant.
-
-    Based on tan(theta) = |(r_ji x r_kj)| / (r_ji . r_kj).
-    Beware non-differentability of arctan2(0,0).
-
-    Args:
-        r_ij: Vector pointing to i from j
-        r_kj: Vector pointing to k from j
-
-    Returns:
-        Angle between vectors
-    """
-    cross = jnp.linalg.norm(jnp.cross(r_ij, r_kj))
-    dot = jnp.dot(r_ij, r_kj)
-    theta = jnp.arctan2(cross, dot)
-    return theta
-
-
 def _triplet_pairwise_displacements(position, neighbor, displacement_fn):
     """For each triplet of particles ijk, computes the displacement vectors
     r_kj = R_k - R_j and r_ij, i.e. the vector pointing from the central
@@ -376,8 +356,8 @@ def init_adf_nbrs(displacement_fn, adf_params, smoothing_dr=0.01, r_init=None,
             #  message to the user to increase max_weights_multiplier
 
         # ensure differentiability of tanh
-        r_ij_safe, r_kj_safe = custom_nn.safe_angle_mask(r_ij, r_kj, mask)
-        angles = vmap(angle)(r_ij_safe, r_kj_safe)
+        r_ij_safe, r_kj_safe = sparse_graph.safe_angle_mask(r_ij, r_kj, mask)
+        angles = vmap(sparse_graph.angle)(r_ij_safe, r_kj_safe)
         adf = weighted_adf(angles, weights)
         return adf
     return adf_fn

@@ -1,6 +1,6 @@
-"""
-The spherical Bessel Function utility file from the original DimeNet implementation
-https://github.com/klicperajo/dimenet. Licenced under Hippocratic License 2.1.
+"""The spherical Bessel Function utility file from the original DimeNet
+implementation (https://github.com/klicperajo/dimenet).
+Licenced under Hippocratic License 2.1.
 """
 
 import numpy as np

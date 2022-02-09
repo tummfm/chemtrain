@@ -1,14 +1,14 @@
+from functools import partial
+from typing import Callable, Tuple, Dict, Any
+
 import jax
 from jax import lax, vmap
 import jax.numpy as jnp
 import haiku as hk
 from jax_md import space, partition, nn, util, energy, smap
 from jax_md.energy import multiplicative_isotropic_cutoff, _sw_radial_interaction, _sw_angle_interaction
-from chemtrain.jax_md_mod import custom_interpolate
-from chemtrain.jax_md_mod import custom_nn
-from functools import partial
 
-from typing import Callable, Tuple, Dict, Any
+from chemtrain.jax_md_mod import custom_interpolate, custom_nn, sparse_graph
 # Types
 f32 = util.f32
 f64 = util.f64
@@ -510,7 +510,7 @@ def DimeNetPP_neighborlist(displacement: DisplacementFn,
     pair_distances_test = space.distance(test_displacement)
     # adds all edges > cut-off to masked edges
     edge_idx_test = jnp.where(pair_distances_test < r_cutoff, neighbor_test.idx, R_test.shape[0])
-    _, _, _, _, (n_edges_init, n_angles_init) = custom_nn.sparse_representation(pair_distances_test, edge_idx_test)
+    _, _, _, _, (n_edges_init, n_angles_init) = sparse_graph.sparse_graph(pair_distances_test, edge_idx_test)
     max_angles = jnp.int32(jnp.ceil(n_angles_init * max_edge_multiplier))
     max_edges = jnp.int32(jnp.ceil(n_edges_init * max_angle_multiplier))
 
@@ -541,15 +541,16 @@ def DimeNetPP_neighborlist(displacement: DisplacementFn,
         # TODO new sparse neighborlist format would simplify building the connectivity
         edge_idx_ji = jnp.where(pair_distances < r_cutoff, neighbor.idx, n_particles)  # adds all edges > cut-off to masked edges
         pair_distances_sparse, pair_connections, angle_idxs, angular_connectivity, (n_edges, n_angles) = \
-            custom_nn.sparse_representation(pair_distances, edge_idx_ji, max_edges, max_angles)
+            sparse_graph.sparse_graph(pair_distances, edge_idx_ji, max_edges, max_angles)
         too_many_edges_error_code = lax.cond(jnp.bitwise_or(n_edges > max_edges, n_angles > max_angles),
                                              lambda _: True, lambda _: False, n_edges)
         # TODO: return too_many_edges_error_code
 
         idx_i, idx_j, pair_mask = pair_connections
+        angle_mask, _, _ = angular_connectivity
         # cutoff all non existing edges: are encoded as 0 by rbf envelope; non-existing angles will also be encoded as 0
         pair_distances_sparse = jnp.where(pair_mask[:, 0], pair_distances_sparse, 2. * r_cutoff)
-        angles = custom_nn.angles_triplets(R, dynamic_displacement, angle_idxs, angular_connectivity)
+        angles = sparse_graph.angle_triplets(R, dynamic_displacement, angle_idxs, angle_mask)
         net = custom_nn.DimeNetPPEnergy(r_cutoff,
                                         n_particles=n_particles,
                                         n_species=n_species,
