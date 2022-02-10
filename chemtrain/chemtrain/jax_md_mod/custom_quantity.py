@@ -496,12 +496,19 @@ def init_bond_length(displacement_fn, bonds, average=False):
 
 
 def kinetic_energy_tensor(state):
-    """Computes the kinetic energy tensor of a single snapshot."""
+    """Computes the kinetic energy tensor of a single snapshot.
+
+    Args:
+        state: Jax_md simulation state
+
+    Returns:
+        Kinetic energy tensor
+    """
     average_velocity = jnp.mean(state.velocity, axis=0)
     thermal_excitation_velocity = state.velocity - average_velocity
     diadic_velocity_product = vmap(lambda v: jnp.outer(v, v))
     velocity_tensors = diadic_velocity_product(thermal_excitation_velocity)
-    return - util.high_precision_sum(state.mass * velocity_tensors, axis=0)
+    return util.high_precision_sum(state.mass * velocity_tensors, axis=0)
 
 
 def virial_potential_part(energy_fn, state, nbrs, box_tensor, **kwargs):
@@ -567,7 +574,7 @@ def init_virial_stress_tensor(energy_fn_template, ref_box_tensor=None,
         spatial_dim = state.position.shape[-1]
         volume = quantity.volume(spatial_dim, box)
         if include_kinetic:
-            kinetic_tensor = kinetic_energy_tensor(state)
+            kinetic_tensor = -1 * kinetic_energy_tensor(state)
             return pressure_sign * (kinetic_tensor + virial_tensor) / volume
         else:
             return pressure_sign * virial_tensor / volume
