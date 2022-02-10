@@ -630,7 +630,6 @@ def dimenetpp_neighborlist(displacement: DisplacementFn,
         net = custom_nn.DimeNetPP(
             r_cutoff,
             n_species,
-            n_particles,
             num_targets=1,
             kbt_dependent=kbt_dependent,
             embed_size=embed_size,

@@ -304,14 +304,13 @@ class OutputBlock(hk.Module):
 
     Predicts per-atom quantities given RBF embeddings and messages.
     """
-    def __init__(self, embed_size, n_particles, out_embed_size=None,
-                 num_dense=3, num_targets=1, activation=nn.swish,
-                 init_kwargs=None, name='Output'):
+    def __init__(self, embed_size, out_embed_size=None, num_dense=3,
+                 num_targets=1, activation=nn.swish, init_kwargs=None,
+                 name='Output'):
         """Initializes an Output block.
 
         Args:
             embed_size: Size of the edge embedding.
-            n_particles: Number of particles in the graph
             out_embed_size: Output size of Linear layers after upsampling
             num_dense: Number of dense layers
             num_targets: Number of target quantities to be predicted
@@ -323,7 +322,6 @@ class OutputBlock(hk.Module):
         if out_embed_size is None:
             out_embed_size = int(2 * embed_size)
 
-        self._n_particles = n_particles
         self._rbf_dense = hk.Linear(embed_size, with_bias=False,
                                     name='RBF_Dense', **init_kwargs)
         self._upprojection = hk.Linear(out_embed_size, with_bias=False,
@@ -341,7 +339,7 @@ class OutputBlock(hk.Module):
         self._dense_final = hk.Linear(num_targets, with_bias=False,
                                       name='Final_output', **init_kwargs)
 
-    def __call__(self, messages, rbf, pair_connectivity):
+    def __call__(self, messages, rbf, pair_connectivity, n_particles):
         """Returns predicted per-atom quantities."""
         idx_i, _ = pair_connectivity
         transformed_rbf = self._rbf_dense(rbf)
@@ -351,7 +349,7 @@ class OutputBlock(hk.Module):
 
         # sum incoming messages for each atom: becomes a per-atom quantity
         summed_messages = util.high_precision_segment_sum(
-            messages, idx_i, num_segments=self._n_particles)
+            messages, idx_i, num_segments=n_particles)
 
         upsampled_messages = self._upprojection(summed_messages)
         for dense_layer in self._dense_layers:
@@ -490,8 +488,7 @@ class DimeNetPP(hk.Module):
     def __init__(self,
                  r_cutoff: float,
                  n_species: int,
-                 n_particles: int,
-                 num_targets: int = 1,
+                 num_targets: int,
                  kbt_dependent: bool = False,
                  embed_size: int = 128,
                  n_interaction_blocks: int = 4,
@@ -516,7 +513,6 @@ class DimeNetPP(hk.Module):
             r_cutoff: Radial cut-off distance of edges
             n_species: Number of different atom species the network is supposed
                        to process.
-            n_particles: TODO
             num_targets: Number of different atomic properties to predict
             kbt_dependent: True, if DimeNet explicitly depends on temperature.
                            In this case 'kT' needs to be provided as a kwarg
@@ -561,8 +557,8 @@ class DimeNetPP(hk.Module):
             embed_size, n_species, type_embed_size, activation, init_kwargs,
             kbt_dependent)
         self._output_blocks.append(OutputBlock(
-            embed_size, n_particles, out_embed_size, num_dense_out,
-            num_targets, activation, init_kwargs)
+            embed_size, out_embed_size, num_dense_out, num_targets, activation,
+            init_kwargs)
         )
 
         for _ in range(n_interaction_blocks):
@@ -572,8 +568,8 @@ class DimeNetPP(hk.Module):
                 basis_int_embed_size)
             )
             self._output_blocks.append(OutputBlock(
-                embed_size, n_particles, out_embed_size, num_dense_out,
-                num_targets, activation, init_kwargs)
+                embed_size, out_embed_size, num_dense_out, num_targets,
+                activation, init_kwargs)
             )
 
     def __call__(self,
@@ -598,7 +594,8 @@ class DimeNetPP(hk.Module):
                        corresponding distance between 2 particles
             angles: A (n_angles,) array storing for each triplet the
                     corresponding angle between the 3 particles
-            species: A (n_particles) array storing the atom type of each paticle
+            species: A (n_particles,) array storing the atom type of each
+                     particle
             pair_connections: A tuple (idx_i, idx_j) of (n_edges,) arrays
                               storing for each edge the particle ID if connected
                               particles i and j.
@@ -616,7 +613,7 @@ class DimeNetPP(hk.Module):
         Returns:
             An (n_partciles, num_targets) array of predicted per-atom quantities
         """
-        # TODO replace num_particles input by size of species
+        n_particles = species.size
         # correctly masked (rbf=0) by construction if edge distance > cut-off:
         rbf = self._rbf_layer(distances)
         # explicitly masked via mask array in angular_connections
@@ -625,13 +622,15 @@ class DimeNetPP(hk.Module):
         messages = self._embedding_layer(rbf, species, pair_connections,
                                          **dyn_kwargs)
         per_atom_quantities = self._output_blocks[0](messages, rbf,
-                                                     pair_connections)
+                                                     pair_connections,
+                                                     n_particles)
 
         for i in range(self._n_interactions):
             messages = self._int_blocks[i](messages, rbf, sbf,
                                            angular_connections)
             per_atom_quantities += self._output_blocks[i + 1](messages, rbf,
-                                                              pair_connections)
+                                                              pair_connections,
+                                                              n_particles)
         return per_atom_quantities
 
 
