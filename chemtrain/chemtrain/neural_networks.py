@@ -1,7 +1,7 @@
 """Some neural network models for potential energy and molecular property
  prediction.
  """
-from functools import partial
+from functools import partial, wraps
 from typing import Callable, Dict, Any, Tuple
 
 import haiku as hk
@@ -494,3 +494,22 @@ def pair_interaction_nn(displacement: space.DisplacementFn,
         return pot_energy
 
     return model.init, model.apply
+
+
+def molecular_property_predictor(model, n_per_atom=None):
+    # TODO test and document
+
+    @wraps(model)
+    def property_wrapper(*args, **kwargs):
+        per_atom_quantities = model(*args, **kwargs)
+
+        if n_per_atom is None:  # all properties global by default
+            return jnp.sum(per_atom_quantities, axis=0)
+        else:
+            n_predicted = per_atom_quantities.shape[1]
+            n_global = n_predicted - n_per_atom
+            per_atom_props = per_atom_quantities[:, n_global:]
+            global_properties = jnp.sum(per_atom_quantities[:, :n_global],
+                                        axis=0)
+            return global_properties, per_atom_props
+    return property_wrapper
