@@ -10,7 +10,7 @@ from jax import grad, vmap, lax, jacrev, jacfwd, numpy as jnp
 from jax.scipy.stats import norm
 from jax_md import space, util, dataclasses, quantity, simulate
 
-from chemtrain.jax_md_mod import sparse_graph
+from chemtrain import sparse_graph
 
 Array = util.Array
 

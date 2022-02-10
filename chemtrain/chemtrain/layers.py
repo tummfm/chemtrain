@@ -1,14 +1,29 @@
 """Jax / haiku implementation of the outstanding DimeNet++ architecture.
 https://github.com/klicperajo/dimenet.
 """
-from typing import Dict, Any, Callable, Tuple
-
 import haiku as hk
-from jax import nn, numpy as jnp, scipy as jsp
-from jax_md import util as jax_md_util
+from jax import nn, ops, numpy as jnp, scipy as jsp
+from jax_md import util
 from sympy import symbols, utilities
 
-from chemtrain.jax_md_mod import dimenet_basis_util, util
+from chemtrain import dimenet_basis_util
+
+
+# util
+def high_precision_segment_sum(data, segment_ids, num_segments=None,
+                               out_type=util.f32, indices_are_sorted=False,
+                               unique_indices=False, bucket_size=None):
+    """Implements the jax.ops.segment_sum, but casts input to float64 before
+    summation and casts back to a target output type afterwards (float32 by
+    default). Used to inprove numerical accuracy of summation.
+    """
+    data = util.f64(data)
+    seg_sum = ops.segment_sum(
+        data, segment_ids, num_segments=num_segments,
+        indices_are_sorted=indices_are_sorted, unique_indices=unique_indices,
+        bucket_size=bucket_size
+    )
+    return out_type(seg_sum)
 
 
 # Initializers
@@ -348,8 +363,8 @@ class OutputBlock(hk.Module):
         messages *= transformed_rbf
 
         # sum incoming messages for each atom: becomes a per-atom quantity
-        summed_messages = util.high_precision_segment_sum(
-            messages, idx_i, num_segments=n_particles)
+        summed_messages = high_precision_segment_sum(messages, idx_i,
+                                                     num_segments=n_particles)
 
         upsampled_messages = self._upprojection(summed_messages)
         for dense_layer in self._dense_layers:
@@ -447,7 +462,7 @@ class InteractionBlock(hk.Module):
         # Sbf1 and 2 only weights, no biases
         m_kj *= sbf
 
-        aggregated_m_ji = util.high_precision_segment_sum(
+        aggregated_m_ji = high_precision_segment_sum(
             m_kj, reduce_to_ji, num_segments=m_input.shape[0])
         propagated_messages = self._up_projection(aggregated_m_ji)
 
@@ -466,203 +481,3 @@ class InteractionBlock(hk.Module):
         for layer in self._res_after_skip:
             m_ji_with_skip = layer(m_ji_with_skip)
         return m_ji_with_skip
-
-
-class DimeNetPP(hk.Module):
-    """DimeNet++ for molecular property prediction.
-
-    This model takes as input a sparse representation of a molecular graph
-    - consisting of pairwise distances and angular triplets - and predicts
-    per-atom properties. Global properties can be obtained by summing over
-    per-atom predictions.
-
-    Non-existing edges from fixed array size requirement are masked implicitly
-    via the RBF envelope function. Hence, masked edges are assumed to be set to
-    a distance > cut-off. Non-existing triplets are masked explicitly in the SBF
-    embedding layer.
-
-    This custom implementation follows the original DimeNet / DimeNet++
-    (https://arxiv.org/abs/2011.14115), while correcting for known issues
-    (see https://github.com/klicperajo/dimenet).
-    """
-    def __init__(self,
-                 r_cutoff: float,
-                 n_species: int,
-                 num_targets: int,
-                 kbt_dependent: bool = False,
-                 embed_size: int = 128,
-                 n_interaction_blocks: int = 4,
-                 num_residual_before_skip: int = 1,
-                 num_residual_after_skip: int = 2,
-                 out_embed_size: int = None,
-                 type_embed_size: int = None,
-                 angle_int_embed_size: int = None,
-                 basis_int_embed_size: int = 8,
-                 num_dense_out: int = 3,
-                 num_rbf: int = 6,
-                 num_sbf: int = 7,
-                 activation: Callable = nn.swish,
-                 envelope_p: int = 6,
-                 init_kwargs: Dict[str, Any] = None,
-                 name: str = 'DimeNetPP'):
-        """Initializes the DimeNet++ model
-
-        The default values correspond to the orinal values of DimeNet++.
-
-        Args:
-            r_cutoff: Radial cut-off distance of edges
-            n_species: Number of different atom species the network is supposed
-                       to process.
-            num_targets: Number of different atomic properties to predict
-            kbt_dependent: True, if DimeNet explicitly depends on temperature.
-                           In this case 'kT' needs to be provided as a kwarg
-                           during the model call to the energy_fn. Default False
-                           results in a model independent of temperature.
-            embed_size: Size of message embeddings. Scale interaction and output
-                        embedding sizes accordingly, if not specified
-                        explicitly.
-            n_interaction_blocks: Number of interaction blocks
-            num_residual_before_skip: Number of residual blocks before the skip
-                                      connection in the Interaction block.
-            num_residual_after_skip: Number of residual blocks after the skip
-                                     connection in the Interaction block.
-            out_embed_size: Embedding size of output block.
-                            If None is set to 2 * embed_size.
-            type_embed_size: Embedding size of atom type embeddings.
-                             If None is set to 0.5 * embed_size.
-            angle_int_embed_size: Embedding size of Linear layers for
-                                  down-projected triplet interation.
-                                  If None is 0.5 * embed_size.
-            basis_int_embed_size: Embedding size of Linear layers for interation
-                                  of RBS/ SBF basis in interaction block
-            num_dense_out: Number of final Linear layers in output block
-            num_rbf: Number of radial Bessel embedding functions
-            num_sbf: Number of spherical Bessel embedding functions
-            activation: Activation function
-            envelope_p: Power of envelope polynomial
-            init_kwargs: Kwargs for initializaion of Linear layers
-            name: Name of DimeNet++ model
-        """
-        super().__init__(name=name)
-        # input representation:
-        self._rbf_layer = RadialBesselLayer(r_cutoff, num_rbf, envelope_p)
-        self._sbf_layer = SphericalBesselLayer(r_cutoff, num_sbf, num_rbf,
-                                               envelope_p)
-
-        # build GNN structure
-        self._n_interactions = n_interaction_blocks
-        self._output_blocks = []
-        self._int_blocks = []
-        self._embedding_layer = EmbeddingBlock(
-            embed_size, n_species, type_embed_size, activation, init_kwargs,
-            kbt_dependent)
-        self._output_blocks.append(OutputBlock(
-            embed_size, out_embed_size, num_dense_out, num_targets, activation,
-            init_kwargs)
-        )
-
-        for _ in range(n_interaction_blocks):
-            self._int_blocks.append(InteractionBlock(
-                embed_size, num_residual_before_skip, num_residual_after_skip,
-                activation, init_kwargs, angle_int_embed_size,
-                basis_int_embed_size)
-            )
-            self._output_blocks.append(OutputBlock(
-                embed_size, out_embed_size, num_dense_out, num_targets,
-                activation, init_kwargs)
-            )
-
-    def __call__(self,
-                 distances: jnp.ndarray,
-                 angles: jnp.ndarray,
-                 species: jnp.ndarray,
-                 pair_connections: Tuple[jnp.ndarray, jnp.ndarray],
-                 angular_connections: Tuple[jnp.ndarray, jnp.ndarray,
-                                            jnp.ndarray],
-                 **dyn_kwargs) -> jnp.ndarray:
-        """Predicts per-atom quantities for a given molecular graph.
-
-        If edges and triplets are supposted to be masked, beware the different
-        masking conventions: Edges are masked implicitly. This implementation
-        assumes that a masked edge has a distance > cut-off, such that the RBF
-        layer automatically masks the edge. By contrast, as triplets cannot be
-        masked in an analogous way by the SBF layer, an explicit triplet mask
-        array needs to be provided as part of 'angular_connections'.
-
-        Args:
-            distances: A (n_edges,) array storing for each edge the
-                       corresponding distance between 2 particles
-            angles: A (n_angles,) array storing for each triplet the
-                    corresponding angle between the 3 particles
-            species: A (n_particles,) array storing the atom type of each
-                     particle
-            pair_connections: A tuple (idx_i, idx_j) of (n_edges,) arrays
-                              storing for each edge the particle ID if connected
-                              particles i and j.
-            angular_connections: A tuple (angle_mask, reduce_to_ji,
-                                 expand_to_kj) of (n_angles,) arrays. angle_mask
-                                 stores for each triplet if it is real (True) or
-                                 not (False). reduce_to_ji stores for each
-                                 triplet kji edge index j->i to aggregate
-                                 messages via a segment_sum. expand_to_kj stores
-                                 for all triplets kji edge index k->j to gather
-                                 all incoming edges for message passing.
-            **dyn_kwargs: Kwargs supplied on-the-fly, uch as 'kT' for
-                          temperature-dependent models.
-
-        Returns:
-            An (n_partciles, num_targets) array of predicted per-atom quantities
-        """
-        n_particles = species.size
-        # correctly masked (rbf=0) by construction if edge distance > cut-off:
-        rbf = self._rbf_layer(distances)
-        # explicitly masked via mask array in angular_connections
-        sbf = self._sbf_layer(distances, angles, angular_connections)
-
-        messages = self._embedding_layer(rbf, species, pair_connections,
-                                         **dyn_kwargs)
-        per_atom_quantities = self._output_blocks[0](messages, rbf,
-                                                     pair_connections,
-                                                     n_particles)
-
-        for i in range(self._n_interactions):
-            messages = self._int_blocks[i](messages, rbf, sbf,
-                                           angular_connections)
-            per_atom_quantities += self._output_blocks[i + 1](messages, rbf,
-                                                              pair_connections,
-                                                              n_particles)
-        return per_atom_quantities
-
-
-class PairwiseNNEnergy(hk.Module):
-    """A neural network predicting the potential energy from pairwise
-     interactions.
-     """
-    def __init__(self,
-                 r_cutoff: float,
-                 hidden_layers,
-                 init_kwargs,
-                 activation=nn.swish,
-                 num_rbf: int = 6,
-                 envelope_p: int = 6,
-                 name: str = 'PairNN'):
-        super().__init__(name=name)
-        self.embedding = RadialBesselLayer(r_cutoff, num_radial=num_rbf,
-                                           envelope_p=envelope_p)
-        self.pair_nn = hk.nets.MLP(hidden_layers, activation=activation,
-                                   **init_kwargs)
-        self.rbf_transform = hk.Linear(1, with_bias=False, name='RBF_Transform',
-                                       **init_kwargs)
-
-    def __call__(self, distances, species=None, **kwargs):
-        # ensure differentiability construction: rbf=0 for r > r_cut
-        rbf = self.embedding(distances)
-        predicted_energies = self.pair_nn(rbf)
-
-        # rbf_transform has no bias: masked pairs remain 0 and counteract
-        # possible non-zero contribution from biases in MPL (in a continuously
-        # differentiable manner)
-        per_pair_energy = predicted_energies * self.rbf_transform(rbf)
-        # pairs are counted twice
-        total_energy = jax_md_util.high_precision_sum(per_pair_energy) / 2.
-        return total_energy
