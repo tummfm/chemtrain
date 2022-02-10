@@ -25,18 +25,22 @@ def angle(r_ij, r_kj):
 
 
 def safe_angle_mask(r_ji, r_kj, angle_mask):
-    """Sets masked angles to pI/2 to ensure differentiablility.
+    """Sets masked angles to pi/2 to ensure differentiablility.
 
     Args:
-        r_ji: Vector pointing to position of particle i from particle j
-        r_kj: Vector pointing to position of particle k from particle j
-        angle_mask: Boolean mask for each triplet, which is False for triplets
-                    that need to be masked.
+        r_ji: Array (N_triplets, dim) of vectors  pointing to position of
+              particle i from particle j
+        r_kj: Array (N_triplets, dim) of vectors pointing to position of
+              particle k from particle j
+        angle_mask: (N_triplets, ) or (N_triplets, 1) Boolean mask for each
+                    triplet, which is False for triplets that need to be masked.
 
     Returns:
         A tuple (r_ji_safe, r_kj_safe) of vectors r_ji and r_kj, where masked
         triplets are replaced such that the angle between them is pi/2.
     """
+    if angle_mask.ndim == 1:  # expand for broadcasing, if necessary
+        angle_mask = jnp.expand_dims(angle_mask, -1)
     safe_ji = jnp.array([1., 0., 0.], dtype=jnp.float32)
     safe_kj = jnp.array([0., 1., 0.], dtype=jnp.float32)
     r_ji_safe = jnp.where(angle_mask, r_ji, safe_ji)
@@ -178,8 +182,7 @@ def sparse_graph(pair_distances, edge_idx_ji, max_edges=None, max_angles=None):
     # stores for each angle kji edge index k->j to gather all incoming edges
     # for message passing
     expand_to_kj = edge_id_lookup_direct[(angle_idxs[:, 1], angle_idxs[:, 2])]
-    angle_connectivity = (jnp.expand_dims(angle_mask, -1), reduce_to_ji,
-                          expand_to_kj)
+    angle_connectivity = (angle_mask, reduce_to_ji, expand_to_kj)
 
     return d_ij, pair_indicies, angle_idxs, angle_connectivity, (n_edges,
                                                                  n_angles)
