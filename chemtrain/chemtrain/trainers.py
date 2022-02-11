@@ -1,10 +1,12 @@
 """This file contains several Trainer classes as a quickstart for users."""
+from multiprocessing.sharedctypes import Value
 import warnings
 
 from blackjax import nuts, stan_warmup
 from coax.utils._jit import jit
 from jax import device_count, value_and_grad, random, numpy as jnp
 from jax_sgmc import data
+import tree
 
 from chemtrain import (util, force_matching, traj_util, reweighting,
                        probabilistic)
@@ -639,6 +641,24 @@ class RelativeEntropy(reweighting.PropagationBase):
                                                          save_best_params=False)
 
 
+# TODO: Consider moving this function definition to util.py
+# TODO: Does not support multiple chains yet! Need to define standard output format for those resultsf first!
+# Shouldn't be too hard.. Just add another loop/append structure over all chain elementens 1...c...C
+# TODO: List comprehension statt loop --> check whether it works
+import numpy as onp
+from chemtrain.util import tree_get_single
+def convert_to_list(params):
+    """Converts parameters returned by different trainers to a standartized output
+    format that is then accepted by all post processing routines
+    """
+    # params = results[0]['samples']['variables']['params']
+    n_samples = onp.shape(params._leaves[0])[0]
+    # Loop over all samples, extract one and append to list of samples
+    param_list = [tree_get_single(params, n) for n in range(n_samples)]
+    return param_list
+
+import cloudpickle as pickle
+from chemtrain.util import format_not_recognized_error
 class SGMCForceMatching(util.ProbabilisticFMTrainerTemplate):
     """Trainer for stochastic gradient Markov-chain Monte Carlo training
     based on force-matching.
@@ -664,10 +684,10 @@ class SGMCForceMatching(util.ProbabilisticFMTrainerTemplate):
 
     @property
     def params(self):
+        # TODO: Need to edit this for multiple chains!
         params = []
         for chain in self.results:
-            for param_set in chain['samples']['variables']['params']:
-                params.append(param_set)
+            params = chain['samples']['variables']['params']  
         return params
 
     @params.setter

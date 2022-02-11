@@ -107,11 +107,21 @@ def tree_norm(tree):
     return sum(jnp.vdot(x, x) for x in leaves)
 
 
-def tree_get_single(tree):
-    """Returns the first tree of a tree-replica, e.g. from pmap and and moves
-    it to the default device.
+def tree_get_single(tree, n=0):
+    """Returns the n-th. tree of a tree-replica, e.g. from pmap. 
+    If not specified, first tree is returned!
     """
-    single_tree = tree_map(lambda x: jnp.array(x[0]), tree)
+    single_tree = tree_map(lambda x: jnp.array(x[n]), tree)
+    return single_tree
+
+
+# TODO: Add a equidistance functionality here?
+def tree_get_slice(tree, n, position='first'):
+    """Returns a slice of size n of trees taken from a tree-replica, e.g. from pmap.
+    Can either take first n or last n trees inside the tree-replica. 
+    """
+    if position=='first':
+        single_tree = tree_map(lambda x: jnp.array(x[0:n]), tree)
     return single_tree
 
 
