@@ -694,21 +694,24 @@ class NUTSForceMatching(probabilistic.MCMCForceMatchingTemplate):
                  inv_mass_matrix=None, checkpoint_folder='Checkpoints',
                  ref_energy_fn_template=None, init_prng_key=random.PRNGKey(0)):
         checkpoint_path = 'output/NUTS/' + str(checkpoint_folder)
-        init_state = nuts.new_state(init_sample, self.log_posterior_fn)
+
+        log_posterior_fn = probabilistic.init_log_posterior_fn(
+            likelihood, prior, train_loader, batch_size, batch_cache
+        )
+        init_state = nuts.new_state(init_sample, log_posterior_fn)
 
         if step_size is None or inv_mass_matrix is None:
             def warmup_gen_fn(step, inverse_mass_matrix):
-                return nuts.kernel(self.log_posterior_fn, step,
+                return nuts.kernel(log_posterior_fn, step,
                                    inverse_mass_matrix)
 
             init_state, (step_size, inv_mass_matrix), info = stan_warmup.run(
                 init_prng_key, warmup_gen_fn, init_state, warmup_steps)
             print('Finished warmup.\n', info)
 
-        kernel = nuts.kernel(self.log_posterior_fn, step_size,
+        kernel = nuts.kernel(log_posterior_fn, step_size,
                              inv_mass_matrix)
-        super().__init__(init_state, prior, likelihood, kernel, train_loader,
-                         batch_cache, batch_size, checkpoint_path, val_loader,
+        super().__init__(init_state, kernel, checkpoint_path, val_loader,
                          ref_energy_fn_template)
 
 

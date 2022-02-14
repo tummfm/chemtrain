@@ -13,6 +13,9 @@ import tree_math
 from chemtrain import force_matching, util, traj_util, dropout
 
 
+# Modeling
+
+
 def uniform_prior(sample):
     """Uniform improper prior function.
 
@@ -195,35 +198,38 @@ def init_force_matching(
     return prior_fn, likelihood_fn, init_samples, train_loader, val_loader
 
 
-def validation_mae_params_fm(params, val_loader, energy_fn_template, nbrs_init,
-                             box_tensor=None, batch_size=1, batch_cache=1):
-    """Evaluates the mean absolute error of a list of parameter sets generated
-    via sampling-based methods, based on validation data and a force-matching
-    likelihood.
+def init_log_posterior_fn(likelihood, prior, train_loader, batch_size,
+                          batch_cache):
+    """Initializes the log-posterior function.
+
+    Initializes a function that computes the log-posterior value of a parameter
+    sample. The full log-posterior is computed batch-wise to avoid out-of-memory
+    errors during the forward and backward pass.
+
+    Args:
+        likelihood: Likelihood function
+        prior: Prior function
+        train_loader: Train data loader
+        batch_size: Batch-size for batch-wise computation of the sub-likelihoods
+        batch_cache: Number of batches to store in cache
+
+    Returns:
+        Log-posterior function
     """
+    likelihood = checkpoint(likelihood)  # avoid OOM for grad over whole dataset
+    full_potential_fn = potential.full_potential(prior, likelihood,
+                                                 strategy='vmap')
+    init_fun, fmap_fun = data.full_reference_data(train_loader,
+                                                  batch_cache,
+                                                  batch_size)
+    data_state = init_fun()
 
-    # test if virial data is contained in val_loader and initialize virial_fn
-    # according to the virial data type.
-    test_batch = val_loader.initializer_batch(batch_size)
-    if 'p' in test_batch:
-        test_virial = test_batch['p']
-    else:
-        test_virial = None
-
-    virial_fn = force_matching.init_virial_fn(test_virial, energy_fn_template,
-                                              box_tensor)
-    mae_fn, mae_data_state = force_matching.init_mae_fn(
-        val_loader, nbrs_init, energy_fn_template,
-        batch_size, batch_cache, virial_fn
-    )
-
-    maes = []
-    for i, param_set in enumerate(params):
-        mae, mae_data_state = mae_fn(param_set, mae_data_state)
-        maes.append(mae)
-        for key, mae_value in mae.items():
-            print(f'Parameter set {i}: {key}: MAE = {mae_value:.4f}')
-    return maes
+    # TODO this is not valid with dataloader; possibly use masked
+    #  epoch-wise loader
+    def log_posterior_fn(sample):
+        potential_val, _ = full_potential_fn(sample, data_state, fmap_fun)
+        return -potential_val  # potential is negative posterior
+    return log_posterior_fn
 
 # Trainers
 
@@ -262,29 +268,14 @@ class MCMCForceMatchingTemplate(ProbabilisticFMTrainerTemplate):
     """Initializes log_posterior function to be used for MCMC with blackjax,
     including batch-wise evaluation of the likelihood and re-materialization.
     """
-    def __init__(self, init_state, prior, likelihood, kernel, train_loader,
-                 batch_cache, batch_size, checkpoint_path, val_loader=None,
+    def __init__(self, init_state, kernel, checkpoint_path, val_loader=None,
                  ref_energy_fn_template=None):
         super().__init__(checkpoint_path, ref_energy_fn_template, val_loader)
         # re-materialization of the likelihood for each batch of data allows
         # circumventing the enormous memory requirements of backpropagating
         # through the full potential - at the expense of additional
         # computational cost.
-        likelihood = checkpoint(likelihood)
-        full_potential_fn = potential.full_potential(prior, likelihood,
-                                                     strategy='vmap')
-        init_fun, fmap_fun = data.full_reference_data(train_loader,
-                                                      batch_cache,
-                                                      batch_size)
-        data_state = init_fun()
 
-        def log_posterior_fn(sample):
-            # TODO this is not valid with dataloader; possibly use masked
-            #  epoch-wise loader
-            potential_val, _ = full_potential_fn(sample, data_state, fmap_fun)
-            return -potential_val  # potential is negative posterior
-
-        self.log_posterior_fn = log_posterior_fn
         self.kernel = jit(kernel)
         self.state = init_state
 
@@ -401,3 +392,34 @@ def mcmc_statistics(uq_predictions):
         statistics[quantity_key] = {'mean': jnp.mean(quantity_samples, axis=0),
                                     'std': jnp.std(quantity_samples, axis=0)}
     return statistics
+
+
+def validation_mae_params_fm(params, val_loader, energy_fn_template, nbrs_init,
+                             box_tensor=None, batch_size=1, batch_cache=1):
+    """Evaluates the mean absolute error of a list of parameter sets generated
+    via sampling-based methods, based on validation data and a force-matching
+    likelihood.
+    """
+
+    # test if virial data is contained in val_loader and initialize virial_fn
+    # according to the virial data type.
+    test_batch = val_loader.initializer_batch(batch_size)
+    if 'p' in test_batch:
+        test_virial = test_batch['p']
+    else:
+        test_virial = None
+
+    virial_fn = force_matching.init_virial_fn(test_virial, energy_fn_template,
+                                              box_tensor)
+    mae_fn, mae_data_state = force_matching.init_mae_fn(
+        val_loader, nbrs_init, energy_fn_template,
+        batch_size, batch_cache, virial_fn
+    )
+
+    maes = []
+    for i, param_set in enumerate(params):
+        mae, mae_data_state = mae_fn(param_set, mae_data_state)
+        maes.append(mae)
+        for key, mae_value in mae.items():
+            print(f'Parameter set {i}: {key}: MAE = {mae_value:.4f}')
+    return maes
