@@ -193,6 +193,12 @@ def tree_unstack(tree):
 #     return param_list
 
 
+def assert_distributable(total_samples, n_devies, vmap_per_device):
+    assert total_samples % (n_devies * vmap_per_device) == 0, (
+        'For parallelization, the samples need to be evenly distributed'
+        'over the devices and vmap, i.e. be a multiple of n_devices * n_vmap.')
+
+
 def get_dataset(configuration_str, retain=None, subsampling=1):
     data = onp.load(configuration_str)
     data = data[:retain:subsampling]
@@ -516,34 +522,3 @@ class EarlyStopping:
     def move_to_device(self):
         """Moves best_params to device to use them after loading trainer."""
         self.best_params = tree_map(jnp.array, self.best_params)
-
-
-class ProbabilisticFMTrainerTemplate(TrainerInterface):
-    """Trainer template for methods that result in multiple parameter sets for
-    Monte-Carlo-style uncertainty quantification, based on a force-matching
-    formulation.
-    """
-    def __init__(self, checkpoint_path, energy_fn_template,
-                 val_dataloader=None):
-        super().__init__(checkpoint_path, energy_fn_template)
-        self.results = []
-
-        # TODO use val_loader for some metrics that are interesting for MCMC
-        #  and SG-MCMC
-
-    def move_to_device(self):
-        params = []
-        for param_set in self.params:
-            params.append(tree_map(jnp.array, param_set))  # move on device
-        self.params = params
-
-    @property
-    @abc.abstractmethod
-    def list_of_params(self):
-        """ Returns a list containing n single model parameter sets, where n
-        is the number of samples. This provides a more intuitive parameter
-        interface that self.params, which returns a large set of parameters,
-        where n is the leading axis of each leaf. Self.params is most useful,
-        if parameter sets are mapped via map or vmap in a postprocessing step.
-        """
-

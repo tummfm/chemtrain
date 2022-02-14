@@ -639,7 +639,7 @@ class RelativeEntropy(reweighting.PropagationBase):
                                                          save_best_params=False)
 
 
-class SGMCForceMatching(util.ProbabilisticFMTrainerTemplate):
+class SGMCForceMatching(probabilistic.ProbabilisticFMTrainerTemplate):
     """Trainer for stochastic gradient Markov-chain Monte Carlo training
     based on force-matching.
 
@@ -712,7 +712,7 @@ class NUTSForceMatching(probabilistic.MCMCForceMatchingTemplate):
                          ref_energy_fn_template)
 
 
-class EnsembleOfModels(util.ProbabilisticFMTrainerTemplate):
+class EnsembleOfModels(probabilistic.ProbabilisticFMTrainerTemplate):
     """Train an ensemble of models by starting optimization from different
     initial parameter sets, for use in uncertainty quantification applications.
     """

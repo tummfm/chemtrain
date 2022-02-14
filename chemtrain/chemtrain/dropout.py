@@ -2,9 +2,8 @@
 
 import haiku as hk
 import jax.nn
-from jax import random, vmap, jit, lax, numpy as jnp
-from jax_md import quantity
-from chemtrain import difftre, util
+from jax import random, numpy as jnp
+
 
 # Note: This implementation currently stores the RNG key as float32
 #  rather than uint32. This way, both energy_params and the RNG key
@@ -15,6 +14,7 @@ from chemtrain import difftre, util
 #  branching if dropout is used or not.
 # TODO implement properly, where branching is done at optimizer init
 #  and update as well as gradient computation
+
 
 def split_dropout_params(meta_params):
     """Splitting up meta params, built up by energy_params and
@@ -183,98 +183,3 @@ def dimenetpp_dropout_setup(setup_dict,
             dropout_setup[layer] = overall_dropout_rate
 
     return dropout_setup
-
-
-def init_force_uq(energy_fn_template, n_splits=16, vmap_batch_size=1):
-    n_devies = jax.device_count()
-    util.assert_distribuatable(n_splits, n_devies, vmap_batch_size)
-
-    @jit
-    def forces(keys, energy_params, sim_state):
-
-        def single_force(key):
-            state, nbrs = sim_state  # assumes state and nbrs to be in sync
-            dropout_params = build_dropout_params(energy_params, key)
-            energy_fn = energy_fn_template(dropout_params)
-            force_fn = quantity.canonicalize_force(energy_fn)
-            return force_fn(state.position, neighbor=nbrs)
-
-        # map in case not all necessary samples per device fit memory for vmap
-        mapped_force = lax.map(single_force, keys)
-        return mapped_force
-
-    def force_uq(meta_params, sim_state):
-        energy_params, key = split_dropout_params(meta_params)
-        keys = random.split(key, n_splits)
-        keys = keys.reshape((vmap_batch_size, -1, 2))  # 2 values per key
-        # TODO add pmap
-        # keys = keys.reshape((n_devies, vmap_batch_size, -1, 2))
-        vmap_forces = vmap(forces, (0, None, None))
-        batched_forces = vmap_forces(keys, energy_params, sim_state)
-        shape = batched_forces.shape
-        # reshape such that all sampled force predictions are along axis 0
-        lined_forces = batched_forces.reshape((-1, shape[-2], shape[-1]))
-        # TODO check that std and forces are correct
-        f_std_per_atom = jnp.std(lined_forces, axis=0)
-        mean_std = jnp.mean(f_std_per_atom)
-        return mean_std
-
-    return force_uq
-
-
-def infer_output_uncertainty(meta_params, init_state, trajectory_generator,
-                             quantities, neighbor_fn, total_samples,
-                             kt_schedule=None, vmap_simulations_per_device=1):
-    n_devies = jax.device_count()
-
-    # Check whether dropout was used or not
-    dropout_active = dropout_is_used(meta_params)
-    # TODO add vmap
-    # TODO add pmap
-
-    if dropout_active:
-        # If dropout is active (i.e. we need keys to map over)
-        energy_params, key = split_dropout_params(meta_params)
-        keys = random.split(key, total_samples)
-
-        def single_prediction(key):
-            params = build_dropout_params(energy_params, key)
-            traj_state = trajectory_generator(params,
-                                            init_state,
-                                            kt_schedule=kt_schedule)
-            quantity_traj = difftre.quantity_traj(traj_state, quantities,
-                                                neighbor_fn, params)
-            predictions = {}
-            for quantity_key in quantities:
-                quantity_snapshots = quantity_traj[quantity_key]
-                predictions[quantity_key] = jnp.mean(quantity_snapshots, axis=0)
-            return predictions
-    else:
-         # If dropout is not active (mapp over energy_params directly)
-        def single_prediction(params):
-            traj_state = trajectory_generator(params,
-                                            init_state,
-                                            kt_schedule=kt_schedule)
-            quantity_traj = difftre.quantity_traj(traj_state, quantities,
-                                                neighbor_fn, params)
-            predictions = {}
-            for quantity_key in quantities:
-                quantity_snapshots = quantity_traj[quantity_key]
-                predictions[quantity_key] = jnp.mean(quantity_snapshots, axis=0)
-            return predictions
-
-    # accumulates predictions in axis 0 of leaves of prediction_dict
-    if dropout_active:
-        predictions = lax.map(single_prediction, keys)
-    else:
-        predictions = lax.map(single_prediction, meta_params)
-    return predictions
-
-
-def mcmc_statistics(uq_predictions):
-    statistics = {}
-    for quantity_key in uq_predictions:
-        quantity_samples = uq_predictions[quantity_key]
-        statistics[quantity_key] = {'mean': jnp.mean(quantity_samples, axis=0),
-                                    'std': jnp.std(quantity_samples, axis=0)}
-    return statistics

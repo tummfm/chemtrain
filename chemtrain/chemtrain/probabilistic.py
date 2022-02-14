@@ -1,13 +1,16 @@
 """This module provides utilities for setting up probabilistic trainers,
  such as trainers.SGMC"""
+import abc
 import time
 
-from jax import checkpoint, random, jit, scipy as jscipy, numpy as jnp
+from jax import (lax, vmap, checkpoint, random, jit, device_count,
+                 scipy as jscipy, numpy as jnp, tree_map)
+from jax_md import quantity
 from jax_sgmc import data, potential
 from scipy import stats
 import tree_math
 
-from chemtrain import force_matching, util
+from chemtrain import force_matching, util, traj_util, dropout
 
 
 def uniform_prior(sample):
@@ -222,8 +225,40 @@ def validation_mae_params_fm(params, val_loader, energy_fn_template, nbrs_init,
             print(f'Parameter set {i}: {key}: MAE = {mae_value:.4f}')
     return maes
 
+# Trainers
 
-class MCMCForceMatchingTemplate(util.ProbabilisticFMTrainerTemplate):
+
+class ProbabilisticFMTrainerTemplate(util.TrainerInterface):
+    """Trainer template for methods that result in multiple parameter sets for
+    Monte-Carlo-style uncertainty quantification, based on a force-matching
+    formulation.
+    """
+    def __init__(self, checkpoint_path, energy_fn_template,
+                 val_dataloader=None):
+        super().__init__(checkpoint_path, energy_fn_template)
+        self.results = []
+
+        # TODO use val_loader for some metrics that are interesting for MCMC
+        #  and SG-MCMC
+
+    def move_to_device(self):
+        params = []
+        for param_set in self.params:
+            params.append(tree_map(jnp.array, param_set))  # move on device
+        self.params = params
+
+    @property
+    @abc.abstractmethod
+    def list_of_params(self):
+        """ Returns a list containing n single model parameter sets, where n
+        is the number of samples. This provides a more intuitive parameter
+        interface that self.params, which returns a large set of parameters,
+        where n is the leading axis of each leaf. Self.params is most useful,
+        if parameter sets are mapped via map or vmap in a postprocessing step.
+        """
+
+
+class MCMCForceMatchingTemplate(ProbabilisticFMTrainerTemplate):
     """Initializes log_posterior function to be used for MCMC with blackjax,
     including batch-wise evaluation of the likelihood and re-materialization.
     """
@@ -281,3 +316,88 @@ class MCMCForceMatchingTemplate(util.ProbabilisticFMTrainerTemplate):
     def params(self, loaded_params):
         raise NotImplementedError('Setting params seems not meaningful for MCMC'
                                   ' samplers.')
+
+
+# Uncertainty propagation
+
+def init_force_uq(energy_fn_template, n_splits=16, vmap_batch_size=1):
+    n_devies = device_count()
+    util.assert_distributable(n_splits, n_devies, vmap_batch_size)
+
+    @jit
+    def forces(keys, energy_params, sim_state):
+
+        def single_force(key):
+            state, nbrs = sim_state  # assumes state and nbrs to be in sync
+            dropout_params = dropout.build_dropout_params(energy_params, key)
+            energy_fn = energy_fn_template(dropout_params)
+            force_fn = quantity.canonicalize_force(energy_fn)
+            return force_fn(state.position, neighbor=nbrs)
+
+        # map in case not all necessary samples per device fit memory for vmap
+        mapped_force = lax.map(single_force, keys)
+        return mapped_force
+
+    def force_uq(meta_params, sim_state):
+        energy_params, key = dropout.split_dropout_params(meta_params)
+        keys = random.split(key, n_splits)
+        keys = keys.reshape((vmap_batch_size, -1, 2))  # 2 values per key
+        # TODO add pmap
+        # keys = keys.reshape((n_devies, vmap_batch_size, -1, 2))
+        vmap_forces = vmap(forces, (0, None, None))
+        batched_forces = vmap_forces(keys, energy_params, sim_state)
+        shape = batched_forces.shape
+        # reshape such that all sampled force predictions are along axis 0
+        lined_forces = batched_forces.reshape((-1, shape[-2], shape[-1]))
+        # TODO check that std and forces are correct
+        f_std_per_atom = jnp.std(lined_forces, axis=0)
+        mean_std = jnp.mean(f_std_per_atom)
+        return mean_std
+
+    return force_uq
+
+
+def infer_output_uncertainty(param_sets, init_state, trajectory_generator,
+                             quantities, total_samples, kt_schedule=None,
+                             vmap_simulations_per_device=1):
+    n_devies = device_count()
+
+    # Check whether dropout was used or not
+    dropout_active = dropout.dropout_is_used(param_sets)
+    # TODO add vmap
+    # TODO add pmap
+
+    if dropout_active:  # map over keys
+        energy_params, key = dropout.split_dropout_params(param_sets)
+        param_sets = random.split(key, total_samples)
+
+    def single_prediction(mapped_param):
+        if dropout_active:  # param == key and we extract new parameter set
+            param_set = dropout.build_dropout_params(energy_params,
+                                                     mapped_param)
+        else:
+            param_set = mapped_param
+
+        traj_state = trajectory_generator(param_set, init_state,
+                                          kt_schedule=kt_schedule)
+        quantity_traj = traj_util.quantity_traj(traj_state, quantities,
+                                                param_set)
+        # TODO replace with new interface of DiffTRe:
+        predictions = {}
+        for quantity_key in quantities:
+            quantity_snapshots = quantity_traj[quantity_key]
+            predictions[quantity_key] = jnp.mean(quantity_snapshots, axis=0)
+        return predictions
+
+    # accumulates predictions in axis 0 of leaves of prediction_dict
+    predictions = lax.map(single_prediction, param_sets)
+    return predictions
+
+
+def mcmc_statistics(uq_predictions):
+    statistics = {}
+    for quantity_key in uq_predictions:
+        quantity_samples = uq_predictions[quantity_key]
+        statistics[quantity_key] = {'mean': jnp.mean(quantity_samples, axis=0),
+                                    'std': jnp.std(quantity_samples, axis=0)}
+    return statistics
