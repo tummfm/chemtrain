@@ -664,10 +664,11 @@ class SGMCForceMatching(util.ProbabilisticFMTrainerTemplate):
 
     @property
     def params(self):
+        assert len(self.results) == 1, 'Not implemented for multiple chains'
+        # TODO: Need to edit this for multiple chains!
         params = []
         for chain in self.results:
-            for param_set in chain['samples']['variables']['params']:
-                params.append(param_set)
+            params = chain['samples']['variables']['params']
         return params
 
     @params.setter
@@ -675,6 +676,9 @@ class SGMCForceMatching(util.ProbabilisticFMTrainerTemplate):
         raise NotImplementedError('Setting params seems not meaningful in'
                                   ' the case of SG-MCMC samplers.')
 
+    @property
+    def list_of_params(self):
+        return util.tree_unstack(self.params)
     # TODO override save functions such that only saving parameters is allowed
     #  - or whatever checkpointing jax-sgmc supports (or does checkpointing work
     #  with more liberal coax._jit?)
@@ -724,6 +728,15 @@ class EnsembleOfModels(util.ProbabilisticFMTrainerTemplate):
 
     @property
     def params(self):
+        return util.tree_stack(self.list_of_params)
+
+    @params.setter
+    def params(self, loaded_params):
+        for i, params in enumerate(loaded_params):
+            self.trainers[i].params = params
+
+    @property
+    def list_of_params(self):
         params = []
         for trainer in self.trainers:
             if hasattr(trainer, 'best_params'):
@@ -731,8 +744,3 @@ class EnsembleOfModels(util.ProbabilisticFMTrainerTemplate):
             else:
                 params.append(trainer.params)
         return params
-
-    @params.setter
-    def params(self, loaded_params):
-        for i, params in enumerate(loaded_params):
-            self.trainers[i].params = params

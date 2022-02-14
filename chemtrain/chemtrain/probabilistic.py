@@ -270,8 +270,12 @@ class MCMCForceMatchingTemplate(util.ProbabilisticFMTrainerTemplate):
             self._dump_checkpoint_occasionally(frequency=checkpoint_freq)
 
     @property
-    def params(self):
+    def list_of_params(self):
         return [state.position['params'] for state in self.results]
+
+    @property
+    def params(self):
+        return util.tree_stack(self.list_of_params)
 
     @params.setter
     def params(self, loaded_params):

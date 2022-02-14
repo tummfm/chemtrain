@@ -107,12 +107,17 @@ def tree_norm(tree):
     return sum(jnp.vdot(x, x) for x in leaves)
 
 
-def tree_get_single(tree):
-    """Returns the first tree of a tree-replica, e.g. from pmap and and moves
-    it to the default device.
+def tree_get_single(tree, n=0):
+    """Returns the n-th tree of a tree-replica, e.g. from pmap.
+    By default, the first tree is returned.
     """
-    single_tree = tree_map(lambda x: jnp.array(x[0]), tree)
+    single_tree = tree_map(lambda x: jnp.array(x[n]), tree)
     return single_tree
+
+
+def tree_get_slice(tree, idx_start, idx_stop, take_every=1):
+    """Returns a slice of trees taken from a tree-replica along axis 0."""
+    return tree_map(lambda x: jnp.array(x[idx_start:idx_stop:take_every]), tree)
 
 
 def tree_replicate(tree, n_devices):
@@ -135,6 +140,57 @@ def tree_mean(tree_list):
         return jnp.mean(jnp.stack(leafs), axis=0)
 
     return tree_add_imp(*tree_list)
+
+
+def tree_stack(trees):
+    """Takes a list of trees and stacks every corresponding leaf.
+
+    For example, given two trees ((a, b), c) and ((a', b'), c'), returns
+    ((stack(a, a'), stack(b, b')), stack(c, c')).
+    Useful for turning a list of objects into something you can feed to a
+    vmapped function.
+
+    From: https://gist.github.com/willwhitney/dd89cac6a5b771ccff18b06b33372c75
+    """
+    leaves_list = []
+    treedef_list = []
+    for tree in trees:
+        leaves, treedef = tree_flatten(tree)
+        leaves_list.append(leaves)
+        treedef_list.append(treedef)
+
+    grouped_leaves = zip(*leaves_list)
+    result_leaves = [jnp.stack(l) for l in grouped_leaves]
+    return treedef_list[0].unflatten(result_leaves)
+
+
+def tree_unstack(tree):
+    """Takes a tree and turns it into a list of trees. Inverse of tree_stack.
+
+    For example, given a tree ((a, b), c), where a, b, and c all have first
+    dimension k, will make k trees
+    [((a[0], b[0]), c[0]), ..., ((a[k], b[k]), c[k])]
+    Useful for turning the output of a vmapped function into normal objects.
+
+    From: https://gist.github.com/willwhitney/dd89cac6a5b771ccff18b06b33372c75
+    """
+    leaves, treedef = tree_flatten(tree)
+    n_trees = leaves[0].shape[0]
+    new_leaves = [[] for _ in range(n_trees)]
+    for leaf in leaves:
+        for i in range(n_trees):
+            new_leaves[i].append(leaf[i])
+    new_trees = [treedef.unflatten(l) for l in new_leaves]
+    return new_trees
+
+
+# def convert_to_list(params):
+#     """Converts parameters returned by different trainers to a standartized
+#     output format that is then accepted by all post processing routines
+#     """
+#     n_samples = onp.shape(params._leaves[0])[0]
+#     param_list = [tree_get_single(params, n) for n in range(n_samples)]
+#     return param_list
 
 
 def get_dataset(configuration_str, retain=None, subsampling=1):
@@ -467,7 +523,8 @@ class ProbabilisticFMTrainerTemplate(TrainerInterface):
     Monte-Carlo-style uncertainty quantification, based on a force-matching
     formulation.
     """
-    def __init__(self, checkpoint_path, energy_fn_template, val_dataloader=None):
+    def __init__(self, checkpoint_path, energy_fn_template,
+                 val_dataloader=None):
         super().__init__(checkpoint_path, energy_fn_template)
         self.results = []
 
@@ -479,3 +536,14 @@ class ProbabilisticFMTrainerTemplate(TrainerInterface):
         for param_set in self.params:
             params.append(tree_map(jnp.array, param_set))  # move on device
         self.params = params
+
+    @property
+    @abc.abstractmethod
+    def list_of_params(self):
+        """ Returns a list containing n single model parameter sets, where n
+        is the number of samples. This provides a more intuitive parameter
+        interface that self.params, which returns a large set of parameters,
+        where n is the leading axis of each leaf. Self.params is most useful,
+        if parameter sets are mapped via map or vmap in a postprocessing step.
+        """
+
