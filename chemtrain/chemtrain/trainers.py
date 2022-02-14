@@ -640,25 +640,8 @@ class RelativeEntropy(reweighting.PropagationBase):
         self._converged = self.early_stop.early_stopping(curr_grad_norm, thresh,
                                                          save_best_params=False)
 
-
-# TODO: Consider moving this function definition to util.py
-# TODO: Does not support multiple chains yet! Need to define standard output format for those resultsf first!
-# Shouldn't be too hard.. Just add another loop/append structure over all chain elementens 1...c...C
-# TODO: List comprehension statt loop --> check whether it works
-import numpy as onp
-from chemtrain.util import tree_get_single
-def convert_to_list(params):
-    """Converts parameters returned by different trainers to a standartized output
-    format that is then accepted by all post processing routines
-    """
-    # params = results[0]['samples']['variables']['params']
-    n_samples = onp.shape(params._leaves[0])[0]
-    # Loop over all samples, extract one and append to list of samples
-    param_list = [tree_get_single(params, n) for n in range(n_samples)]
-    return param_list
-
 import cloudpickle as pickle
-from chemtrain.util import format_not_recognized_error
+from chemtrain.util import convert_to_list, format_not_recognized_error
 class SGMCForceMatching(util.ProbabilisticFMTrainerTemplate):
     """Trainer for stochastic gradient Markov-chain Monte Carlo training
     based on force-matching.
@@ -695,6 +678,13 @@ class SGMCForceMatching(util.ProbabilisticFMTrainerTemplate):
         raise NotImplementedError('Setting params seems not meaningful in'
                                   ' the case of SG-MCMC samplers.')
 
+    @property
+    def list_of_params(self):
+        """ Returns a list containing n-flat map model parametrizations 
+        where n is the number of samples. More intuitive parameter interface."""
+        params_list = util.convert_to_list(self.params)
+        return params_list
+
     # TODO override save functions such that only saving parameters is allowed
     #  - or whatever checkpointing jax-sgmc supports (or does checkpointing work
     #  with more liberal coax._jit?)
@@ -726,6 +716,14 @@ class NUTSForceMatching(probabilistic.MCMCForceMatchingTemplate):
         super().__init__(init_state, prior, likelihood, kernel, train_loader,
                          batch_cache, batch_size, checkpoint_path, val_loader,
                          ref_energy_fn_template)
+    
+    @property
+    def params(self):
+        params = util.tree_stack(self.params)
+        return params
+
+    def list_of_params(self):
+        params_list = self.results
 
 
 class EnsembleOfModels(util.ProbabilisticFMTrainerTemplate):
@@ -750,9 +748,16 @@ class EnsembleOfModels(util.ProbabilisticFMTrainerTemplate):
                 params.append(trainer.best_params)
             else:
                 params.append(trainer.params)
+
+        params = util.tree_stack(params)
         return params
 
     @params.setter
     def params(self, loaded_params):
         for i, params in enumerate(loaded_params):
             self.trainers[i].params = params
+
+    @property
+    def list_of_params(self):
+        param_list = convert_to_list(self.params)
+        return param_list
