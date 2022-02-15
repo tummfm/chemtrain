@@ -19,11 +19,6 @@ class DimeNetPP(hk.Module):
     per-atom properties. Global properties can be obtained by summing over
     per-atom predictions.
 
-    Non-existing edges from fixed array size requirement are masked implicitly
-    via the RBF envelope function. Hence, masked edges are assumed to be set to
-    a distance > cut-off. Non-existing triplets are masked explicitly in the SBF
-    embedding layer.
-
     This custom implementation follows the original DimeNet / DimeNet++
     (https://arxiv.org/abs/2011.14115), while correcting for known issues
     (see https://github.com/klicperajo/dimenet).
@@ -88,6 +83,7 @@ class DimeNetPP(hk.Module):
         """
         super().__init__(name=name)
         # input representation:
+        self.r_cutoff = r_cutoff
         self._rbf_layer = layers.RadialBesselLayer(r_cutoff, num_rbf,
                                                    envelope_p)
         self._sbf_layer = layers.SphericalBesselLayer(r_cutoff, num_sbf,
@@ -117,40 +113,16 @@ class DimeNetPP(hk.Module):
             )
 
     def __call__(self,
-                 distances: jnp.ndarray,
-                 angles: jnp.ndarray,
+                 graph: sparse_graph.SparseDirectionalGraph,
                  species: jnp.ndarray,
-                 pair_connections: Tuple[jnp.ndarray, jnp.ndarray],
-                 angular_connections: Tuple[jnp.ndarray, jnp.ndarray,
-                                            jnp.ndarray],
                  **dyn_kwargs) -> jnp.ndarray:
         """Predicts per-atom quantities for a given molecular graph.
 
-        If edges and triplets are supposted to be masked, beware the different
-        masking conventions: Edges are masked implicitly. This implementation
-        assumes that a masked edge has a distance > cut-off, such that the RBF
-        layer automatically masks the edge. By contrast, as triplets cannot be
-        masked in an analogous way by the SBF layer, an explicit triplet mask
-        array needs to be provided as part of 'angular_connections'.
-
         Args:
-            distances: A (n_edges,) array storing for each edge the
-                       corresponding distance between 2 particles
-            angles: A (n_angles,) array storing for each triplet the
-                    corresponding angle between the 3 particles
+            graph: An instance of sparse_graph.SparseDirectionalGraph defining
+                   the molecular graph connectivity.
             species: A (n_particles,) array storing the atom type of each
                      particle
-            pair_connections: A tuple (idx_i, idx_j) of (n_edges,) arrays
-                              storing for each edge the particle ID if connected
-                              particles i and j.
-            angular_connections: A tuple (angle_mask, reduce_to_ji,
-                                 expand_to_kj) of (n_angles,) arrays. angle_mask
-                                 stores for each triplet if it is real (True) or
-                                 not (False). reduce_to_ji stores for each
-                                 triplet kji edge index j->i to aggregate
-                                 messages via a segment_sum. expand_to_kj stores
-                                 for all triplets kji edge index k->j to gather
-                                 all incoming edges for message passing.
             **dyn_kwargs: Kwargs supplied on-the-fly, uch as 'kT' for
                           temperature-dependent models.
 
@@ -158,22 +130,26 @@ class DimeNetPP(hk.Module):
             An (n_partciles, num_targets) array of predicted per-atom quantities
         """
         n_particles = species.size
-        # correctly masked (rbf=0) by construction if edge distance > cut-off:
-        rbf = self._rbf_layer(distances)
-        # explicitly masked via mask array in angular_connections
-        sbf = self._sbf_layer(distances, angles, angular_connections)
+        # cutoff all non-existing edges: are encoded as 0 by rbf envelope
+        # non-existing triplets will be masked explicitly in DimeNet++
+        pair_distances = jnp.where(graph.edge_mask, graph.distance_ij,
+                                   2. * self.r_cutoff)
 
-        messages = self._embedding_layer(rbf, species, pair_connections,
+        rbf = self._rbf_layer(pair_distances)
+        # explicitly masked via mask array in angular_connections
+        sbf = self._sbf_layer(pair_distances, graph.angles, graph.triplet_mask,
+                              graph.expand_to_kj)
+
+        messages = self._embedding_layer(rbf, species, graph.idx_i, graph.idx_j,
                                          **dyn_kwargs)
-        per_atom_quantities = self._output_blocks[0](messages, rbf,
-                                                     pair_connections,
+        per_atom_quantities = self._output_blocks[0](messages, rbf, graph.idx_i,
                                                      n_particles)
 
         for i in range(self._n_interactions):
-            messages = self._int_blocks[i](messages, rbf, sbf,
-                                           angular_connections)
+            messages = self._int_blocks[i](
+                messages, rbf, sbf, graph.reduce_to_ji, graph.expand_to_kj)
             per_atom_quantities += self._output_blocks[i + 1](messages, rbf,
-                                                              pair_connections,
+                                                              graph.idx_i,
                                                               n_particles)
         return per_atom_quantities
 
@@ -285,9 +261,8 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
 
         graph, _ = sparse_graph.sparse_graph_from_neighborlist(
             displacement, positions_test, neighbor_test, r_cutoff)
-        _, _, _, _, (n_edges_init, n_angles_init) = graph
-        max_angles = jnp.int32(jnp.ceil(n_angles_init * max_edge_multiplier))
-        max_edges = jnp.int32(jnp.ceil(n_edges_init * max_angle_multiplier))
+        max_angles = jnp.int32(jnp.ceil(graph.n_angles * max_edge_multiplier))
+        max_edges = jnp.int32(jnp.ceil(graph.n_edges * max_angle_multiplier))
     else:
         max_angles = None
         max_edges = None
@@ -320,24 +295,13 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
         # dynamic box necessary for pressure computation
         dynamic_displacement = partial(displacement, **dynamic_kwargs)
 
-        sparse_rep, overflow = sparse_graph.sparse_graph_from_neighborlist(
+        graph_rep, overflow = sparse_graph.sparse_graph_from_neighborlist(
             dynamic_displacement, positions, neighbor, r_cutoff, max_edges,
             max_angles
         )
         # TODO: return overflow to detect possible overflow
         del overflow
 
-        (pair_distances_sparse, pair_connections, angle_idxs,
-         angular_connectivity, (n_edges, n_angles)) = sparse_rep
-        idx_i, idx_j, pair_mask = pair_connections
-        angle_mask, _, _ = angular_connectivity
-
-        # cutoff all non existing edges: are encoded as 0 by rbf envelope
-        pair_distances_sparse = jnp.where(pair_mask[:, 0],
-                                          pair_distances_sparse, 2. * r_cutoff)  # TODO into DimeNet
-        angles = sparse_graph.angle_triplets(positions, dynamic_displacement,  # TODO into sparse graph
-                                             angle_idxs, angle_mask)
-        # non-existing angles will also be masked explicitly in DimeNet++
         net = DimeNetPP(r_cutoff,
                         n_species,
                         num_targets=1,
@@ -358,9 +322,7 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
                         init_kwargs=init_kwargs
                         )
 
-        per_atom_energies = net(pair_distances_sparse, angles, species,
-                                (idx_i, idx_j), angular_connectivity,
-                                **dynamic_kwargs)
+        per_atom_energies = net(graph_rep, species, **dynamic_kwargs)
         gnn_energy = util.high_precision_sum(per_atom_energies)
         return gnn_energy
 

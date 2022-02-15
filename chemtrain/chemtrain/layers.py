@@ -191,9 +191,8 @@ class SphericalBesselLayer(hk.Module):
                                        modules=[jnp, jsp.special])
                 )
 
-    def __call__(self, pair_distances, angles, angular_connectivity):
+    def __call__(self, pair_distances, angles, angle_mask, expand_to_kj):
         """Returns the SBF embeddings of angular triplets."""
-        angle_mask, _, expand_to_kj = angular_connectivity
 
         # initialize distances and envelope values
         scaled_distances = pair_distances * self._inv_cutoff
@@ -291,9 +290,8 @@ class EmbeddingBlock(hk.Module):
              activation]
         )
 
-    def __call__(self, rbf, species, pair_connectivity, **kwargs):
+    def __call__(self, rbf, species, idx_i, idx_j, **kwargs):
         """Returns output of the Embedding block."""
-        idx_i, idx_j = pair_connectivity
         transformed_rbf = self._rbf_dense(rbf)
 
         type_i = species[idx_i]
@@ -354,9 +352,8 @@ class OutputBlock(hk.Module):
         self._dense_final = hk.Linear(num_targets, with_bias=False,
                                       name='Final_output', **init_kwargs)
 
-    def __call__(self, messages, rbf, pair_connectivity, n_particles):
+    def __call__(self, messages, rbf, idx_i, n_particles):
         """Returns predicted per-atom quantities."""
-        idx_i, _ = pair_connectivity
         transformed_rbf = self._rbf_dense(rbf)
         # rbf is masked correctly and transformation only via weights
         # Hence rbf acts as mask
@@ -445,9 +442,8 @@ class InteractionBlock(hk.Module):
                 embed_size, activation, init_kwargs, name='ResLayerAfterSkip')
             )
 
-    def __call__(self, m_input, rbf, sbf, angular_connectivity):
+    def __call__(self, m_input, rbf, sbf, reduce_to_ji, expand_to_kj):
         # directional message passing block:
-        _, reduce_to_ji, expand_to_kj = angular_connectivity
         m_ji_angular = self._dense_kj(m_input)  # messages for expansion to k->j
         rbf = self._rbf1(rbf)
         rbf = self._rbf2(rbf)

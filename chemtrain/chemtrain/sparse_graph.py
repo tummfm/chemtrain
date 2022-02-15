@@ -1,8 +1,57 @@
 """Functions to extract the sparse (angular) graph representation employed in
 DimeNet.
 """
+from functools import partial
+from typing import Optional
+
+import chex
 from jax import numpy as jnp, vmap, lax
 from jax_md import space
+
+
+@partial(chex.dataclass, frozen=True)
+class SparseDirectionalGraph:
+    """Sparse directial graph representation of a molecular state.
+
+     Required arguments are necessary inputs for DimeNet++.
+
+     Attributes:
+         distance_ij: A (N_edges,) array storing for each the radial distances
+                      between particle i and j
+         idx_i: A (N_edges,) array storing for each edge particle index i
+         idx_j: A (N_edges,) array storing for each edge particle index j
+         angles: A (N_triplets,) array storing for each triplet the angle formed
+                 by the 3 particles
+         reduce_to_ji: A (N_triplets,) array storing for each triplet kji edge
+                       index j->i to aggregate messages via a segment_sum: each
+                       m_ji is a distinct segment containing all incoming m_kj.
+         expand_to_kj: A (N_triplets,) array storing for each triplet kji edge
+                       index k->j to gather all incoming edges for message
+                       passing.
+         edge_mask: A (N_edges,) boolean array storing for each edge whether the
+                    edge exists. By default, all edges are considered.
+         triplet_mask: A (N_triplets,) boolean array storing for each triplet
+                       whether the triplet exists. By default, all triplets are
+                       considered.
+         n_edges: Number of non-masked edges in the graph
+         n_angles: Number of non-masked triplets in the graph
+    """
+    distance_ij: jnp.ndarray
+    idx_i: jnp.ndarray
+    idx_j: jnp.ndarray
+    angles: jnp.ndarray
+    reduce_to_ji: jnp.ndarray
+    expand_to_kj: jnp.ndarray
+    edge_mask: Optional[jnp.ndarray] = None
+    triplet_mask: Optional[jnp.ndarray] = None
+    n_edges: Optional[int] = None
+    n_angles: Optional[int] = None
+
+    def __post_init__(self):
+        if self.edge_mask is None:
+            self.edge_mask = jnp.ones_like(self.distance_ij, dtype=bool)
+        if self.triplet_mask is None:
+            self.triplet_mask = jnp.ones_like(self.angles, dtype=bool)
 
 
 def angle(r_ij, r_kj):
@@ -168,7 +217,6 @@ def sparse_graph_from_neighborlist(displacement_fn, positions, neighbor,
     d_ij = _flatten_sort_and_capp(pair_distances, sorting_idxs, max_edges)
     sparse_pair_mask = _flatten_sort_and_capp(pair_mask_flat, sorting_idxs,
                                               max_edges)
-    pair_indicies = (idx_i, idx_j, jnp.expand_dims(sparse_pair_mask, -1))
 
     # build sparse angle combinations from adjacency matrix:
     # angle defined for 3 particles with connections k->j and j->i
@@ -191,10 +239,12 @@ def sparse_graph_from_neighborlist(displacement_fn, positions, neighbor,
     angle_mask, sorting_idx3 = lax.top_k(angle_mask, max_angles)
     angle_idxs = angle_idxs[sorting_idx3]
     n_angles = jnp.count_nonzero(angle_mask)
+    angles = angle_triplets(positions, displacement_fn, angle_idxs, angle_mask)
 
     # retrieving edge_id m_ji from nodes i and j:
     # idx_i < N by construction, but idx_j can be N: will override
-    # lookup[i, N-1], which is problematic if [i, N-1] is an existing edge
+    # lookup[i, N-1], which is problematic if [i, N-1] is an existing edge.
+    # Hence, the lookup table is extended by 1.
     edge_id_lookup = jnp.zeros([n_particles, n_particles + 1], dtype=jnp.int32)
     edge_id_lookup_direct = edge_id_lookup.at[(idx_i, idx_j)].set(
         jnp.arange(max_edges))
@@ -205,14 +255,17 @@ def sparse_graph_from_neighborlist(displacement_fn, positions, neighbor,
     # stores for each angle kji edge index k->j to gather all incoming edges
     # for message passing
     expand_to_kj = edge_id_lookup_direct[(angle_idxs[:, 1], angle_idxs[:, 2])]
-    angle_connectivity = (angle_mask, reduce_to_ji, expand_to_kj)
 
     too_many_edges_error_code = lax.cond(
         jnp.bitwise_or(n_edges > max_edges, n_angles > max_angles),
         lambda _: True, lambda _: False, n_edges
     )
 
-    sparse_graph = (d_ij, pair_indicies, angle_idxs, angle_connectivity,
-                    (n_edges, n_angles))
+    sparse_graph = SparseDirectionalGraph(
+        distance_ij=d_ij, idx_i=idx_i, idx_j=idx_j, angles=angles,
+        reduce_to_ji=reduce_to_ji, expand_to_kj=expand_to_kj,
+        edge_mask=sparse_pair_mask, triplet_mask=angle_mask, n_edges=n_edges,
+        n_angles=n_angles
+    )
 
     return sparse_graph, too_many_edges_error_code
