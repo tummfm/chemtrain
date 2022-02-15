@@ -2,6 +2,7 @@
 DimeNet.
 """
 from jax import numpy as jnp, vmap, lax
+from jax_md import space
 
 
 def angle(r_ij, r_kj):
@@ -90,19 +91,21 @@ def _flatten_sort_and_capp(matrix, sorting_args, cap_size):
     return capped_vect
 
 
-def sparse_graph(pair_distances, edge_idx_ji, max_edges=None, max_angles=None):
+def sparse_graph_from_neighborlist(displacement_fn, positions, neighbor,
+                                   r_cutoff, max_edges=None, max_angles=None):
     """Constructs a sparse representation of graph edges and angles to save
-     memory and computations over neighbor list.
+    memory and computations over neighbor list.
 
     The speed-up over simply using the dense jax_md neighbor list is
     significant, particularly regarding triplets. To allow for a representation
     of constant size required by jit, we pad the resulting vectors.
 
     Args:
-        pair_distances: Pairwise distance matrix of particles
-                        (N_partixles x max_neighbors) array
-        edge_idx_ji: Padded jax_md dense neighborlist connectivity:
-                     (N_partixles x max_neighbors) array
+        displacement_fn: Jax_MD displacement function encoding box dimensions
+        positions: (N_particles, dim) array of particle positions
+        neighbor: Jax_MD neighbor list that is in sync with positions
+        r_cutoff: Radial cutoff distance, below which 2 particles are considered
+                  to be connected by an edge.
         max_edges: Maximum number of edges storable in the graph. Can be used to
                    reduce the number of padded edges, but should be used
                    carefully, such that no existing edges are capped. Default
@@ -118,13 +121,33 @@ def sparse_graph(pair_distances, edge_idx_ji, max_edges=None, max_angles=None):
         Tuple of arrays defining sparse graph connectivity:
         d_ij, pair_indicies, angle_idxs, angle_connectivity, (n_edges, n_angles)
     """
-
     # TODO might be worth updating this function to the new sparse-style
     #  neighborlist in jax_md
+    assert neighbor.format.name == 'Dense', ('Currently only dense neighbor'
+                                             ' lists supported.')
+    n_particles, max_neighbors = neighbor.idx.shape
+
+    neighbor_displacement_fn = space.map_neighbor(displacement_fn)
+
+    # compute pairwise distances
+    pos_neigh = positions[neighbor.idx]
+    pair_displacement = neighbor_displacement_fn(positions, pos_neigh)
+    pair_distances = space.distance(pair_displacement)
+
+    # compute adjacency matrix via neighbor_list, then build sparse graph
+    # representation to avoid part of padding overhead in dense neighborlist
+    # adds all edges > cut-off to masked edges
+    edge_idx_ji = jnp.where(pair_distances < r_cutoff, neighbor.idx,
+                            n_particles)
+    # neighbor.idx: an index j in row i encodes a directed edge from
+    #               particle j to particle i.
+    # edge_idx[i, j]: j->i. if j == N: encodes masked edge.
+    # Index N would index out-of-bounds, but in jax the last element is
+    # returned instead
+
     # conservative estimates for initialization run
     # use guess from initialization for tighter bound to save memory and
     # computations during production runs
-    n_particles, max_neighbors = edge_idx_ji.shape
     if max_edges is None:
         max_edges = n_particles * max_neighbors
     if max_angles is None:
@@ -184,5 +207,12 @@ def sparse_graph(pair_distances, edge_idx_ji, max_edges=None, max_angles=None):
     expand_to_kj = edge_id_lookup_direct[(angle_idxs[:, 1], angle_idxs[:, 2])]
     angle_connectivity = (angle_mask, reduce_to_ji, expand_to_kj)
 
-    return d_ij, pair_indicies, angle_idxs, angle_connectivity, (n_edges,
-                                                                 n_angles)
+    too_many_edges_error_code = lax.cond(
+        jnp.bitwise_or(n_edges > max_edges, n_angles > max_angles),
+        lambda _: True, lambda _: False, n_edges
+    )
+
+    sparse_graph = (d_ij, pair_indicies, angle_idxs, angle_connectivity,
+                    (n_edges, n_angles))
+
+    return sparse_graph, too_many_edges_error_code

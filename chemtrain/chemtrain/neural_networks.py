@@ -5,7 +5,7 @@ from functools import partial, wraps
 from typing import Callable, Dict, Any, Tuple
 
 import haiku as hk
-from jax import lax, numpy as jnp, nn as jax_nn
+from jax import numpy as jnp, nn as jax_nn
 from jax_md import smap, space, partition, nn, util
 
 from chemtrain import layers, sparse_graph
@@ -283,21 +283,9 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
         print('Capping edges and triplets. Beware of overflow, which is'
               ' currently not being detected.')
 
-        # neighbor.idx: an index j in row i encodes a directed edge from
-        #               particle j to particle i.
-        # edge_idx[i, j]: j->i. if j == N: encodes masked edge.
-        # Index N would index out-of-bounds, but in jax the last element is
-        # returned instead
-        neighbor_displacement_fn = space.map_neighbor(displacement)
-        pos_neigh_test = positions_test[neighbor_test.idx]
-        test_displacement = neighbor_displacement_fn(positions_test,
-                                                     pos_neigh_test)
-        pair_distances_test = space.distance(test_displacement)
-        # add all edges > cut-off to masked edges
-        edge_idx_test = jnp.where(pair_distances_test < r_cutoff,
-                                  neighbor_test.idx, positions_test.shape[0])
-        _, _, _, _, (n_edges_init, n_angles_init) = sparse_graph.sparse_graph(
-            pair_distances_test, edge_idx_test)
+        graph, _ = sparse_graph.sparse_graph_from_neighborlist(
+            displacement, positions_test, neighbor_test, r_cutoff)
+        _, _, _, _, (n_edges_init, n_angles_init) = graph
         max_angles = jnp.int32(jnp.ceil(n_angles_init * max_edge_multiplier))
         max_edges = jnp.int32(jnp.ceil(n_edges_init * max_angle_multiplier))
     else:
@@ -323,8 +311,6 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
         Returns:
             Potential energy value of state
         """
-        assert neighbor.format.name == 'Dense', ('Currently only dense neighbor'
-                                                 ' lists supported.')
         n_particles, _ = neighbor.idx.shape
         if species is None:  # build dummy species
             species = jnp.zeros(n_particles, dtype=jnp.int32)
@@ -333,37 +319,23 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
 
         # dynamic box necessary for pressure computation
         dynamic_displacement = partial(displacement, **dynamic_kwargs)
-        dyn_neighbor_displacement_fn = space.map_neighbor(dynamic_displacement)
 
-        # compute pairwise distances
-        pos_neigh = positions[neighbor.idx]
-        pair_displacement = dyn_neighbor_displacement_fn(positions, pos_neigh)
-        pair_distances = space.distance(pair_displacement)
-
-        # compute adjacency matrix via neighbor_list, then build sparse graph
-        # representation to avoid part of padding overhead in dense neighborlist
-        # adds all edges > cut-off to masked edges
-        edge_idx_ji = jnp.where(pair_distances < r_cutoff, neighbor.idx,
-                                n_particles)
-        sparse_rep = sparse_graph.sparse_graph(pair_distances, edge_idx_ji,
-                                               max_edges, max_angles)
+        sparse_rep, overflow = sparse_graph.sparse_graph_from_neighborlist(
+            dynamic_displacement, positions, neighbor, r_cutoff, max_edges,
+            max_angles
+        )
+        # TODO: return overflow to detect possible overflow
+        del overflow
 
         (pair_distances_sparse, pair_connections, angle_idxs,
          angular_connectivity, (n_edges, n_angles)) = sparse_rep
         idx_i, idx_j, pair_mask = pair_connections
         angle_mask, _, _ = angular_connectivity
 
-        too_many_edges_error_code = lax.cond(
-            jnp.bitwise_or(n_edges > max_edges, n_angles > max_angles),
-            lambda _: True, lambda _: False, n_edges
-        )
-        # TODO: return too_many_edges_error_code to detect possible overflow
-        del too_many_edges_error_code
-
         # cutoff all non existing edges: are encoded as 0 by rbf envelope
         pair_distances_sparse = jnp.where(pair_mask[:, 0],
-                                          pair_distances_sparse, 2. * r_cutoff)
-        angles = sparse_graph.angle_triplets(positions, dynamic_displacement,
+                                          pair_distances_sparse, 2. * r_cutoff)  # TODO into DimeNet
+        angles = sparse_graph.angle_triplets(positions, dynamic_displacement,  # TODO into sparse graph
                                              angle_idxs, angle_mask)
         # non-existing angles will also be masked explicitly in DimeNet++
         net = DimeNetPP(r_cutoff,
