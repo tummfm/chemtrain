@@ -199,8 +199,18 @@ def assert_distributable(total_samples, n_devies, vmap_per_device):
         'over the devices and vmap, i.e. be a multiple of n_devices * n_vmap.')
 
 
-def get_dataset(configuration_str, retain=None, subsampling=1):
-    data = onp.load(configuration_str)
+def get_dataset(data_location_str, retain=None, subsampling=1):
+    """Loads .pyy numpy dataset.
+
+    Args:
+        data_location_str: String of .npy data location
+        retain: Number of samples to keep in the dataset
+        subsampling: Only keep every subsampled sample of the data, e.g. 2.
+
+    Returns:
+        Subsampled data array
+    """
+    data = onp.load(data_location_str)
     data = data[:retain:subsampling]
     return data
 

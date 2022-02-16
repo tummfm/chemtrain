@@ -8,7 +8,7 @@ Box = Union[float, util.Array]
 
 
 def _rectangular_boxtensor(box: Box) -> Box:
-    """Transforms a 0 or 1 dimensional box to a 2D box tensor."""
+    """Transforms a 1-dimensional box to a 2D box tensor."""
     spatial_dim = box.shape[0]
     return jnp.eye(spatial_dim).at[jnp.diag_indices(spatial_dim)].set(box)
 
@@ -19,7 +19,7 @@ def init_fractional_coordinates(box: Box) -> Tuple[Box, Callable]:
     coordinates.
 
     Args:
-        box: A 0, 1 or 2-dimensional box
+        box: A 1 or 2-dimensional box
 
     Returns:
         A tuple (box, scale_fn) of a 2D box tensor and a scale_fn that scales
