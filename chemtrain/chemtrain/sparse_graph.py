@@ -1,15 +1,16 @@
 """Functions to extract the sparse (angular) graph representation employed in
 DimeNet.
 """
-from functools import partial
-from typing import Optional
+from typing import Optional, Callable, Tuple
 
 import chex
 from jax import numpy as jnp, vmap, lax
-from jax_md import space
+from jax_md import space, partition
+
+from chemtrain.jax_md_mod import custom_space
 
 
-@partial(chex.dataclass, frozen=True)
+@chex.dataclass
 class SparseDirectionalGraph:
     """Sparse directial graph representation of a molecular state.
 
@@ -52,6 +53,24 @@ class SparseDirectionalGraph:
             self.edge_mask = jnp.ones_like(self.distance_ij, dtype=bool)
         if self.triplet_mask is None:
             self.triplet_mask = jnp.ones_like(self.angles, dtype=bool)
+
+    def cap_exactly(self):
+        """Deletes all non-existing edges and triplets from the stored graph.
+
+        This is a non-pure function and hence not available in a jit-context.
+        Returning the capped graph does not solve the problem when n_edges
+        and n_angles are computed within the jit-compiled function.
+        """
+        # edges are sorted, hence all non-existing edges are at the end
+        self.distance_ij = self.distance_ij[:self.n_edges]
+        self.idx_i = self.idx_i[:self.n_edges]
+        self.idx_j = self.idx_j[:self.n_edges]
+        self.edge_mask = self.edge_mask[:self.n_edges]
+
+        self.angles = self.angles[:self.n_angles]
+        self.reduce_to_ji = self.reduce_to_ji[:self.n_angles]
+        self.expand_to_kj = self.expand_to_kj[:self.n_angles]
+        self.triplet_mask = self.triplet_mask[:self.n_angles]
 
 
 def angle(r_ij, r_kj):
@@ -140,8 +159,13 @@ def _flatten_sort_and_capp(matrix, sorting_args, cap_size):
     return capped_vect
 
 
-def sparse_graph_from_neighborlist(displacement_fn, positions, neighbor,
-                                   r_cutoff, max_edges=None, max_angles=None):
+def sparse_graph_from_neighborlist(displacement_fn: Callable,
+                                   positions: jnp.ndarray,
+                                   neighbor: partition.NeighborList,
+                                   r_cutoff: jnp.array,
+                                   max_edges: Optional[int] = None,
+                                   max_angles: Optional[int] = None
+                                   ) -> Tuple[SparseDirectionalGraph, bool]:
     """Constructs a sparse representation of graph edges and angles to save
     memory and computations over neighbor list.
 
@@ -267,5 +291,121 @@ def sparse_graph_from_neighborlist(displacement_fn, positions, neighbor,
         edge_mask=sparse_pair_mask, triplet_mask=angle_mask, n_edges=n_edges,
         n_angles=n_angles
     )
-
     return sparse_graph, too_many_edges_error_code
+
+
+def _pad_graph(final_size, quantities, connectivities):
+    """Helper function that returns padded edges or triplets, while
+    differentiating between quantities (distances, angles) and adge / triplet
+    connectivity.
+    """
+    # Everything can be padded with 0, because 0 corresponds to False
+    # and the edge/triplet will hence have no effect
+    padded_quantities, padded_connectivities = [], []
+    for (quantity, connectivity) in zip(quantities, connectivities):
+        pad_size = final_size - quantity.shape[0]
+        connectivity_pad = jnp.zeros((pad_size, 3), dtype=jnp.int32)
+        quantity_pad = jnp.zeros(pad_size, dtype=jnp.float32)
+        padded_connectivities.append(jnp.vstack((connectivity,
+                                                 connectivity_pad)))
+        padded_quantities.append(jnp.concatenate((quantity, quantity_pad)))
+    return padded_quantities, padded_connectivities
+
+
+def convert_dataset_to_graphs(r_cutoff, position_data, box, padding=True):
+    """Converts input consisting of particle poistions and boxes to a dataset
+    of sparse graph representations.
+
+    This function tackles the general case, where the number of particles and
+    boxes vary across different snapshots, introducing some overhead if particle
+    number and the box is fixed. Due to this general setting, this function is
+    not jittable.
+
+    Args:
+        r_cutoff: Radial cut-off distance below which 2 particles form an edge
+        position_data: Either a list of (N_particles, dim) arrays of particle
+                       positions in case N_particles is not constant accross
+                       snapshots or a (N_snapshots, N_particles, dim) array.
+        box: Either a single 1 or 2-dimensional box (if the box is constant
+             across snapshots) or an (N_snapshots, dim) or
+             (N_snapshots, dim, dim) array of boxes.
+        padding: If True, pads resulting edges and triplets to the maximum
+                 across the input data to allow for straightforward batching
+                 without re-compilation. If False, returns edges and triplets
+                 with varying shapes, but to-be-masked non-existing edges /
+                 triplets.
+
+    Returns:
+        A tuple (edges, triplets) of lists of edge and triplet representations
+        of each snapshot. Edge representations are ((max-)edges, 4) arrays
+        containing distance_ij, idx_i, idx_j and edge_mask. Triplet
+        representations are ((max-)triplets, 4) arrays of angles, reduce_to_ji,
+        expand_to_kj and triplet_mask. Refer to SparseDirectionalGraph for
+        respective definitions.
+    """
+    # canonicalize inputs to lists
+    if not isinstance(position_data, list):
+        n_snapshots = position_data.shape[0]
+        position_data = [position_data[i] for i in range(n_snapshots)]
+    else:
+        n_snapshots = len(position_data)
+    if box.shape[0] == n_snapshots:  # array of boxes
+        box = [box[i] for i in range(n_snapshots)]
+    else:  # a single box
+        box = [box for _ in range(n_snapshots)]
+
+    max_edges = 0
+    max_triplets = 0
+    dists, angles, edges, triplets = [], [], [], []
+
+    for (positions, cur_box) in zip(position_data, box):
+        box_tensor, scale_fn = custom_space.init_fractional_coordinates(cur_box)
+        displacement_fn, _ = space.periodic_general(box_tensor)
+        positions = scale_fn(positions)  # to fractional coordinates
+        neighbor_fn = partition.neighbor_list(  # only required for 1 state
+            displacement_fn, box_tensor, r_cutoff, dr_threshold=0.01,
+            capacity_multiplier=1.01, fractional_coordinates=True
+        )
+        nbrs = neighbor_fn.allocate(positions)  # pylint: disable=not-callable
+        graph, _ = sparse_graph_from_neighborlist(displacement_fn, positions,
+                                                  nbrs, r_cutoff)
+        graph.cap_exactly()
+
+        max_edges = max(max_edges, graph.n_edges)
+        max_triplets = max(max_triplets, graph.n_angles)
+
+        # build arrays for edges and angles. Needs to be stored in lists due
+        # to different edge and angle count across snapshots in general
+        # Boolean mask arrays are converted to int32 1.
+        dists.append(graph.distance_ij)
+        angles.append(graph.angles)
+        edges.append(jnp.stack((graph.idx_i, graph.idx_j, graph.edge_mask),
+                               axis=-1))
+        triplets.append(jnp.stack((graph.reduce_to_ji, graph.expand_to_kj,
+                                   graph.triplet_mask), axis=-1))
+    if padding:
+        dists, edges = _pad_graph(max_edges, dists, edges)
+        angles, triplets = _pad_graph(max_triplets, angles, triplets)
+
+    return dists, angles, edges, triplets
+
+
+def pad_species(species_data):
+    """Pads species arrays.
+
+    Allow for straightforward batching without re-compilations in case of
+    non-constant number of particles across snapshots.
+
+    Args:
+        species_data: List of (N_particles,) species arrays containing the atom
+                      type of each particle.
+
+    Returns:
+        A (N_snapshots, max_particles) array of padded species vectors.
+    """
+    max_particles = max([species.size for species in species_data])
+    padded_species = []
+    for species in species_data:
+        padding = jnp.zeros(max_particles - species.size)
+        padded_species.append(jnp.append(species, padding))
+    return jnp.array(padded_species, dtype=jnp.int32)
