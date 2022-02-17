@@ -7,7 +7,6 @@ from functools import partial
 from coax.utils._jit import jit
 from jax import vmap, lax, value_and_grad, pmap, numpy as jnp
 from jax_sgmc import data
-import numpy as onp
 
 from chemtrain import util
 from chemtrain.jax_md_mod import custom_quantity
@@ -35,23 +34,21 @@ position: atomic positions
 
 def init_dataloaders(position_data, energy_data=None, force_data=None,
                      virial_data=None, train_ratio=0.875):
-    train_set_size = position_data.shape[0]
-    train_size = int(train_set_size * train_ratio)
-
-    # pylint: disable=unbalanced-tuple-unpacking
-    r_train, r_val = onp.split(position_data, [train_size])
+    """Initializes NumpyDataLoaders for training and validation in a
+    force-matching context."""
+    r_train, r_val = util.train_test_split(position_data, train_ratio)
     train_dict = {'R': r_train}
     val_dict = {'R': r_val}
     if energy_data is not None:
-        u_train, u_val = onp.split(energy_data, [train_size])
+        u_train, u_val = util.train_test_split(energy_data, train_ratio)
         train_dict['U'] = u_train
         val_dict['U'] = u_val
     if force_data is not None:
-        f_train, f_val = onp.split(force_data, [train_size])
+        f_train, f_val = util.train_test_split(force_data, train_ratio)
         train_dict['F'] = f_train
         val_dict['F'] = f_val
     if virial_data is not None:
-        p_train, p_val = onp.split(virial_data, [train_size])
+        p_train, p_val = util.train_test_split(virial_data, train_ratio)
         train_dict['p'] = p_train
         val_dict['p'] = p_val
 

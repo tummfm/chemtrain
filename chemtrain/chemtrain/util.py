@@ -215,6 +215,27 @@ def get_dataset(data_location_str, retain=None, subsampling=1):
     return data
 
 
+def train_test_split(dataset, train_ratio=0.8):
+    """Train-test split for numpy datasets.
+
+    The validation dataset is considered part of the train dataset and can be
+    split afterwards.
+
+    Args:
+        dataset: Numpy dataset array. Samples are assumed to be stacked along
+                 axis 0.
+        train_ratio: Percantage of dataset to use for training. The remainder is
+                     used for testing.
+
+    Returns:
+        Tuple (train_data, val_data) of respective numpy datasets.
+    """
+    dataset_size = dataset.shape[0]
+    train_size = int(dataset_size * train_ratio)
+    train_data, val_data = onp.split(dataset, [train_size])  # pylint: disable=unbalanced-tuple-unpacking
+    return train_data, val_data
+
+
 def scale_dataset_fractional(traj, box):
     _, scale_fn = custom_space.init_fractional_coordinates(box)
     scaled_traj = lax.map(scale_fn, traj)
