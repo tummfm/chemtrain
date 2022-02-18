@@ -123,22 +123,19 @@ class DimeNetPP(hk.Module):
 
     def __call__(self,
                  graph: sparse_graph.SparseDirectionalGraph,
-                 species: jnp.ndarray,
                  **dyn_kwargs) -> jnp.ndarray:
         """Predicts per-atom quantities for a given molecular graph.
 
         Args:
             graph: An instance of sparse_graph.SparseDirectionalGraph defining
                    the molecular graph connectivity.
-            species: A (n_particles,) array storing the atom type of each
-                     particle
-            **dyn_kwargs: Kwargs supplied on-the-fly, uch as 'kT' for
+            **dyn_kwargs: Kwargs supplied on-the-fly, such as 'kT' for
                           temperature-dependent models.
 
         Returns:
             An (n_partciles, num_targets) array of predicted per-atom quantities
         """
-        n_particles = species.size
+        n_particles = graph.species.size
         # cutoff all non-existing edges: are encoded as 0 by rbf envelope
         # non-existing triplets will be masked explicitly in DimeNet++
         pair_distances = jnp.where(graph.edge_mask, graph.distance_ij,
@@ -149,8 +146,8 @@ class DimeNetPP(hk.Module):
         sbf = self._sbf_layer(pair_distances, graph.angles, graph.triplet_mask,
                               graph.expand_to_kj)
 
-        messages = self._embedding_layer(rbf, species, graph.idx_i, graph.idx_j,
-                                         **dyn_kwargs)
+        messages = self._embedding_layer(rbf, graph.species, graph.idx_i,
+                                         graph.idx_j, **dyn_kwargs)
         per_atom_quantities = self._output_blocks[0](messages, rbf, graph.idx_i,
                                                      n_particles)
 
@@ -168,7 +165,7 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
                            n_species: int = 10,
                            positions_test: jnp.ndarray = None,
                            neighbor_test: partition.NeighborList = None,
-                           max_angle_multiplier: float = 1.25,
+                           max_triplet_multiplier: float = 1.25,
                            max_edge_multiplier: float = 1.25,
                            **dimenetpp_kwargs
                            ) -> Tuple[nn.InitFn, Callable[[Any, util.Array],
@@ -208,7 +205,8 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
         neighbor_test: Sample neighborlist to estimate max_edges / max_angles.
                        Needs to be provided to enable capping.
         max_edge_multiplier: Multiplier for initial estimate of maximum edges.
-        max_angle_multiplier: Multiplier for initial estimate of maximum angles.
+        max_triplet_multiplier: Multiplier for initial estimate of maximum
+                                triplets.
         dimenetpp_kwargs: Kwargs to change the default structure of DimeNet++.
                           For definition of the kwargs, see DimeNetPP.
 
@@ -224,12 +222,13 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
         print('Capping edges and triplets. Beware of overflow, which is'
               ' currently not being detected.')
 
-        graph, _ = sparse_graph.sparse_graph_from_neighborlist(
+        testgraph, _ = sparse_graph.sparse_graph_from_neighborlist(
             displacement, positions_test, neighbor_test, r_cutoff)
-        max_angles = jnp.int32(jnp.ceil(graph.n_angles * max_edge_multiplier))
-        max_edges = jnp.int32(jnp.ceil(graph.n_edges * max_angle_multiplier))
+        max_triplets = jnp.int32(jnp.ceil(testgraph.n_triplets
+                                          * max_triplet_multiplier))
+        max_edges = jnp.int32(jnp.ceil(testgraph.n_edges * max_edge_multiplier))
     else:
-        max_angles = None
+        max_triplets = None
         max_edges = None
 
     @hk.without_apply_rng
@@ -251,25 +250,18 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
         Returns:
             Potential energy value of state
         """
-        n_particles, _ = neighbor.idx.shape
-        if species is None:  # build dummy species
-            species = jnp.zeros(n_particles, dtype=jnp.int32)
-        else:
-            smap._check_species_dtype(species)  # assert species are int
-
         # dynamic box necessary for pressure computation
         dynamic_displacement = partial(displacement, **dynamic_kwargs)
 
         graph_rep, overflow = sparse_graph.sparse_graph_from_neighborlist(
-            dynamic_displacement, positions, neighbor, r_cutoff, max_edges,
-            max_angles
+            dynamic_displacement, positions, neighbor, r_cutoff, species,
+            max_edges, max_triplets
         )
         # TODO: return overflow to detect possible overflow
         del overflow
 
         net = DimeNetPP(r_cutoff, n_species, num_targets=1, **dimenetpp_kwargs)
-
-        per_atom_energies = net(graph_rep, species, **dynamic_kwargs)
+        per_atom_energies = net(graph_rep, **dynamic_kwargs)
         gnn_energy = util.high_precision_sum(per_atom_energies)
         return gnn_energy
 

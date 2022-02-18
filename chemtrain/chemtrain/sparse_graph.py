@@ -4,10 +4,12 @@ DimeNet.
 from typing import Optional, Callable, Tuple
 
 import chex
+import numpy as onp
 from jax import numpy as jnp, vmap, lax
 from jax_md import space, partition
 
 from chemtrain.jax_md_mod import custom_space
+from chemtrain import layers
 
 
 @chex.dataclass
@@ -34,43 +36,55 @@ class SparseDirectionalGraph:
          triplet_mask: A (N_triplets,) boolean array storing for each triplet
                        whether the triplet exists. By default, all triplets are
                        considered.
-         n_edges: Number of non-masked edges in the graph
-         n_angles: Number of non-masked triplets in the graph
+         n_edges: Number of non-masked edges in the graph. None assumes all
+                  edges are real.
+         n_triplets: Number of non-masked triplets in the graph. None assumes
+                     all triplets are real.
+         n_particles: Number of non-masked species in the graph.
     """
+    species: jnp.ndarray
     distance_ij: jnp.ndarray
     idx_i: jnp.ndarray
     idx_j: jnp.ndarray
     angles: jnp.ndarray
     reduce_to_ji: jnp.ndarray
     expand_to_kj: jnp.ndarray
+    species_mask: Optional[jnp.ndarray] = None
     edge_mask: Optional[jnp.ndarray] = None
     triplet_mask: Optional[jnp.ndarray] = None
     n_edges: Optional[int] = None
-    n_angles: Optional[int] = None
+    n_triplets: Optional[int] = None
 
     def __post_init__(self):
+        if self.species_mask is None:
+            self.species_mask = jnp.ones_like(self.species, dtype=bool)
         if self.edge_mask is None:
             self.edge_mask = jnp.ones_like(self.distance_ij, dtype=bool)
         if self.triplet_mask is None:
             self.triplet_mask = jnp.ones_like(self.angles, dtype=bool)
+
+        self.n_particles = jnp.sum(self.species_mask)
 
     def cap_exactly(self):
         """Deletes all non-existing edges and triplets from the stored graph.
 
         This is a non-pure function and hence not available in a jit-context.
         Returning the capped graph does not solve the problem when n_edges
-        and n_angles are computed within the jit-compiled function.
+        and n_triplets are computed within the jit-compiled function.
         """
         # edges are sorted, hence all non-existing edges are at the end
+        self.species = self.species[:self.n_particles]
+        self.species_mask = self.species_mask[:self.n_particles]
+
         self.distance_ij = self.distance_ij[:self.n_edges]
         self.idx_i = self.idx_i[:self.n_edges]
         self.idx_j = self.idx_j[:self.n_edges]
         self.edge_mask = self.edge_mask[:self.n_edges]
 
-        self.angles = self.angles[:self.n_angles]
-        self.reduce_to_ji = self.reduce_to_ji[:self.n_angles]
-        self.expand_to_kj = self.expand_to_kj[:self.n_angles]
-        self.triplet_mask = self.triplet_mask[:self.n_angles]
+        self.angles = self.angles[:self.n_triplets]
+        self.reduce_to_ji = self.reduce_to_ji[:self.n_triplets]
+        self.expand_to_kj = self.expand_to_kj[:self.n_triplets]
+        self.triplet_mask = self.triplet_mask[:self.n_triplets]
 
 
 def angle(r_ij, r_kj):
@@ -163,8 +177,10 @@ def sparse_graph_from_neighborlist(displacement_fn: Callable,
                                    positions: jnp.ndarray,
                                    neighbor: partition.NeighborList,
                                    r_cutoff: jnp.array,
+                                   species: jnp.array = None,
                                    max_edges: Optional[int] = None,
-                                   max_angles: Optional[int] = None
+                                   max_triplets: Optional[int] = None,
+                                   species_mask: jnp.array = None,
                                    ) -> Tuple[SparseDirectionalGraph, bool]:
     """Constructs a sparse representation of graph edges and angles to save
     memory and computations over neighbor list.
@@ -179,26 +195,31 @@ def sparse_graph_from_neighborlist(displacement_fn: Callable,
         neighbor: Jax_MD neighbor list that is in sync with positions
         r_cutoff: Radial cutoff distance, below which 2 particles are considered
                   to be connected by an edge.
+        species: (N_particles,) array encoding atom types. If None, assumes type
+                 0 for all atoms.
         max_edges: Maximum number of edges storable in the graph. Can be used to
                    reduce the number of padded edges, but should be used
                    carefully, such that no existing edges are capped. Default
                    None uses the maximum possible number of edges as given by
                    the dense neighbor list.
-        max_angles: Maximum number of triplets storable in the graph. Can be
+        max_triplets: Maximum number of triplets storable in the graph. Can be
                     used to reduce the number of padded triplets, but should be
                     used carefully, such that no existing triplets are capped.
                     Default None uses the maximum possible number of triplets as
                     given by the dense neighbor list.
+        species_mask: (N_particles,) array encoding atom types. Default None,
+                    assumes no masking necessary.
 
     Returns:
-        Tuple of arrays defining sparse graph connectivity:
-        d_ij, pair_indicies, angle_idxs, angle_connectivity, (n_edges, n_angles)
+        Tuple (sparse_graph, too_many_edges_error_code) containing the
+        SparseDirectionalGraph and whether max_edges or max_triplets overflowed.
     """
     # TODO might be worth updating this function to the new sparse-style
     #  neighborlist in jax_md
     assert neighbor.format.name == 'Dense', ('Currently only dense neighbor'
                                              ' lists supported.')
     n_particles, max_neighbors = neighbor.idx.shape
+    species = layers.canonicalize_species(species, n_particles)
 
     neighbor_displacement_fn = space.map_neighbor(displacement_fn)
 
@@ -223,8 +244,8 @@ def sparse_graph_from_neighborlist(displacement_fn: Callable,
     # computations during production runs
     if max_edges is None:
         max_edges = n_particles * max_neighbors
-    if max_angles is None:
-        max_angles = max_edges * max_neighbors
+    if max_triplets is None:
+        max_triplets = max_edges * max_neighbors
 
     # sparse edge representation:
     # construct vectors from adjacency matrix and only keep existing edges
@@ -260,9 +281,9 @@ def sparse_graph_from_neighborlist(displacement_fn: Callable,
     mask_ij = jnp.repeat(sparse_pair_mask, max_neighbors)
     mask_k = idx3_k != n_particles
     angle_mask = mask_ij * mask_k * mask_i_eq_k  # union of masks
-    angle_mask, sorting_idx3 = lax.top_k(angle_mask, max_angles)
+    angle_mask, sorting_idx3 = lax.top_k(angle_mask, max_triplets)
     angle_idxs = angle_idxs[sorting_idx3]
-    n_angles = jnp.count_nonzero(angle_mask)
+    n_triplets = jnp.count_nonzero(angle_mask)
     angles = angle_triplets(positions, displacement_fn, angle_idxs, angle_mask)
 
     # retrieving edge_id m_ji from nodes i and j:
@@ -281,15 +302,15 @@ def sparse_graph_from_neighborlist(displacement_fn: Callable,
     expand_to_kj = edge_id_lookup_direct[(angle_idxs[:, 1], angle_idxs[:, 2])]
 
     too_many_edges_error_code = lax.cond(
-        jnp.bitwise_or(n_edges > max_edges, n_angles > max_angles),
+        jnp.bitwise_or(n_edges > max_edges, n_triplets > max_triplets),
         lambda _: True, lambda _: False, n_edges
     )
 
     sparse_graph = SparseDirectionalGraph(
-        distance_ij=d_ij, idx_i=idx_i, idx_j=idx_j, angles=angles,
-        reduce_to_ji=reduce_to_ji, expand_to_kj=expand_to_kj,
+        species=species, distance_ij=d_ij, idx_i=idx_i, idx_j=idx_j,
+        angles=angles, reduce_to_ji=reduce_to_ji, expand_to_kj=expand_to_kj,
         edge_mask=sparse_pair_mask, triplet_mask=angle_mask, n_edges=n_edges,
-        n_angles=n_angles
+        n_triplets=n_triplets, species_mask=species_mask
     )
     return sparse_graph, too_many_edges_error_code
 
@@ -372,7 +393,7 @@ def convert_dataset_to_graphs(r_cutoff, position_data, box, padding=True):
         graph.cap_exactly()
 
         max_edges = max(max_edges, graph.n_edges)
-        max_triplets = max(max_triplets, graph.n_angles)
+        max_triplets = max(max_triplets, graph.n_triplets)
 
         # build arrays for edges and angles. Needs to be stored in lists due
         # to different edge and angle count across snapshots in general
@@ -401,11 +422,13 @@ def pad_species(species_data):
                       type of each particle.
 
     Returns:
-        A (N_snapshots, max_particles) array of padded species vectors.
+        A (N_snapshots, max_particles, 2) array of padded species vectors and
+        corresponding species mask vector.
     """
     max_particles = max([species.size for species in species_data])
-    padded_species = []
-    for species in species_data:
-        padding = jnp.zeros(max_particles - species.size)
-        padded_species.append(jnp.append(species, padding))
+    n_snapshots = len(species_data)
+    padded_species = onp.zeros((n_snapshots, max_particles, 2))
+    for i, species in enumerate(species_data):
+        padded_species[i, :species.size, 0] = species
+        padded_species[i, :species.size, 1] = 1
     return jnp.array(padded_species, dtype=jnp.int32)
