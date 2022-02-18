@@ -63,7 +63,9 @@ class SparseDirectionalGraph:
         if self.triplet_mask is None:
             self.triplet_mask = jnp.ones_like(self.angles, dtype=bool)
 
-        self.n_particles = jnp.sum(self.species_mask)
+    @property
+    def n_particles(self):
+        return jnp.sum(self.species_mask)
 
     def cap_exactly(self):
         """Deletes all non-existing edges and triplets from the stored graph.
@@ -357,12 +359,10 @@ def convert_dataset_to_graphs(r_cutoff, position_data, box, padding=True):
                  triplets.
 
     Returns:
-        A tuple (edges, triplets) of lists of edge and triplet representations
-        of each snapshot. Edge representations are ((max-)edges, 4) arrays
-        containing distance_ij, idx_i, idx_j and edge_mask. Triplet
-        representations are ((max-)triplets, 4) arrays of angles, reduce_to_ji,
-        expand_to_kj and triplet_mask. Refer to SparseDirectionalGraph for
-        respective definitions.
+        A dictionary containing the whole definitions of the sparse molecular
+        graph, except for species. These are given as Lists without padding and
+        as (N_snapshots, X) arrays with padding. Refer to
+        SparseDirectionalGraph for respective definitions.
     """
     # canonicalize inputs to lists
     if not isinstance(position_data, list):
@@ -408,7 +408,23 @@ def convert_dataset_to_graphs(r_cutoff, position_data, box, padding=True):
         dists, edges = _pad_graph(max_edges, dists, edges)
         angles, triplets = _pad_graph(max_triplets, angles, triplets)
 
-    return dists, angles, edges, triplets
+    # save in dict for better transparency
+    graph_rep = {
+        'distance_ij': dists,
+        'idx_i': [edge[:, 0] for edge in edges],
+        'idx_j': [edge[:, 1] for edge in edges],
+        'angles': angles,
+        'reduce_to_ji': [triplet[:, 0] for triplet in triplets],
+        'expand_to_kj': [triplet[:, 1] for triplet in triplets],
+        'edge_mask': [onp.array(edge[:, 2], dtype=bool) for edge in edges],
+        'triplet_mask': [onp.array(triplet[:, 2], dtype=bool)
+                         for triplet in triplets]
+    }
+
+    if padding:  # when padded, we can return arrays instead of lists
+        graph_rep = {key: onp.array(value) for key, value in graph_rep.items()}
+
+    return graph_rep
 
 
 def pad_species(species_data):
@@ -422,13 +438,14 @@ def pad_species(species_data):
                       type of each particle.
 
     Returns:
-        A (N_snapshots, max_particles, 2) array of padded species vectors and
-        corresponding species mask vector.
+        A dictionary padded species vectors and corresponding species mask
+        vector. The dict keys are consistent with SparseDirectionalGraph.
     """
     max_particles = max([species.size for species in species_data])
     n_snapshots = len(species_data)
-    padded_species = onp.zeros((n_snapshots, max_particles, 2))
+    padded_species = onp.zeros((n_snapshots, max_particles), dtype=int)
+    species_mask = onp.zeros((n_snapshots, max_particles), dtype=bool)
     for i, species in enumerate(species_data):
-        padded_species[i, :species.size, 0] = species
-        padded_species[i, :species.size, 1] = 1
-    return jnp.array(padded_species, dtype=jnp.int32)
+        padded_species[i, :species.size] = species
+        species_mask[i, :species.size] = True
+    return {'species': padded_species, 'species_mask': species_mask}
