@@ -19,6 +19,8 @@ class DimeNetPP(hk.Module):
     per-atom properties. Global properties can be obtained by summing over
     per-atom predictions.
 
+    The default values correspond to the orinal values of DimeNet++.
+
     This custom implementation follows the original DimeNet / DimeNet++
     (https://arxiv.org/abs/2011.14115), while correcting for known issues
     (see https://github.com/klicperajo/dimenet).
@@ -82,6 +84,13 @@ class DimeNetPP(hk.Module):
             name: Name of DimeNet++ model
         """
         super().__init__(name=name)
+
+        if init_kwargs is None:
+            init_kwargs = {
+                'w_init': layers.OrthogonalVarianceScalingInit(scale=1.),
+                'b_init': hk.initializers.Constant(0.),
+            }
+
         # input representation:
         self.r_cutoff = r_cutoff
         self._rbf_layer = layers.RadialBesselLayer(r_cutoff, num_rbf,
@@ -156,31 +165,15 @@ class DimeNetPP(hk.Module):
 
 def dimenetpp_neighborlist(displacement: space.DisplacementFn,
                            r_cutoff: float,
+                           n_species: int = 10,
                            positions_test: jnp.ndarray = None,
                            neighbor_test: partition.NeighborList = None,
                            max_angle_multiplier: float = 1.25,
                            max_edge_multiplier: float = 1.25,
-                           kbt_dependent: bool = False,
-                           embed_size: int = 128,
-                           n_interaction_blocks: int = 4,
-                           num_residual_before_skip: int = 1,
-                           num_residual_after_skip: int = 2,
-                           out_embed_size=None,
-                           type_embed_size=None,
-                           angle_int_embed_size=None,
-                           basis_int_embed_size: int = 8,
-                           num_dense_out: int = 3,
-                           num_rbf: int = 6,
-                           num_sbf: int = 7,
-                           activation=jax_nn.swish,
-                           envelope_p: int = 6,
-                           init_kwargs: Dict[str, Any] = None,
-                           n_species: int = 10,
+                           **dimenetpp_kwargs
                            ) -> Tuple[nn.InitFn, Callable[[Any, util.Array],
                                                           util.Array]]:
     """DimeNet++ energy function for Jax, M.D.
-
-    The default values correspond to the orinal values of DimeNet++.
 
     This function provides an interface for the DimeNet++ haiku model to be used
     as a jax_md energy_fn. Analogous to jax_md energy_fns, the initialized
@@ -208,39 +201,16 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
     Args:
         displacement: Jax_md displacement function
         r_cutoff: Radial cut-off distance of DimeNetPP and the neighbor list
+        n_species: Number of different atom species the network is supposed
+                   to process.
         positions_test: Sample positions to estimate max_edges / max_angles.
                         Needs to be provided to enable capping.
         neighbor_test: Sample neighborlist to estimate max_edges / max_angles.
                        Needs to be provided to enable capping.
         max_edge_multiplier: Multiplier for initial estimate of maximum edges.
         max_angle_multiplier: Multiplier for initial estimate of maximum angles.
-        kbt_dependent: True, if potential explicitly depends on temperature.
-                       In this case 'kT' needs to be provided as a kwarg during
-                       the call to the energy_fn. Default False results in a
-                       potential function independent of temperature.
-        embed_size: Size of message embeddings. Scale interaction and output
-                    embedding sizes accordingly, if not specified explicitly.
-        n_interaction_blocks: Number of interaction blocks
-        num_residual_before_skip: Number of residual blocks before the skip
-                                  connection in the Interaction block.
-        num_residual_after_skip: Number of residual blocks after the skip
-                                 connection in the Interaction block.
-        out_embed_size: Embedding size of output block.
-                        If None is set to 2 * embed_size.
-        type_embed_size: Embedding size of atom type embeddings.
-                         If None is set to 0.5 * embed_size.
-        angle_int_embed_size: Embedding size of Linear layers for down-projected
-                              triplet interation. If None is 0.5 * embed_size.
-        basis_int_embed_size: Embedding size of Linear layers for interation
-                              of RBS/ SBF basis in interaction block
-        num_dense_out: Number of final Linear layers in output block
-        num_rbf: Number of radial Bessel embedding functions
-        num_sbf: Number of spherical Bessel embedding functions
-        activation: Activation function
-        envelope_p: Power of envelope polynomial
-        init_kwargs: Kwargs for initializaion of Linear layers
-        n_species: Number of different atom species the network is supposed
-                   to process.
+        dimenetpp_kwargs: Kwargs to change the default structure of DimeNet++.
+                          For definition of the kwargs, see DimeNetPP.
 
     Returns:
         A tuple of 2 functions: A init_fn that initializes the model parameters
@@ -248,11 +218,6 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
         given model parameters. The energy function requires the same input as
         other energy functions with neighbor lists in jax_md.energy.
     """
-    if init_kwargs is None:
-        init_kwargs = {
-          'w_init': layers.OrthogonalVarianceScalingInit(scale=1.),
-          'b_init': hk.initializers.Constant(0.),
-        }
     r_cutoff = jnp.array(r_cutoff, dtype=util.f32)
 
     if positions_test is not None and neighbor_test is not None:
@@ -302,25 +267,7 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
         # TODO: return overflow to detect possible overflow
         del overflow
 
-        net = DimeNetPP(r_cutoff,
-                        n_species,
-                        num_targets=1,
-                        kbt_dependent=kbt_dependent,
-                        embed_size=embed_size,
-                        n_interaction_blocks=n_interaction_blocks,
-                        num_residual_before_skip=num_residual_before_skip,
-                        num_residual_after_skip=num_residual_after_skip,
-                        out_embed_size=out_embed_size,
-                        type_embed_size=type_embed_size,
-                        angle_int_embed_size=angle_int_embed_size,
-                        basis_int_embed_size=basis_int_embed_size,
-                        num_dense_out=num_dense_out,
-                        num_rbf=num_rbf,
-                        num_sbf=num_sbf,
-                        activation=activation,
-                        envelope_p=envelope_p,
-                        init_kwargs=init_kwargs
-                        )
+        net = DimeNetPP(r_cutoff, n_species, num_targets=1, **dimenetpp_kwargs)
 
         per_atom_energies = net(graph_rep, species, **dynamic_kwargs)
         gnn_energy = util.high_precision_sum(per_atom_energies)
@@ -329,19 +276,27 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
     return model.init, model.apply
 
 
-class PairwiseNNEnergy(hk.Module):
-    """A neural network predicting the potential energy from pairwise
-     interactions.
+class PairwiseNN(hk.Module):
+    """A neural network predicting pairwise edge quantities
+
+     Can be used for energy prediction for pairwise interactions.
      """
     def __init__(self,
                  r_cutoff: float,
                  hidden_layers,
-                 init_kwargs,
-                 activation=jax_nn.swish,
+                 init_kwargs: Dict = None,
+                 activation: Callable = jax_nn.swish,
                  num_rbf: int = 6,
                  envelope_p: int = 6,
                  name: str = 'PairNN'):
         super().__init__(name=name)
+
+        if init_kwargs is None:
+            init_kwargs = {
+                'w_init': layers.OrthogonalVarianceScalingInit(scale=1.),
+                'b_init': hk.initializers.Constant(0.),
+            }
+
         self.embedding = layers.RadialBesselLayer(r_cutoff, num_radial=num_rbf,
                                                   envelope_p=envelope_p)
         self.pair_nn = hk.nets.MLP(hidden_layers, activation=activation,
@@ -364,10 +319,7 @@ class PairwiseNNEnergy(hk.Module):
 def pair_interaction_nn(displacement: space.DisplacementFn,
                         r_cutoff: float,
                         hidden_layers,
-                        activation=jax_nn.swish,
-                        num_rbf: int = 6,
-                        envelope_p: int = 6,
-                        init_kwargs: Dict = None):
+                        **pair_net_kwargs):
     """An MLP acting on pairwise distances independently and
     summing the contributions.
 
@@ -379,22 +331,14 @@ def pair_interaction_nn(displacement: space.DisplacementFn,
         r_cutoff: Radial cut-off of pairwise interactions and neighbor list
         hidden_layers: A list (or scalar in the case of a single hidden layer)
                        of number of neurons for each hidden layer in the MLP
-        activation: Activation function
-        num_rbf: Number of radial Bessel embedding functions
-        envelope_p: Power of envelope polynomial
-        init_kwargs: Kwargs for initializaion of MLP
+        pair_net_kwargs: Kwargs to change the default structure of PairwiseNN.
+                         For definition of the kwargs, see PairwiseNN.
 
     Returns:
         A tuple of 2 functions: A init_fn that initializes the model parameters
         and an energy function that computes the energy for a particular state
         given model parameters.
     """
-
-    if init_kwargs is None:
-        init_kwargs = {
-          'w_init': layers.OrthogonalVarianceScalingInit(scale=1.),
-          'b_init': hk.initializers.Constant(0.),
-        }
 
     if jnp.isscalar(hidden_layers):
         hidden_layers = [hidden_layers]
@@ -420,8 +364,7 @@ def pair_interaction_nn(displacement: space.DisplacementFn,
         pair_distances = jnp.where(neighbor_mask, pair_distances,
                                    2. * r_cutoff)
 
-        net = PairwiseNNEnergy(r_cutoff, hidden_layers, init_kwargs, activation,
-                               num_rbf, envelope_p)
+        net = PairwiseNN(r_cutoff, hidden_layers, **pair_net_kwargs)
         per_pair_energy = net(pair_distances, species, **dynamic_kwargs)
         # pairs are counted twice
         pot_energy = util.high_precision_sum(per_pair_energy) / 2.
