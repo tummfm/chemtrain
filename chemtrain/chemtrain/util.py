@@ -216,24 +216,28 @@ def get_dataset(data_location_str, retain=None, subsampling=1):
 
 
 def train_test_split(dataset, train_ratio=0.8):
-    """Train-test split for numpy datasets.
+    """Train-test split for datasets. Works on arbitrary pytrees, including
+    single arrays.
 
     The validation dataset is considered part of the train dataset and can be
     split afterwards.
 
     Args:
-        dataset: Numpy dataset array. Samples are assumed to be stacked along
+        dataset: Dataset pytree. Samples are assumed to be stacked along
                  axis 0.
         train_ratio: Percantage of dataset to use for training. The remainder is
                      used for testing.
 
     Returns:
-        Tuple (train_data, val_data) of respective numpy datasets.
+        Tuple (train_data, val_data) with the same shape as the input pytree,
+        but split along axis 0.
     """
-    dataset_size = dataset.shape[0]
+    leaves, _ = tree_flatten(dataset)
+    dataset_size = leaves[0].shape[0]
     train_size = int(dataset_size * train_ratio)
-    train_data, val_data = onp.split(dataset, [train_size])  # pylint: disable=unbalanced-tuple-unpacking
-    return train_data, val_data
+    train_data = tree_get_slice(dataset, 0, train_size)
+    test_data = tree_get_slice(dataset, train_size, None)
+    return train_data, test_data
 
 
 def scale_dataset_fractional(traj, box):
