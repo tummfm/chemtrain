@@ -28,8 +28,8 @@ class ForceMatching(util.MLETrainerTemplate):
     def __init__(self, init_params, energy_fn_template, nbrs_init,
                  optimizer, position_data, energy_data=None, force_data=None,
                  virial_data=None, box_tensor=None, gamma_f=1., gamma_p=1.e-6,
-                 batch_per_device=1, batch_cache=10, train_ratio=0.875,
-                 convergence_criterion='window_median',
+                 batch_per_device=1, batch_cache=10, train_ratio=0.7,
+                 val_ratio=0.1, convergence_criterion='window_median',
                  checkpoint_folder='Checkpoints', print_mae=False):
 
         checkpoint_path = 'output/force_matching/' + str(checkpoint_folder)
@@ -50,12 +50,14 @@ class ForceMatching(util.MLETrainerTemplate):
             checkpoint_path=checkpoint_path,
             reference_energy_fn_template=energy_fn_template)
 
-        self.batches_per_epoch, self.get_train_batch, self.get_val_batch,\
-            self.train_batch_state, self.val_batch_state, virial_fn,\
-            self.training_dict_keys, self.mae_fn, self.mae_data_state = \
-            self._process_dataset(
-                position_data, train_ratio, energy_data, force_data,
-                virial_data, box_tensor, batch_per_device, batch_cache
+        # TODO use test_set for independent evaluation after training
+        (self.batches_per_epoch, self.get_train_batch, self.get_val_batch,
+         self.get_test_batch, self.train_batch_state, self.val_batch_state,
+         self.test_batch_state, virial_fn, self.test_dataset,
+         self.training_dict_keys, self.mae_fn, self.mae_data_state
+         ) = self._process_dataset(
+            position_data, energy_data, force_data, virial_data, box_tensor,
+            batch_per_device, batch_cache, train_ratio, val_ratio
             )
         self.train_losses, self.val_losses, self.validation_mae = [], [], []
         self.early_stop = util.EarlyStopping(criterion=convergence_criterion)
@@ -65,24 +67,22 @@ class ForceMatching(util.MLETrainerTemplate):
             gamma_p=gamma_p, virial_fn=virial_fn
         )
 
-    def update_dataset(self, position_data, train_ratio=0.875, energy_data=None,
+    def update_dataset(self, position_data, energy_data=None,
                        force_data=None, virial_data=None, box_tensor=None,
-                       batch_per_device=1, batch_cache=10, **grad_fns_kwargs):
+                       batch_per_device=1, batch_cache=10, train_ratio=0.7,
+                       val_ratio=0.1, **grad_fns_kwargs):
         """Allows changing dataset on the fly, which is particularly
         useful for active learning applications.
         """
         self.n_devices = device_count()
-        self.batches_per_epoch, self.get_train_batch, \
-            self.get_val_batch, self.train_batch_state, self.val_batch_state, \
-            virial_fn, training_dict_keys, self.mae_fn, self.mae_data_state = \
-            self._process_dataset(position_data,
-                                  train_ratio,
-                                  energy_data,
-                                  force_data,
-                                  virial_data,
-                                  box_tensor,
-                                  batch_per_device,
-                                  batch_cache)
+        (self.batches_per_epoch, self.get_train_batch, self.get_val_batch,
+         self.get_test_batch, self.train_batch_state, self.val_batch_state,
+         self.test_batch_state, virial_fn, self.test_dataset,
+         training_dict_keys, self.mae_fn, self.mae_data_state
+         ) = self._process_dataset(
+                position_data, energy_data, force_data, virial_data, box_tensor,
+                batch_per_device, batch_cache, train_ratio, val_ratio
+        )
 
         if training_dict_keys != self.training_dict_keys:
             # the target quantities changes with respect to initialization
@@ -93,15 +93,15 @@ class ForceMatching(util.MLETrainerTemplate):
         # reset convergence criterion as loss might not be comparable
         self.early_stop.reset_convergence_losses()
 
-    def _process_dataset(self, position_data, train_ratio=0.875,
-                         energy_data=None, force_data=None, virial_data=None,
-                         box_tensor=None, batch_per_device=1, batch_cache=10,
-                         ):
-        # Default train_ratio represents 70-10-20 split, when 20 % test
-        # data was already deducted
+    def _process_dataset(self, position_data, energy_data=None, force_data=None,
+                         virial_data=None, box_tensor=None, batch_per_device=1,
+                         batch_cache=10, train_ratio=0.7, val_ratio=0.1):
 
-        train_loader, val_loader = force_matching.init_dataloaders(
-            position_data, energy_data, force_data, virial_data, train_ratio)
+        dataset = force_matching.build_dataset(position_data, energy_data,
+                                               force_data, virial_data)
+        train_loader, val_loader, test_loader, test_set = util.init_dataloaders(
+            dataset, train_ratio, val_ratio)
+
         virial_fn = force_matching.init_virial_fn(
             virial_data, self.reference_energy_fn_template, box_tensor)
 
@@ -111,8 +111,11 @@ class ForceMatching(util.MLETrainerTemplate):
             train_loader, batch_cache, batch_size)
         init_val_batch, get_val_batch = data.random_reference_data(
             val_loader, batch_cache, batch_size)
+        init_test_batch, get_test_batch = data.random_reference_data(
+            test_loader, batch_size, batch_size)
         train_batch_state = init_train_batch()
         val_batch_state = init_val_batch()
+        test_batch_state = init_test_batch()
 
         if self.print_mae:
             mae_fn, mae_init_state = force_matching.init_mae_fn(
@@ -123,9 +126,10 @@ class ForceMatching(util.MLETrainerTemplate):
             mae_fn = None
             mae_init_state = None
 
-        return batches_per_epoch, get_train_batch, get_val_batch, \
-            train_batch_state, val_batch_state, virial_fn, \
-            train_loader._reference_data.keys(), mae_fn, mae_init_state
+        return (batches_per_epoch, get_train_batch, get_val_batch,
+                get_test_batch, train_batch_state, val_batch_state,
+                test_batch_state, virial_fn, test_set,
+                train_loader._reference_data.keys(), mae_fn, mae_init_state)
 
     @property
     def params(self):
@@ -656,6 +660,8 @@ class SGMCForceMatching(probabilistic.ProbabilisticFMTrainerTemplate):
 
         # TODO use val dataloader to compute posterior predictive p value or
         #  other convergence metric. In ProbabilisticFMTrainerTemplate??
+
+        # TODO also use test_set?
 
     def train(self, iterations):
         """Training of any trainer should start by calling train."""

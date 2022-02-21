@@ -13,6 +13,7 @@ import numpy as onp
 import optax
 from jax import lax, tree_map, tree_leaves, tree_flatten, numpy as jnp
 from jax_md import util, simulate
+from jax_sgmc import data
 
 from chemtrain.jax_md_mod import custom_space
 
@@ -215,29 +216,49 @@ def get_dataset(data_location_str, retain=None, subsampling=1):
     return data
 
 
-def train_test_split(dataset, train_ratio=0.8):
-    """Train-test split for datasets. Works on arbitrary pytrees, including
-    single arrays.
-
-    The validation dataset is considered part of the train dataset and can be
-    split afterwards.
+def train_val_test_split(dataset, train_ratio=0.7, val_ratio=0.1):
+    """Train-validation-test split for datasets. Works on arbitrary pytrees,
+    including chex.dataclasses, dictionaries and single arrays.
 
     Args:
         dataset: Dataset pytree. Samples are assumed to be stacked along
                  axis 0.
-        train_ratio: Percantage of dataset to use for training. The remainder is
-                     used for testing.
+        train_ratio: Percantage of dataset to use for training.
+        val_ratio: Percantage of dataset to use for validation.
 
     Returns:
-        Tuple (train_data, val_data) with the same shape as the input pytree,
-        but split along axis 0.
+        Tuple (train_data, val_data, test_data) with the same shape as the input
+        pytree, but split along axis 0.
     """
     leaves, _ = tree_flatten(dataset)
     dataset_size = leaves[0].shape[0]
     train_size = int(dataset_size * train_ratio)
+    val_size = int(dataset_size * val_ratio)
     train_data = tree_get_slice(dataset, 0, train_size)
-    test_data = tree_get_slice(dataset, train_size, None)
-    return train_data, test_data
+    val_data = tree_get_slice(dataset, train_size, train_size + val_size)
+    test_data = tree_get_slice(dataset, train_size + val_size, None)
+    return train_data, val_data, test_data
+
+
+def init_dataloaders(dataset, train_ratio=0.7, val_ratio=0.1):
+    """Splits dataset and initializes dataloaders.
+
+    Args:
+        dataset: Dictionary containing the whole dataset. The NumpyDataLoader
+                 returns batches with the same kwargs as provided in dataset.
+        train_ratio: Percantage of dataset to use for training.
+        val_ratio: Percantage of dataset to use for validation.
+
+    Returns:
+        A tuple (train_loader, val_loader, test_loader, test_set) of
+        NumpyDataLoaders and the test data.
+    """
+    train_set, val_set, test_set = train_val_test_split(
+        dataset, train_ratio, val_ratio)
+    train_loader = data.NumpyDataLoader(**train_set)
+    val_loader = data.NumpyDataLoader(**val_set)
+    test_loader = data.NumpyDataLoader(**test_set)
+    return train_loader, val_loader, test_loader, test_set
 
 
 def scale_dataset_fractional(traj, box):

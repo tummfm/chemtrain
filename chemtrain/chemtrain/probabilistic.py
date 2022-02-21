@@ -105,8 +105,8 @@ def init_force_matching(
         energy_param_prior, energy_fn_template, nbrs_init, init_params,
         position_data, energy_data=None, energy_scale=None, force_data=None,
         force_scale=None, virial_data=None, virial_scale=None, box_tensor=None,
-        train_ratio=0.875, likelihood_distribution=jscipy.stats.norm.logpdf,
-        draw_std=False):
+        train_ratio=0.7, val_ratio=0.1,
+        likelihood_distribution=jscipy.stats.norm.logpdf, draw_std=False):
     """Initializes a compatible set of prior, likelihood, initial MCMC samples
     as well as train and validation loaders  for learning probabilistic
     potentials via force-matching.
@@ -140,6 +140,8 @@ def init_force_matching(
         box_tensor: Box tensor, only needed if virial_data used.
         train_ratio: Ratio of dataset to be used for training. The remaining
                      data can be used for validation.
+        val_ratio: Ratio of dataset to be used for validation. The remaining
+                   data will be used for testing.
         likelihood_distribution: Likelihood distribution, defaults to Gaussian.
         draw_std: If True, draws initial likelihood std values from the
                   exponential prior distribution. If False, sets it to the
@@ -147,14 +149,17 @@ def init_force_matching(
 
     Returns:
         A tuple (prior_fn, likelihood_fn, init_samples, train_loader,
-        val_loader). Prior and likelihood can be used to construct the potential
-        function for Hamiltonian MCMC formulations. Init_samples is a list of
-        initial values for multiple MCMC chains, e.g. for SGMCMCTrainer. The
-        data loaders are jax-sgmc NumpyDataloaders used during training and for
-        validation.
+        val_loader, test_loader, test_set). Prior and likelihood can be used to
+        construct the potential function for Hamiltonian MCMC formulations.
+        Init_samples is a list of initial values for multiple MCMC chains,
+        e.g. for SGMCMCTrainer. The data loaders are jax-sgmc NumpyDataloaders
+        used for training, validation and testing. The test_set can be used for
+        further analyses of the trained model on unseen data.
     """
-    train_loader, val_loader = force_matching.init_dataloaders(
-        position_data, energy_data, force_data, virial_data, train_ratio)
+    dataset = force_matching.build_dataset(position_data, energy_data,
+                                           force_data, virial_data)
+    train_loader, val_loader, test_loader, test_set = util.init_dataloaders(
+        dataset, train_ratio, val_ratio)
 
     virial_fn = force_matching.init_virial_fn(virial_data, energy_fn_template,
                                               box_tensor)
@@ -195,7 +200,8 @@ def init_force_matching(
                                                           draw_std)
         init_samples.append(sample)
 
-    return prior_fn, likelihood_fn, init_samples, train_loader, val_loader
+    return (prior_fn, likelihood_fn, init_samples, train_loader, val_loader,
+            test_loader, test_set)
 
 
 def init_log_posterior_fn(likelihood, prior, train_loader, batch_size,

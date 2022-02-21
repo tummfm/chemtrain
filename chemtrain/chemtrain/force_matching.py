@@ -32,29 +32,20 @@ position: atomic positions
 """
 
 
-def init_dataloaders(position_data, energy_data=None, force_data=None,
-                     virial_data=None, train_ratio=0.875):
-    """Initializes NumpyDataLoaders for training and validation in a
-    force-matching context."""
-    r_train, r_val = util.train_test_split(position_data, train_ratio)
-    train_dict = {'R': r_train}
-    val_dict = {'R': r_val}
-    if energy_data is not None:
-        u_train, u_val = util.train_test_split(energy_data, train_ratio)
-        train_dict['U'] = u_train
-        val_dict['U'] = u_val
-    if force_data is not None:
-        f_train, f_val = util.train_test_split(force_data, train_ratio)
-        train_dict['F'] = f_train
-        val_dict['F'] = f_val
-    if virial_data is not None:
-        p_train, p_val = util.train_test_split(virial_data, train_ratio)
-        train_dict['p'] = p_train
-        val_dict['p'] = p_val
+def build_dataset(position_data, energy_data=None, force_data=None,
+                  virial_data=None):
+    """Builds the force-matching dataset depending on available data.
 
-    train_loader = data.NumpyDataLoader(**train_dict)
-    val_loader = data.NumpyDataLoader(**val_dict)
-    return train_loader, val_loader
+    Interface of force-loss function depends on dict keys set here.
+    """
+    dataset = {'R': position_data}
+    if energy_data is not None:
+        dataset['U'] = energy_data
+    if force_data is not None:
+        dataset['F'] = force_data
+    if virial_data is not None:
+        dataset['p'] = virial_data
+    return dataset
 
 
 def init_virial_fn(virial_data, energy_fn_template, box_tensor):
