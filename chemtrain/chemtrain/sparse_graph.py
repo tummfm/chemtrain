@@ -335,7 +335,8 @@ def _pad_graph(final_size, quantities, connectivities):
     return padded_quantities, padded_connectivities
 
 
-def convert_dataset_to_graphs(r_cutoff, position_data, box, padding=True):
+def convert_dataset_to_graphs(r_cutoff, position_data, box, species,
+                              padding=True):
     """Converts input consisting of particle poistions and boxes to a dataset
     of sparse graph representations.
 
@@ -352,6 +353,9 @@ def convert_dataset_to_graphs(r_cutoff, position_data, box, padding=True):
         box: Either a single 1 or 2-dimensional box (if the box is constant
              across snapshots) or an (N_snapshots, dim) or
              (N_snapshots, dim, dim) array of boxes.
+        species: Either a list of (N_particles,) arrays of atom types in case
+                 N_particles is not constant accross snapshots or a single
+                 (N_particles,) array.
         padding: If True, pads resulting edges and triplets to the maximum
                  across the input data to allow for straightforward batching
                  without re-compilation. If False, returns edges and triplets
@@ -359,10 +363,10 @@ def convert_dataset_to_graphs(r_cutoff, position_data, box, padding=True):
                  triplets.
 
     Returns:
-        A dictionary containing the whole definitions of the sparse molecular
-        graph, except for species. These are given as Lists without padding and
-        as (N_snapshots, X) arrays with padding. Refer to
-        SparseDirectionalGraph for respective definitions.
+        With padding, a SparseDirectionalGraph pytree containing all graphs of
+        the dataset, stacked along axis 0. Without padding, a dictionary
+        containing the whole definitions of the sparse molecular graph, given
+        as Lists. Refer to SparseDirectionalGraph for respective definitions.
     """
     # canonicalize inputs to lists
     if not isinstance(position_data, list):
@@ -374,6 +378,8 @@ def convert_dataset_to_graphs(r_cutoff, position_data, box, padding=True):
         box = [box[i] for i in range(n_snapshots)]
     else:  # a single box
         box = [box for _ in range(n_snapshots)]
+    if not isinstance(species, list):
+        species = [species for _ in range(n_snapshots)]
 
     max_edges = 0
     max_triplets = 0
@@ -407,15 +413,20 @@ def convert_dataset_to_graphs(r_cutoff, position_data, box, padding=True):
     if padding:
         dists, edges = _pad_graph(max_edges, dists, edges)
         angles, triplets = _pad_graph(max_triplets, angles, triplets)
+        species, species_mask = pad_species(species)
+    else:
+        species_mask = [jnp.ones_like(species_arr) for species_arr in species]
 
     # save in dict for better transparency
     graph_rep = {
+        'species': species,
         'distance_ij': dists,
         'idx_i': [edge[:, 0] for edge in edges],
         'idx_j': [edge[:, 1] for edge in edges],
         'angles': angles,
         'reduce_to_ji': [triplet[:, 0] for triplet in triplets],
         'expand_to_kj': [triplet[:, 1] for triplet in triplets],
+        'species_mask': species_mask,
         'edge_mask': [onp.array(edge[:, 2], dtype=bool) for edge in edges],
         'triplet_mask': [onp.array(triplet[:, 2], dtype=bool)
                          for triplet in triplets]
@@ -423,6 +434,7 @@ def convert_dataset_to_graphs(r_cutoff, position_data, box, padding=True):
 
     if padding:  # when padded, we can return arrays instead of lists
         graph_rep = {key: onp.array(value) for key, value in graph_rep.items()}
+        graph_rep = SparseDirectionalGraph(**graph_rep)
 
     return graph_rep
 
@@ -438,8 +450,8 @@ def pad_species(species_data):
                       type of each particle.
 
     Returns:
-        A dictionary padded species vectors and corresponding species mask
-        vector. The dict keys are consistent with SparseDirectionalGraph.
+        A (N_snapshots, N_particles) padded species array and corresponding
+        species mask array.
     """
     max_particles = max([species.size for species in species_data])
     n_snapshots = len(species_data)
@@ -448,4 +460,4 @@ def pad_species(species_data):
     for i, species in enumerate(species_data):
         padded_species[i, :species.size] = species
         species_mask[i, :species.size] = True
-    return {'species': padded_species, 'species_mask': species_mask}
+    return padded_species, species_mask
