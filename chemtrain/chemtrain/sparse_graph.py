@@ -67,6 +67,24 @@ class SparseDirectionalGraph:
     def n_particles(self):
         return jnp.sum(self.species_mask)
 
+    @property
+    def dict(self):
+        """Returns the stored graph data as a dictionary of arrays.
+        This format is often beneficial for dataloaders.
+        """
+        return {
+            'species': self.species,
+            'distance_ij': self.distance_ij,
+            'idx_i': self.idx_i,
+            'idx_j': self.idx_j,
+            'angles': self.angles,
+            'reduce_to_ji': self.reduce_to_ji,
+            'expand_to_kj': self.expand_to_kj,
+            'species_mask': self.species_mask,
+            'edge_mask': self.edge_mask,
+            'triplet_mask': self.triplet_mask
+        }
+
     def cap_exactly(self):
         """Deletes all non-existing edges and triplets from the stored graph.
 
