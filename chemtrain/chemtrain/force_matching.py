@@ -5,10 +5,10 @@ from collections import namedtuple
 from functools import partial
 
 from coax.utils._jit import jit
-from jax import vmap, lax, value_and_grad, pmap, numpy as jnp
+from jax import vmap, value_and_grad, numpy as jnp
 from jax_sgmc import data
 
-from chemtrain import util
+from chemtrain import util, max_likelihood
 from chemtrain.jax_md_mod import custom_quantity
 
 # Note:
@@ -88,13 +88,26 @@ def init_single_prediction(nbrs_init, energy_fn_template, virial_fn=None):
     return single_prediction
 
 
-def init_update_fns(energy_fn_template, nbrs_init, optimizer, gamma_f=1.,
-                    gamma_p=1.e-6, virial_fn=None):
+def init_update_fns(energy_fn_template, nbrs_init, optimizer, gamma_u=1.,
+                    gamma_f=1., gamma_p=1.e-6, virial_fn=None):
     """Initializes update functions for energy and/or force matching.
 
     The returned functions are jit and can therefore not be pickled.
-    """
 
+    Args:
+        energy_fn_template: Energy function template
+        nbrs_init: Initial neighbor list
+        optimizer: Optax optimizer
+        gamma_u: Weight for potential energy loss component
+        gamma_f: Weight for force loss component
+        gamma_p: Weight for virial loss component
+        virial_fn: Function to compute virial pressure
+
+    Returns:
+        A tuple (batch_update, batched_loss_fn) of pmapped functions. The former
+        computes the gradient and updates the parameters via the optimizer.
+        The latter returns the loss value, e.g. for the validation set.
+    """
     single_prediction = init_single_prediction(nbrs_init, energy_fn_template,
                                                virial_fn)
 
@@ -103,30 +116,15 @@ def init_update_fns(energy_fn_template, nbrs_init, optimizer, gamma_f=1.,
                                                                  batch['R'])
         loss = 0.
         if 'U' in batch.keys():  # energy loss component
-            loss += util.mse_loss(predictions['U'], batch['U'])
+            loss += gamma_u * util.mse_loss(predictions['U'], batch['U'])
         if 'F' in batch.keys():  # forces loss component
             loss += gamma_f * util.mse_loss(predictions['F'], batch['F'])
         if 'p' in batch.keys():  # virial loss component
             loss += gamma_p * util.mse_loss(predictions['p'], batch['p'])
         return loss
 
-    @partial(pmap, axis_name='devices')
-    def batched_loss_fn(params, batch):
-        loss = loss_fn(params, batch)
-        loss = lax.pmean(loss, axis_name='devices')
-        return loss
-
-    @partial(pmap, axis_name='devices')
-    def batch_update(params, opt_state, batch):
-        loss, grad = value_and_grad(loss_fn)(params, batch)
-
-        # step optimizer within pmap to minimize communication overhead
-        grad = lax.pmean(grad, axis_name='devices')
-        loss = lax.pmean(loss, axis_name='devices')
-        new_params, opt_state = util.step_optimizer(params, opt_state,
-                                                    grad, optimizer)
-        return new_params, opt_state, loss, grad
-
+    batch_update, batched_loss_fn = max_likelihood.pmap_loss_fn(loss_fn,
+                                                                optimizer)
     return batch_update, batched_loss_fn
 
 
