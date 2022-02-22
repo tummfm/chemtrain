@@ -322,7 +322,7 @@ class TrainerInterface(abc.ABC):
     @property
     @abc.abstractmethod
     def params(self):
-        """Short-cut for parameters. Depends on specific trainer"""
+        """Short-cut for parameters. Depends on specific trainer."""
 
     @params.setter
     @abc.abstractmethod

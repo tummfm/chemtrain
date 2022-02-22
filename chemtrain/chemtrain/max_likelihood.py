@@ -213,18 +213,6 @@ class MLETrainerTemplate(util.TrainerInterface):
         used to print callbacks, such as time per epoch and loss vales.
         """
 
-    @property
-    @abc.abstractmethod
-    def params(self):
-        """Short-cut for parameters. Cannot be implemented here due to
-        different parallelization schemes for different trainers.
-        """
-
-    @params.setter
-    @abc.abstractmethod
-    def params(self, loaded_params):
-        raise NotImplementedError()
-
     def move_to_device(self):
         self.state = tree_map(jnp.array, self.state)  # move on device
 
