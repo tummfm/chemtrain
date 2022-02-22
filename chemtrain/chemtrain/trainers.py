@@ -7,10 +7,10 @@ from jax import device_count, value_and_grad, random, numpy as jnp
 from jax_sgmc import data
 
 from chemtrain import (util, force_matching, traj_util, reweighting,
-                       probabilistic)
+                       probabilistic, max_likelihood)
 
 
-class ForceMatching(util.MLETrainerTemplate):
+class ForceMatching(max_likelihood.MLETrainerTemplate):
     """Force-matching trainer.
 
     This implementation assumes a constant number of particles per box and
@@ -60,7 +60,7 @@ class ForceMatching(util.MLETrainerTemplate):
             batch_per_device, batch_cache, train_ratio, val_ratio
             )
         self.train_losses, self.val_losses, self.validation_mae = [], [], []
-        self.early_stop = util.EarlyStopping(criterion=convergence_criterion)
+        self.early_stop = max_likelihood.EarlyStopping(convergence_criterion)
 
         self.grad_fns = force_matching.init_update_fns(
             energy_fn_template, nbrs_init, optimizer, gamma_f=gamma_f,
@@ -247,7 +247,7 @@ class Difftre(reweighting.PropagationBase):
 
         self.batch_losses, self.epoch_losses = [], []
         self.predictions = {}
-        self.early_stop = util.EarlyStopping(criterion=convergence_criterion)
+        self.early_stop = max_likelihood.EarlyStopping(convergence_criterion)
         # TODO doc: beware that for too short trajectory might have overfittet
         #  to single trajectory; if in doubt, set reweighting ratio = 1 towards
         #  end of optimization
@@ -539,7 +539,7 @@ class RelativeEntropy(reweighting.PropagationBase):
         # track of dataloader states for reference snapshots
         self.data_states = {}
 
-        self.early_stop = util.EarlyStopping(criterion=convergence_criterion)
+        self.early_stop = max_likelihood.EarlyStopping(convergence_criterion)
 
     def _set_dataset(self, key, reference_data, reference_batch_size,
                      batch_cache=1):

@@ -12,7 +12,7 @@ from jax import (checkpoint, lax, random, grad, tree_multimap, tree_map,
                  numpy as jnp)
 from jax_md import util as jax_md_util
 
-from chemtrain import util, traj_util, traj_quantity
+from chemtrain import util, traj_util, traj_quantity, max_likelihood
 from chemtrain.jax_md_mod import custom_quantity
 
 
@@ -305,7 +305,7 @@ def init_default_loss_fn(targets):
 
         for target_key in targets:
             average = targets[target_key]['traj_fn'](weighted_quant_trajs)
-            loss += targets[target_key]['gamma'] * util.mse_loss(
+            loss += targets[target_key]['gamma'] * max_likelihood.mse_loss(
                 average, targets[target_key]['target'])
             predictions[target_key] = average
         return loss, predictions
@@ -368,7 +368,7 @@ def init_rel_entropy_gradient(energy_fn_template, compute_weights, kbt):
     return rel_entropy_gradient
 
 
-class PropagationBase(util.MLETrainerTemplate):
+class PropagationBase(max_likelihood.MLETrainerTemplate):
     """Trainer base class for shared functionality whenever (multiple)
     simulations are run during training. Can be used as a template to
     build other trainers. Currently used for DiffTRe and relative entropy.

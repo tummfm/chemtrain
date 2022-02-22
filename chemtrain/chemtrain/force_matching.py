@@ -8,7 +8,7 @@ from coax.utils._jit import jit
 from jax import vmap, value_and_grad, numpy as jnp
 from jax_sgmc import data
 
-from chemtrain import util, max_likelihood
+from chemtrain import max_likelihood
 from chemtrain.jax_md_mod import custom_quantity
 
 # Note:
@@ -116,11 +116,14 @@ def init_update_fns(energy_fn_template, nbrs_init, optimizer, gamma_u=1.,
                                                                  batch['R'])
         loss = 0.
         if 'U' in batch.keys():  # energy loss component
-            loss += gamma_u * util.mse_loss(predictions['U'], batch['U'])
+            loss += gamma_u * max_likelihood.mse_loss(predictions['U'],
+                                                      batch['U'])
         if 'F' in batch.keys():  # forces loss component
-            loss += gamma_f * util.mse_loss(predictions['F'], batch['F'])
+            loss += gamma_f * max_likelihood.mse_loss(predictions['F'],
+                                                      batch['F'])
         if 'p' in batch.keys():  # virial loss component
-            loss += gamma_p * util.mse_loss(predictions['p'], batch['p'])
+            loss += gamma_p * max_likelihood.mse_loss(predictions['p'],
+                                                      batch['p'])
         return loss
 
     batch_update = max_likelihood.pmap_update_fn(loss_fn, optimizer)
@@ -149,16 +152,18 @@ def init_mae_fn(val_loader, nbrs_init, energy_fn_template, batch_size=1,
         maes = {}
         if 'U' in batch.keys():  # energy loss component
             u_mask = jnp.ones_like(predictions['U']) * mask
-            maes['energy'] = util.mae_loss(predictions['U'], batch['U'], u_mask)
+            maes['energy'] = max_likelihood.mae_loss(predictions['U'],
+                                                     batch['U'], u_mask)
         if 'F' in batch.keys():  # forces loss component
             f_mask = jnp.ones_like(predictions['F']) * mask[:, jnp.newaxis,
                                                             jnp.newaxis]
-            maes['forces'] = util.mae_loss(predictions['F'], batch['F'], f_mask)
+            maes['forces'] = max_likelihood.mae_loss(predictions['F'],
+                                                     batch['F'], f_mask)
         if 'p' in batch.keys():  # virial loss component
             p_mask = jnp.ones_like(predictions['p']) * mask[:, jnp.newaxis,
                                                             jnp.newaxis]
-            maes['pressure'] = util.mae_loss(predictions['p'], batch['p'],
-                                             p_mask)
+            maes['pressure'] = max_likelihood.mae_loss(predictions['p'],
+                                                       batch['p'], p_mask)
         return maes, unused_scan_carry
 
     @jit
