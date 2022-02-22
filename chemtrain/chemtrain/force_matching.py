@@ -123,8 +123,8 @@ def init_update_fns(energy_fn_template, nbrs_init, optimizer, gamma_u=1.,
             loss += gamma_p * util.mse_loss(predictions['p'], batch['p'])
         return loss
 
-    batch_update, batched_loss_fn = max_likelihood.pmap_loss_fn(loss_fn,
-                                                                optimizer)
+    batch_update = max_likelihood.pmap_update_fn(loss_fn, optimizer)
+    batched_loss_fn = max_likelihood.pmap_loss_fn(loss_fn)
     return batch_update, batched_loss_fn
 
 

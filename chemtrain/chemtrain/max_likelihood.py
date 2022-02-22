@@ -8,33 +8,24 @@ from jax import lax, pmap, value_and_grad
 from chemtrain import util
 
 
-def pmap_loss_fn(loss_fn, optimizer):
-    """Initializes pmapped functions for updating parameters and computing loss
-    values.
+def pmap_update_fn(loss_fn, optimizer):
+    """Initializes a pmapped function for updating parameters.
 
     Usage:
     params, opt_state, loss, grad = update_fn(params, opt_state, batch)
-    val_loss = batched_loss_fn(params, val_batch)
 
     For pmap, batch needs to be reshaped to (N_devices, batch_per_device, X) and
     params needs to be N_devices times duplicated along axis 0.
 
 
     Args:
-        loss_fn: Loss function to minimize
+        loss_fn: Loss function to minimize that takes (params, batch) as input.
         optimizer: Optax optimizer
 
     Returns:
-        A tuple (batch_update, batched_loss_fn) of pmapped functions. The former
-        computes the gradient and updates the parameters via the optimizer.
-        The latter returns the loss value, e.g. for the validation set.
+        A function that computes the gradient and updates the parameters via the
+        optimizer.
     """
-    @partial(pmap, axis_name='devices')
-    def batched_loss_fn(params, batch):
-        loss = loss_fn(params, batch)
-        loss = lax.pmean(loss, axis_name='devices')
-        return loss
-
     @partial(pmap, axis_name='devices')
     def batch_update(params, opt_state, batch):
         loss, grad = value_and_grad(loss_fn)(params, batch)
@@ -45,4 +36,30 @@ def pmap_loss_fn(loss_fn, optimizer):
         new_params, opt_state = util.step_optimizer(params, opt_state,
                                                     grad, optimizer)
         return new_params, opt_state, loss, grad
-    return batch_update, batched_loss_fn
+    return batch_update
+
+
+def pmap_loss_fn(loss_fn):
+    """Initializes a pmapped loss function.
+
+    The loss function can be used for evaluating the validation loss.
+    In priniple, any function with the same signature as loss_fn can be used.
+
+    Usage:
+    val_loss = batched_loss_fn(params, val_batch)
+
+    For pmap, batch needs to be reshaped to (N_devices, batch_per_device, X) and
+    params needs to be N_devices times duplicated along axis 0.
+
+    Args:
+        loss_fn: Loss function that takes (params, batch) as input.
+
+    Returns:
+        A pmapped function that returns the loss value.
+    """
+    @partial(pmap, axis_name='devices')
+    def batched_loss_fn(params, batch):
+        loss = loss_fn(params, batch)
+        loss = lax.pmean(loss, axis_name='devices')
+        return loss
+    return batched_loss_fn
