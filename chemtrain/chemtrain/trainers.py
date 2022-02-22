@@ -7,7 +7,7 @@ from jax import device_count, value_and_grad, random, numpy as jnp
 from jax_sgmc import data
 
 from chemtrain import (util, force_matching, traj_util, reweighting,
-                       probabilistic, max_likelihood)
+                       probabilistic, max_likelihood, data_processing)
 
 
 class ForceMatching(max_likelihood.MLETrainerTemplate):
@@ -99,8 +99,8 @@ class ForceMatching(max_likelihood.MLETrainerTemplate):
 
         dataset = force_matching.build_dataset(position_data, energy_data,
                                                force_data, virial_data)
-        train_loader, val_loader, test_loader, test_set = util.init_dataloaders(
-            dataset, train_ratio, val_ratio)
+        train_loader, val_loader, test_loader, test_set = \
+            data_processing.init_dataloaders(dataset, train_ratio, val_ratio)
 
         virial_fn = force_matching.init_virial_fn(
             virial_data, self.reference_energy_fn_template, box_tensor)

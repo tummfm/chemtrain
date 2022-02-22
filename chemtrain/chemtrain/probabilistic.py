@@ -10,7 +10,7 @@ from jax_sgmc import data, potential
 from scipy import stats
 import tree_math
 
-from chemtrain import force_matching, util, traj_util, dropout
+from chemtrain import force_matching, util, traj_util, dropout, data_processing
 
 
 # Modeling
@@ -158,8 +158,8 @@ def init_force_matching(
     """
     dataset = force_matching.build_dataset(position_data, energy_data,
                                            force_data, virial_data)
-    train_loader, val_loader, test_loader, test_set = util.init_dataloaders(
-        dataset, train_ratio, val_ratio)
+    train_loader, val_loader, test_loader, test_set = \
+        data_processing.init_dataloaders(dataset, train_ratio, val_ratio)
 
     virial_fn = force_matching.init_virial_fn(virial_data, energy_fn_template,
                                               box_tensor)
