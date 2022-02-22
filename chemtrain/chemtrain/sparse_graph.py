@@ -1,6 +1,7 @@
 """Functions to extract the sparse (angular) graph representation employed in
 DimeNet.
 """
+import inspect
 from typing import Optional, Callable, Tuple
 
 import chex
@@ -67,8 +68,7 @@ class SparseDirectionalGraph:
     def n_particles(self):
         return jnp.sum(self.species_mask)
 
-    @property
-    def dict(self):
+    def to_dict(self):
         """Returns the stored graph data as a dictionary of arrays.
         This format is often beneficial for dataloaders.
         """
@@ -84,6 +84,13 @@ class SparseDirectionalGraph:
             'edge_mask': self.edge_mask,
             'triplet_mask': self.triplet_mask
         }
+
+    @classmethod
+    def from_dict(cls, graph_dict):
+        return cls(**{
+            key: value for key, value in graph_dict.items()
+            if key in inspect.signature(cls).parameters
+        })
 
     def cap_exactly(self):
         """Deletes all non-existing edges and triplets from the stored graph.
