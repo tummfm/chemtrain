@@ -12,7 +12,7 @@ import cloudpickle as pickle
 import numpy as onp
 import optax
 from jax import lax, tree_map, tree_leaves, tree_flatten, numpy as jnp
-from jax_md import util, simulate
+from jax_md import simulate
 from jax_sgmc import data
 
 from chemtrain.jax_md_mod import custom_space
@@ -70,24 +70,49 @@ def neighbor_allocate(neighbor_fn, state, extra_capacity=0):
     return nbrs
 
 
-def mse_loss(predictions, targets):
-    """Computes mean squared error loss for given predictions and targets."""
-    squared_difference = jnp.square(targets - predictions)
-    mean_of_squares = util.high_precision_sum(
-        squared_difference) / predictions.size
-    return mean_of_squares
+def _masked_loss(per_element_loss, mask=None):
+    """Computes average loss, accounting for masked elements, if applicable."""
+    if mask is None:
+        return jnp.mean(per_element_loss)
+    else:
+        assert mask.shape == per_element_loss.shape, ('Mask requires same shape'
+                                                      ' as targets.')
+        real_contributors = jnp.sum(mask)
+        return jnp.sum(per_element_loss * mask) / real_contributors
+
+
+def mse_loss(predictions, targets, mask=None):
+    """Computes mean squared error loss for given predictions and targets.
+
+    Args:
+        predictions: Array of predictions
+        targets: Array of respective targets. Needs to have same shape as
+                 predictions.
+        mask: Mask contribution of some array elements. Needs to have same shape
+              as predictions. Default None applies no mask.
+
+    Returns:
+        Mean squared error loss value.
+    """
+    squared_differences = jnp.square(targets - predictions)
+    return _masked_loss(squared_differences, mask)
 
 
 def mae_loss(predictions, targets, mask=None):
-    """Computes the mean absolute error for given predictions and targets."""
+    """Computes the mean absolute error for given predictions and targets.
+
+    Args:
+        predictions: Array of predictions
+        targets: Array of respective targets. Needs to have same shape as
+                 predictions.
+        mask: Mask contribution of some array elements. Needs to have same shape
+              as predictions. Default None applies no mask.
+
+    Returns:
+        Mean absolute error value.
+    """
     abs_err = jnp.abs(targets - predictions)
-    if mask is None:
-        return jnp.mean(abs_err)
-    else:
-        non_masked_samples = jnp.sum(mask)
-        per_sample_err = jnp.mean(abs_err,
-                                  axis=tuple(range(1, predictions.ndim)))
-        return jnp.sum(per_sample_err * mask) / non_masked_samples
+    return _masked_loss(abs_err, mask)
 
 
 def step_optimizer(params, opt_state, grad, optimizer):
@@ -211,9 +236,9 @@ def get_dataset(data_location_str, retain=None, subsampling=1):
     Returns:
         Subsampled data array
     """
-    data = onp.load(data_location_str)
-    data = data[:retain:subsampling]
-    return data
+    loaded_data = onp.load(data_location_str)
+    loaded_data = loaded_data[:retain:subsampling]
+    return loaded_data
 
 
 def train_val_test_split(dataset, train_ratio=0.7, val_ratio=0.1):

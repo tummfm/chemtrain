@@ -148,12 +148,17 @@ def init_mae_fn(val_loader, nbrs_init, energy_fn_template, batch_size=1,
                                                                  batch['R'])
         maes = {}
         if 'U' in batch.keys():  # energy loss component
-            maes['energy'] = util.mae_loss(predictions['U'], batch['U'], mask)
+            u_mask = jnp.ones_like(predictions['U']) * mask
+            maes['energy'] = util.mae_loss(predictions['U'], batch['U'], u_mask)
         if 'F' in batch.keys():  # forces loss component
-            maes['forces'] = util.mae_loss(predictions['F'], batch['F'], mask)
+            f_mask = jnp.ones_like(predictions['F']) * mask[:, jnp.newaxis,
+                                                            jnp.newaxis]
+            maes['forces'] = util.mae_loss(predictions['F'], batch['F'], f_mask)
         if 'p' in batch.keys():  # virial loss component
+            p_mask = jnp.ones_like(predictions['p']) * mask[:, jnp.newaxis,
+                                                            jnp.newaxis]
             maes['pressure'] = util.mae_loss(predictions['p'], batch['p'],
-                                           mask)
+                                             p_mask)
         return maes, unused_scan_carry
 
     @jit
