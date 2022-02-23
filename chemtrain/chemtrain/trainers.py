@@ -3,14 +3,37 @@ import warnings
 
 from blackjax import nuts, stan_warmup
 from coax.utils._jit import jit
-from jax import device_count, value_and_grad, random, numpy as jnp
+from jax import value_and_grad, random, numpy as jnp
 from jax_sgmc import data
 
 from chemtrain import (util, force_matching, traj_util, reweighting,
-                       probabilistic, max_likelihood, data_processing)
+                       probabilistic, max_likelihood, property_prediction)
 
 
-class ForceMatching(max_likelihood.MLETrainerTemplate):
+class PropertyPrediction(max_likelihood.DataParallelTrainer):
+    """Trainer for direct prediction of molecular properties."""
+    def __init__(self, error_fn, model, init_params, optimizer, graph_dataset,
+                 targets, batch_per_device=1, batch_cache=10, train_ratio=0.7,
+                 val_ratio=0.1, convergence_criterion='window_median',
+                 checkpoint_folder='Checkpoints'):
+
+        # TODO documentation
+        checkpoint_path = 'output/property_prediction/' + str(checkpoint_folder)
+        dataset = self._build_dataset(targets, graph_dataset)
+        update_fn = property_prediction.init_update_fn(model, error_fn,
+                                                       optimizer)
+
+        super().__init__(dataset, update_fn, init_params, optimizer,
+                         checkpoint_path, batch_per_device, batch_cache,
+                         train_ratio, val_ratio,
+                         convergence_criterion=convergence_criterion)
+
+    @staticmethod
+    def _build_dataset(targets, graph_dataset):
+        return property_prediction.build_dataset(targets, graph_dataset)
+
+
+class ForceMatching(max_likelihood.DataParallelTrainer):
     """Force-matching trainer.
 
     This implementation assumes a constant number of particles per box and
@@ -19,8 +42,6 @@ class ForceMatching(max_likelihood.MLETrainerTemplate):
     based on padded sparse neighborlists.
     Caution: Currently neighborlist overflow is not checked.
     Make sure to build nbrs_init large enough.
-
-    Beware that print_mae comes at additional computational cost.
 
     Virial data is pressure tensor, i.e. negative stress tensor
 
@@ -33,173 +54,38 @@ class ForceMatching(max_likelihood.MLETrainerTemplate):
                  checkpoint_folder='Checkpoints', print_mae=False):
 
         checkpoint_path = 'output/force_matching/' + str(checkpoint_folder)
+        dataset = self._build_dataset(position_data, energy_data, force_data,
+                                      virial_data)
 
-        # setup dataset
-        self.n_devices = device_count()
-        self.print_mae = print_mae
-        self.nbrs_init = nbrs_init
+        virial_fn = force_matching.init_virial_fn(
+            virial_data, energy_fn_template, box_tensor)
 
-        # replicate params and optimizer states for pmap
-        opt_state = optimizer.init(init_params)  # initialize optimizer state
-        init_params = util.tree_replicate(init_params, self.n_devices)
-        opt_state = util.tree_replicate(opt_state, self.n_devices)
-        init_state = util.TrainerState(params=init_params,
-                                       opt_state=opt_state)
-        super().__init__(
-            optimizer=optimizer, init_state=init_state,
-            checkpoint_path=checkpoint_path,
-            reference_energy_fn_template=energy_fn_template)
-
-        # TODO use test_set for independent evaluation after training
-        (self.batches_per_epoch, self.get_train_batch, self.get_val_batch,
-         self.get_test_batch, self.train_batch_state, self.val_batch_state,
-         self.test_batch_state, virial_fn, self.test_dataset,
-         self.training_dict_keys, self.mae_fn, self.mae_data_state
-         ) = self._process_dataset(
-            position_data, energy_data, force_data, virial_data, box_tensor,
-            batch_per_device, batch_cache, train_ratio, val_ratio
-            )
-        self.train_losses, self.val_losses, self.validation_mae = [], [], []
-        self.early_stop = max_likelihood.EarlyStopping(convergence_criterion)
-
-        self.grad_fns = force_matching.init_update_fns(
+        update_fn = force_matching.init_update_fn(
             energy_fn_template, nbrs_init, optimizer, gamma_f=gamma_f,
             gamma_p=gamma_p, virial_fn=virial_fn
         )
 
-    def update_dataset(self, position_data, energy_data=None,
-                       force_data=None, virial_data=None, box_tensor=None,
-                       batch_per_device=1, batch_cache=10, train_ratio=0.7,
-                       val_ratio=0.1, **grad_fns_kwargs):
-        """Allows changing dataset on the fly, which is particularly
-        useful for active learning applications.
-        """
-        self.n_devices = device_count()
-        (self.batches_per_epoch, self.get_train_batch, self.get_val_batch,
-         self.get_test_batch, self.train_batch_state, self.val_batch_state,
-         self.test_batch_state, virial_fn, self.test_dataset,
-         training_dict_keys, self.mae_fn, self.mae_data_state
-         ) = self._process_dataset(
-                position_data, energy_data, force_data, virial_data, box_tensor,
-                batch_per_device, batch_cache, train_ratio, val_ratio
-        )
+        super().__init__(dataset, update_fn, init_params, optimizer,
+                         checkpoint_path, batch_per_device, batch_cache,
+                         train_ratio, val_ratio,
+                         convergence_criterion=convergence_criterion,
+                         energy_fn_template=energy_fn_template)
 
-        if training_dict_keys != self.training_dict_keys:
-            # the target quantities changes with respect to initialization
-            # we need to re-initialize grad_fns
-            self.grad_fns = force_matching.init_update_fns(
-                virial_fn=virial_fn, **grad_fns_kwargs)
+        # # TODO generalize
+        # if self.print_mae:
+        #     mae_fn, mae_init_state = force_matching.init_mae_fn(
+        #         val_loader, self.nbrs_init, self.reference_energy_fn_template,
+        #         batch_size, batch_cache, virial_fn
+        #     )
+        # else:
+        #     mae_fn = None
+        #     mae_init_state = None
 
-        # reset convergence criterion as loss might not be comparable
-        self.early_stop.reset_convergence_losses()
-
-    def _process_dataset(self, position_data, energy_data=None, force_data=None,
-                         virial_data=None, box_tensor=None, batch_per_device=1,
-                         batch_cache=10, train_ratio=0.7, val_ratio=0.1):
-
-        dataset = force_matching.build_dataset(position_data, energy_data,
-                                               force_data, virial_data)
-        train_loader, val_loader, test_loader, test_set = \
-            data_processing.init_dataloaders(dataset, train_ratio, val_ratio)
-
-        virial_fn = force_matching.init_virial_fn(
-            virial_data, self.reference_energy_fn_template, box_tensor)
-
-        batch_size = self.n_devices * batch_per_device
-        batches_per_epoch = train_loader._observation_count // batch_size
-        init_train_batch, get_train_batch = data.random_reference_data(
-            train_loader, batch_cache, batch_size)
-        init_val_batch, get_val_batch = data.random_reference_data(
-            val_loader, batch_cache, batch_size)
-        init_test_batch, get_test_batch = data.random_reference_data(
-            test_loader, batch_size, batch_size)
-        train_batch_state = init_train_batch()
-        val_batch_state = init_val_batch()
-        test_batch_state = init_test_batch()
-
-        if self.print_mae:
-            mae_fn, mae_init_state = force_matching.init_mae_fn(
-                val_loader, self.nbrs_init, self.reference_energy_fn_template,
-                batch_size, batch_cache, virial_fn
-            )
-        else:
-            mae_fn = None
-            mae_init_state = None
-
-        return (batches_per_epoch, get_train_batch, get_val_batch,
-                get_test_batch, train_batch_state, val_batch_state,
-                test_batch_state, virial_fn, test_set,
-                train_loader._reference_data.keys(), mae_fn, mae_init_state)
-
-    @property
-    def params(self):
-        single_params = util.tree_get_single(self.state.params)
-        return single_params
-
-    @params.setter
-    def params(self, loaded_params):
-        replicated_params = util.tree_replicate(loaded_params, self.n_devices)
-        self.state = self.state.replace(params=replicated_params)
-
-    def _get_batch(self):
-        for _ in range(self.batches_per_epoch):
-            self.train_batch_state, train_batch = \
-                self.get_train_batch(self.train_batch_state)
-            self.val_batch_state, val_batch = \
-                self.get_val_batch(self.val_batch_state)
-            train_batch = util.tree_split(train_batch, self.n_devices)
-            val_batch = util.tree_split(val_batch, self.n_devices)
-            yield train_batch, val_batch
-
-    def _update(self, batch):
-        """Function to iterate, optimizing parameters and saving
-        training and validation loss values.
-        """
-        # both jitted functions stored together to delete them for checkpointing
-        update_fn, batched_loss_fn = self.grad_fns
-
-        train_batch, val_batch = batch
-        params, opt_state, train_loss, curr_grad = update_fn(
-            self.state.params, self.state.opt_state, train_batch)
-        val_loss = batched_loss_fn(params, val_batch)
-
-        self.state = self.state.replace(params=params, opt_state=opt_state)
-        self.train_losses.append(train_loss[0])  # only from single device
-        self.val_losses.append(val_loss[0])
-
-        single_grad = util.tree_get_single(curr_grad)
-        self.gradient_norm_history.append(util.tree_norm(single_grad))
-
-    def _evaluate_convergence(self, duration, thresh):
-        """Prints progress, saves best obtained params and signals converged if
-        validation loss improvement over the last epoch is less than the thesh.
-        """
-        mean_train_loss = sum(self.train_losses[-self.batches_per_epoch:]
-                              ) / self.batches_per_epoch
-        mean_val_loss = sum(self.val_losses[-self.batches_per_epoch:]
-                            ) / self.batches_per_epoch
-        print(f'Epoch {self._epoch}: Average train loss: {mean_train_loss:.5f} '
-              f'Average val loss: {mean_val_loss:.5f} Gradient norm:'
-              f' {self.gradient_norm_history[-1]}'
-              f' Elapsed time = {duration:.3f} min')
-
-        if self.print_mae:
-            mae, self.mae_data_state = self.mae_fn(self.params,
-                                                   self.mae_data_state)
-            for key, mae_value in mae.items():
-                print(f'{key}: MAE = {mae_value:.4f}')
-            self.validation_mae.append(mae)
-
-        self._converged = self.early_stop.early_stopping(mean_val_loss, thresh,
-                                                         self.params)
-
-    @property
-    def best_params(self):
-        return self.early_stop.best_params
-
-    def move_to_device(self):
-        super().move_to_device()
-        self.early_stop.move_to_device()
+    @staticmethod
+    def _build_dataset(position_data, energy_data=None, force_data=None,
+                       virial_data=None):
+        return force_matching.build_dataset(position_data, energy_data,
+                                            force_data, virial_data)
 
 
 class Difftre(reweighting.PropagationBase):

@@ -151,13 +151,10 @@ def tree_unstack(tree):
     return new_trees
 
 
-# def convert_to_list(params):
-#     """Converts parameters returned by different trainers to a standartized
-#     output format that is then accepted by all post processing routines
-#     """
-#     n_samples = onp.shape(params._leaves[0])[0]
-#     param_list = [tree_get_single(params, n) for n in range(n_samples)]
-#     return param_list
+def tree_multiplicity(tree):
+    """Returns the number of stacked trees along axis 0."""
+    leaves, _ = tree_flatten(tree)
+    return leaves[0].shape[0]
 
 
 def assert_distributable(total_samples, n_devies, vmap_per_device):

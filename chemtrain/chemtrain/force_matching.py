@@ -88,8 +88,8 @@ def init_single_prediction(nbrs_init, energy_fn_template, virial_fn=None):
     return single_prediction
 
 
-def init_update_fns(energy_fn_template, nbrs_init, optimizer, gamma_u=1.,
-                    gamma_f=1., gamma_p=1.e-6, virial_fn=None):
+def init_update_fn(energy_fn_template, nbrs_init, optimizer, gamma_u=1.,
+                   gamma_f=1., gamma_p=1.e-6, virial_fn=None):
     """Initializes update functions for energy and/or force matching.
 
     The returned functions are jit and can therefore not be pickled.
@@ -126,9 +126,7 @@ def init_update_fns(energy_fn_template, nbrs_init, optimizer, gamma_u=1.,
                                                       batch['p'])
         return loss
 
-    batch_update = max_likelihood.pmap_update_fn(loss_fn, optimizer)
-    batched_loss_fn = max_likelihood.pmap_loss_fn(loss_fn)
-    return batch_update, batched_loss_fn
+    return max_likelihood.pmap_update_fn(loss_fn, optimizer)
 
 
 def init_mae_fn(val_loader, nbrs_init, energy_fn_template, batch_size=1,

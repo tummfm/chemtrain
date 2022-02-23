@@ -6,11 +6,12 @@ import copy
 from functools import partial
 import time
 
-from jax import lax, pmap, value_and_grad, tree_map, numpy as jnp
+from jax import lax, pmap, value_and_grad, tree_map, device_count, numpy as jnp
+from jax_sgmc import data
 import numpy as onp
 import optax
 
-from chemtrain import util
+from chemtrain import util, data_processing
 
 
 def pmap_update_fn(loss_fn, optimizer):
@@ -317,3 +318,136 @@ class EarlyStopping:
     def move_to_device(self):
         """Moves best_params to device to use them after loading trainer."""
         self.best_params = tree_map(jnp.array, self.best_params)
+
+
+class DataParallelTrainer(MLETrainerTemplate):
+    """Trainer functionalities for MLE training based on a dataset, where
+    parallelization can simply be accomplished by pmapping over batched data.
+    """
+    def __init__(self, dataset, update_fn, init_params, optimizer,
+                 checkpoint_path, batch_per_device, batch_cache,
+                 train_ratio=0.7, val_ratio=0.1,
+                 convergence_criterion='window_median',
+                 energy_fn_template=None):
+        self.n_devices = device_count()
+        self.update_fn = update_fn
+        self.batch_size = batch_per_device * self.n_devices
+        self.batch_cache = batch_cache
+
+        # replicate params and optimizer states for pmap
+        opt_state = optimizer.init(init_params)  # initialize optimizer state
+        init_params = util.tree_replicate(init_params, self.n_devices)
+        opt_state = util.tree_replicate(opt_state, self.n_devices)
+        init_state = util.TrainerState(params=init_params,
+                                       opt_state=opt_state)
+
+        super().__init__(
+            optimizer=optimizer, init_state=init_state,
+            checkpoint_path=checkpoint_path,
+            reference_energy_fn_template=energy_fn_template)
+
+        self.train_losses, self.val_losses, self.validation_mae = [], [], []
+        self.early_stop = EarlyStopping(convergence_criterion)
+
+        (self.batches_per_epoch, self.get_train_batch, self.train_batch_state,
+         self.val_loader, self.test_loader) = self._process_dataset(
+            dataset, train_ratio, val_ratio)
+
+    def update_dataset(self, train_ratio=0.1, val_ratio=0.1, **dataset_kwargs):
+        """Allows changing dataset on the fly, which is particularly
+        useful for active learning applications.
+
+        Args:
+            train_ratio: Percantage of dataset to use for training.
+            val_ratio: Percantage of dataset to use for validation.
+            **dataset_kwargs: Kwargs to supply to self._build_dataset to
+                      re-build the dataset
+        """
+        self.n_devices = device_count()
+        # reset convergence criterion as loss might not be comparable
+        self.early_stop.reset_convergence_losses()
+        dataset = self._build_dataset(**dataset_kwargs)
+        (self.batches_per_epoch, self.get_train_batch, self.train_batch_state,
+         self.val_loader, self.test_loader) = self._process_dataset(
+            dataset, train_ratio, val_ratio)
+
+    def _process_dataset(self, dataset, train_ratio=0.7, val_ratio=0.1):
+        observation_count = util.tree_multiplicity(dataset)
+        batches_per_epoch = observation_count // self.batch_size
+
+        train_loader, val_loader, test_loader = \
+            data_processing.init_dataloaders(dataset, train_ratio, val_ratio)
+        init_train_state, get_train_batch = data.random_reference_data(
+            train_loader, self.batch_cache, self.batch_size)
+        train_batch_state = init_train_state()
+        return (batches_per_epoch, get_train_batch, train_batch_state,
+                val_loader, test_loader)
+
+    def _get_batch(self):
+        for _ in range(self.batches_per_epoch):
+            self.train_batch_state, train_batch = self.get_train_batch(
+                self.train_batch_state)
+            train_batch = util.tree_split(train_batch, self.n_devices)
+            yield train_batch
+
+    def _update(self, batch):
+        """Function to iterate, optimizing parameters and saving
+        training and validation loss values.
+        """
+        params, opt_state, train_loss, curr_grad = self.update_fn(
+            self.state.params, self.state.opt_state, batch)
+
+        self.state = self.state.replace(params=params, opt_state=opt_state)
+        self.train_losses.append(train_loss[0])  # only from single device
+
+        single_grad = util.tree_get_single(curr_grad)
+        self.gradient_norm_history.append(util.tree_norm(single_grad))
+
+    def _evaluate_convergence(self, duration, thresh):
+        """Prints progress, saves best obtained params and signals converged if
+        validation loss improvement over the last epoch is less than the thesh.
+        """
+        mean_train_loss = sum(self.train_losses[-self.batches_per_epoch:]
+                              ) / self.batches_per_epoch
+
+        mean_val_loss = 0  # TODO
+        print(f'Epoch {self._epoch}: Average train loss: {mean_train_loss:.5f} '
+              f'Average val loss: {mean_val_loss:.5f} Gradient norm:'
+              f' {self.gradient_norm_history[-1]}'
+              f' Elapsed time = {duration:.3f} min')
+
+        # # TODO refactor
+        # if self.print_mae:
+        #     mae, self.mae_data_state = self.mae_fn(self.params,
+        #                                            self.mae_data_state)
+        #     for key, mae_value in mae.items():
+        #         print(f'{key}: MAE = {mae_value:.4f}')
+        #     self.validation_mae.append(mae)
+
+        self._converged = self.early_stop.early_stopping(mean_val_loss, thresh,
+                                                         self.params)
+
+    @abc.abstractmethod
+    def _build_dataset(self, *args, **kwargs):
+        """Function that returns the dataset as a Dictionary for the specific
+        problem at hand. The data for each leaf of the dataset is assumed to be
+        stacked along axis 0.
+        """
+
+    @property
+    def params(self):
+        single_params = util.tree_get_single(self.state.params)
+        return single_params
+
+    @params.setter
+    def params(self, loaded_params):
+        replicated_params = util.tree_replicate(loaded_params, self.n_devices)
+        self.state = self.state.replace(params=replicated_params)
+
+    @property
+    def best_params(self):
+        return self.early_stop.best_params
+
+    def move_to_device(self):
+        super().move_to_device()
+        self.early_stop.move_to_device()

@@ -59,15 +59,14 @@ def init_dataloaders(dataset, train_ratio=0.7, val_ratio=0.1):
         val_ratio: Percantage of dataset to use for validation.
 
     Returns:
-        A tuple (train_loader, val_loader, test_loader, test_set) of
-        NumpyDataLoaders and the test data.
+        A tuple (train_loader, val_loader, test_loader) of NumpyDataLoaders.
     """
     train_set, val_set, test_set = train_val_test_split(
         dataset, train_ratio, val_ratio)
     train_loader = data.NumpyDataLoader(**train_set)
     val_loader = data.NumpyDataLoader(**val_set)
     test_loader = data.NumpyDataLoader(**test_set)
-    return train_loader, val_loader, test_loader, test_set
+    return train_loader, val_loader, test_loader
 
 
 def scale_dataset_fractional(traj, box):
