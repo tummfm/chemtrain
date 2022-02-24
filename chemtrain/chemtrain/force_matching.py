@@ -2,11 +2,8 @@
 such as energy, forces and virial pressure.
 """
 from collections import namedtuple
-from functools import partial
 
-from coax.utils._jit import jit
-from jax import vmap, value_and_grad, numpy as jnp
-from jax_sgmc import data
+from jax import vmap, value_and_grad, numpy as jnp, device_count
 
 from chemtrain import max_likelihood, util
 from chemtrain.jax_md_mod import custom_quantity
@@ -142,16 +139,10 @@ def init_mae_fn(val_loader, nbrs_init, energy_fn_template, batch_size=1,
     validation set. These metrics are usually better interpretable than a
     (combined) MSE loss value.
     """
-    n_val_samples = val_loader._observation_count
     single_prediction = init_single_prediction(nbrs_init, energy_fn_template,
                                                virial_fn)
 
-    init_fun, map_fun = data.full_reference_data(val_loader, batch_cache,
-                                                 batch_size)
-    init_data_state = init_fun()
-
-    def abs_error(params, batch, mask, unused_scan_carry):
-        # batch = util.tree_split(batch, n_devices)  # TODO enable pmap
+    def abs_error(params, batch, mask):
         predictions = vmap(single_prediction, in_axes=(None, 0))(params,
                                                                  batch['R'])
         maes = {}
@@ -169,14 +160,9 @@ def init_mae_fn(val_loader, nbrs_init, energy_fn_template, batch_size=1,
                                                             jnp.newaxis]
             maes['pressure'] = max_likelihood.mae_loss(predictions['p'],
                                                        batch['p'], p_mask)
-        return maes, unused_scan_carry
+        return maes
 
-    @jit
-    def mean_abs_error(params, data_state):
-        data_state, (batch_maes, _) = map_fun(partial(abs_error, params),
-                                              data_state, None, masking=True)
-        average_maes = {key: jnp.sum(values) * batch_size / n_val_samples
-                        for key, values in batch_maes.items()}
-        return average_maes, data_state
+    mean_abs_error, init_data_state = max_likelihood.val_loss_fn(
+        abs_error, val_loader, device_count(), batch_size, batch_cache)
 
     return mean_abs_error, init_data_state

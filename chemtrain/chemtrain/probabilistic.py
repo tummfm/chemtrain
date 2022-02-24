@@ -424,6 +424,7 @@ def validation_mae_params_fm(params, val_loader, energy_fn_template, nbrs_init,
 
     maes = []
     for i, param_set in enumerate(params):
+        param_set = util.tree_replicate(param_set, device_count())
         mae, mae_data_state = mae_fn(param_set, mae_data_state)
         maes.append(mae)
         for key, mae_value in mae.items():

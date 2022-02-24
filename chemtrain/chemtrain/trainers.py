@@ -81,7 +81,7 @@ class ForceMatching(max_likelihood.DataParallelTrainer):
                                             force_data, virial_data)
 
     def evaluate_mae_testset(self):
-        maes, self.mae_init_state = self.mae_fn(self.params,
+        maes, self.mae_init_state = self.mae_fn(self.state.params,
                                                 self.mae_init_state)
         for key, mae_value in maes.items():
             print(f'{key}: MAE = {mae_value:.4f}')

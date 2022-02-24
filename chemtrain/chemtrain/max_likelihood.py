@@ -92,7 +92,7 @@ def val_loss_fn(loss_fn, val_loader, n_devices, batch_size=1, batch_cache=100):
         mask = util.tree_split(mask, n_devices)
         # unused_scan_carry = util.tree_replicate(unused_scan_carry, n_devices)
         loss = pmap_loss_fn(params, batch, mask)
-        return loss[0], unused_scan_carry
+        return util.tree_get_single(loss), unused_scan_carry
 
     @jit
     def mapped_loss_fn(params, data_state):
@@ -101,8 +101,12 @@ def val_loss_fn(loss_fn, val_loader, n_devices, batch_size=1, batch_cache=100):
         # correct for masked samples:
         # Loss function averages over batch_size, which we undo to divide
         # by the real number of samples.
-        mean = jnp.sum(batch_losses) * batch_size / n_val_samples
-        return mean, data_state
+        if isinstance(batch_losses, dict):
+            average = {key: jnp.sum(values) * batch_size / n_val_samples
+                       for key, values in batch_losses.items()}
+        else:
+            average = jnp.sum(batch_losses) * batch_size / n_val_samples
+        return average, data_state
 
     return mapped_loss_fn, init_data_state
 
