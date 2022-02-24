@@ -142,6 +142,7 @@ def init_mae_fn(val_loader, nbrs_init, energy_fn_template, batch_size=1,
     validation set. These metrics are usually better interpretable than a
     (combined) MSE loss value.
     """
+    n_val_samples = val_loader._observation_count
     single_prediction = init_single_prediction(nbrs_init, energy_fn_template,
                                                virial_fn)
 
@@ -174,9 +175,8 @@ def init_mae_fn(val_loader, nbrs_init, energy_fn_template, batch_size=1,
     def mean_abs_error(params, data_state):
         data_state, (batch_maes, _) = map_fun(partial(abs_error, params),
                                               data_state, None, masking=True)
-        average_maes = {key: jnp.mean(values)
+        average_maes = {key: jnp.sum(values) * batch_size / n_val_samples
                         for key, values in batch_maes.items()}
         return average_maes, data_state
 
     return mean_abs_error, init_data_state
-

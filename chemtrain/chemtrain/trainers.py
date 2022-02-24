@@ -31,9 +31,6 @@ class PropertyPrediction(max_likelihood.DataParallelTrainer):
     def _build_dataset(targets, graph_dataset):
         return property_prediction.build_dataset(targets, graph_dataset)
 
-    def evaluate_mae_testset(self):
-        pass  # TODO
-
 
 class ForceMatching(max_likelihood.DataParallelTrainer):
     """Force-matching trainer.
@@ -72,6 +69,11 @@ class ForceMatching(max_likelihood.DataParallelTrainer):
                          convergence_criterion=convergence_criterion,
                          energy_fn_template=energy_fn_template)
 
+        self.mae_fn, self.mae_init_state = force_matching.init_mae_fn(
+            self.test_loader, nbrs_init, energy_fn_template,
+            self.batch_size, batch_cache, virial_fn
+        )
+
     @staticmethod
     def _build_dataset(position_data, energy_data=None, force_data=None,
                        virial_data=None):
@@ -79,11 +81,10 @@ class ForceMatching(max_likelihood.DataParallelTrainer):
                                             force_data, virial_data)
 
     def evaluate_mae_testset(self):
-        # TODO print outputs and combine with mapping function
-        mae_fn, mae_init_state = force_matching.init_mae_fn(
-            val_loader, self.nbrs_init, self.reference_energy_fn_template,
-            batch_size, batch_cache, virial_fn
-        )
+        maes, self.mae_init_state = self.mae_fn(self.params,
+                                                self.mae_init_state)
+        for key, mae_value in maes.items():
+            print(f'{key}: MAE = {mae_value:.4f}')
 
 
 class Difftre(reweighting.PropagationBase):
