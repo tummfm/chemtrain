@@ -20,10 +20,9 @@ class PropertyPrediction(max_likelihood.DataParallelTrainer):
         # TODO documentation
         checkpoint_path = 'output/property_prediction/' + str(checkpoint_folder)
         dataset = self._build_dataset(targets, graph_dataset)
-        update_fn = property_prediction.init_update_fn(model, error_fn,
-                                                       optimizer)
+        loss_fn = property_prediction.init_loss_fn(model, error_fn)
 
-        super().__init__(dataset, update_fn, init_params, optimizer,
+        super().__init__(dataset, loss_fn, init_params, optimizer,
                          checkpoint_path, batch_per_device, batch_cache,
                          train_ratio, val_ratio,
                          convergence_criterion=convergence_criterion)
@@ -31,6 +30,9 @@ class PropertyPrediction(max_likelihood.DataParallelTrainer):
     @staticmethod
     def _build_dataset(targets, graph_dataset):
         return property_prediction.build_dataset(targets, graph_dataset)
+
+    def evaluate_mae_testset(self):
+        pass  # TODO
 
 
 class ForceMatching(max_likelihood.DataParallelTrainer):
@@ -51,7 +53,7 @@ class ForceMatching(max_likelihood.DataParallelTrainer):
                  virial_data=None, box_tensor=None, gamma_f=1., gamma_p=1.e-6,
                  batch_per_device=1, batch_cache=10, train_ratio=0.7,
                  val_ratio=0.1, convergence_criterion='window_median',
-                 checkpoint_folder='Checkpoints', print_mae=False):
+                 checkpoint_folder='Checkpoints'):
 
         checkpoint_path = 'output/force_matching/' + str(checkpoint_folder)
         dataset = self._build_dataset(position_data, energy_data, force_data,
@@ -59,33 +61,29 @@ class ForceMatching(max_likelihood.DataParallelTrainer):
 
         virial_fn = force_matching.init_virial_fn(
             virial_data, energy_fn_template, box_tensor)
-
-        update_fn = force_matching.init_update_fn(
-            energy_fn_template, nbrs_init, optimizer, gamma_f=gamma_f,
+        loss_fn = force_matching.init_loss_fn(
+            energy_fn_template, nbrs_init, gamma_f=gamma_f,
             gamma_p=gamma_p, virial_fn=virial_fn
         )
 
-        super().__init__(dataset, update_fn, init_params, optimizer,
+        super().__init__(dataset, loss_fn, init_params, optimizer,
                          checkpoint_path, batch_per_device, batch_cache,
                          train_ratio, val_ratio,
                          convergence_criterion=convergence_criterion,
                          energy_fn_template=energy_fn_template)
-
-        # # TODO generalize
-        # if self.print_mae:
-        #     mae_fn, mae_init_state = force_matching.init_mae_fn(
-        #         val_loader, self.nbrs_init, self.reference_energy_fn_template,
-        #         batch_size, batch_cache, virial_fn
-        #     )
-        # else:
-        #     mae_fn = None
-        #     mae_init_state = None
 
     @staticmethod
     def _build_dataset(position_data, energy_data=None, force_data=None,
                        virial_data=None):
         return force_matching.build_dataset(position_data, energy_data,
                                             force_data, virial_data)
+
+    def evaluate_mae_testset(self):
+        # TODO print outputs and combine with mapping function
+        mae_fn, mae_init_state = force_matching.init_mae_fn(
+            val_loader, self.nbrs_init, self.reference_energy_fn_template,
+            batch_size, batch_cache, virial_fn
+        )
 
 
 class Difftre(reweighting.PropagationBase):

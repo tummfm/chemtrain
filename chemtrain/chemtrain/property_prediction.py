@@ -4,9 +4,9 @@ from typing import ClassVar, Tuple, Callable, Any
 
 import haiku as hk
 from jax import vmap, numpy as jnp
-from jax_md import nn, util
+from jax_md import nn, util as jax_md_util
 
-from chemtrain import sparse_graph, max_likelihood, neural_networks
+from chemtrain import sparse_graph, util, neural_networks
 
 
 def build_dataset(targets, graph_dataset):
@@ -23,21 +23,26 @@ def build_dataset(targets, graph_dataset):
     return {**targets, **graph_dataset.to_dict()}
 
 
-def init_update_fn(model, error_fn, optimizer):
+def init_loss_fn(model, error_fn):
     """Returns a pmapped update function to optimize model parameters.
+
+    Signature of error_fn:
+    error = error_fn(predictions, batch, mask), where mask is a (batchsize,)
+    boolean array.
 
     Args:
         model: Molecular property prediction model (Haiku apply_fn).
         error_fn: Error model quantifying the discrepancy between preditions
                   and respective targets.
-        optimizer: Optax optimizer.
     """
-    def loss_fn(params, batch):
+    def loss_fn(params, batch, mask=None):
+        if mask is None:
+            mask = jnp.ones(util.tree_multiplicity(batch))
         graph = sparse_graph.SparseDirectionalGraph.from_dict(batch)
         predictions = vmap(model, in_axes=(None, 0))(params, graph)
-        return error_fn(predictions, batch)
+        return error_fn(predictions, batch, mask)
 
-    return max_likelihood.pmap_update_fn(loss_fn, optimizer)
+    return loss_fn
 
 
 def molecular_property_predictor(model, n_per_atom=0):
@@ -68,8 +73,8 @@ def partial_charge_prediction(
         r_cutoff: float,
         n_species: int = 10,
         model_class: ClassVar = neural_networks.DimeNetPP,
-        **model_kwargs) -> Tuple[nn.InitFn, Callable[[Any, util.Array],
-                                                     util.Array]]:
+        **model_kwargs) -> Tuple[nn.InitFn, Callable[[Any, jax_md_util.Array],
+                                                     jax_md_util.Array]]:
     """Initializes a model that predicts partial charges.
 
     Args:

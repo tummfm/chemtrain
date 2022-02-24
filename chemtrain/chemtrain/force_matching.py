@@ -8,7 +8,7 @@ from coax.utils._jit import jit
 from jax import vmap, value_and_grad, numpy as jnp
 from jax_sgmc import data
 
-from chemtrain import max_likelihood
+from chemtrain import max_likelihood, util
 from chemtrain.jax_md_mod import custom_quantity
 
 # Note:
@@ -88,8 +88,9 @@ def init_single_prediction(nbrs_init, energy_fn_template, virial_fn=None):
     return single_prediction
 
 
-def init_update_fn(energy_fn_template, nbrs_init, optimizer, gamma_u=1.,
-                   gamma_f=1., gamma_p=1.e-6, virial_fn=None):
+def init_loss_fn(energy_fn_template, nbrs_init, gamma_u=1.,
+                 gamma_f=1., gamma_p=1.e-6, virial_fn=None,
+                 error_fn=max_likelihood.mse_loss):
     """Initializes update functions for energy and/or force matching.
 
     The returned functions are jit and can therefore not be pickled.
@@ -97,11 +98,12 @@ def init_update_fn(energy_fn_template, nbrs_init, optimizer, gamma_u=1.,
     Args:
         energy_fn_template: Energy function template
         nbrs_init: Initial neighbor list
-        optimizer: Optax optimizer
         gamma_u: Weight for potential energy loss component
         gamma_f: Weight for force loss component
         gamma_p: Weight for virial loss component
         virial_fn: Function to compute virial pressure
+        error_fn: Function quantifying the deviation of the model and the
+                  targets. By default, a mean-squared error.
 
     Returns:
         A tuple (batch_update, batched_loss_fn) of pmapped functions. The former
@@ -111,22 +113,26 @@ def init_update_fn(energy_fn_template, nbrs_init, optimizer, gamma_u=1.,
     single_prediction = init_single_prediction(nbrs_init, energy_fn_template,
                                                virial_fn)
 
-    def loss_fn(params, batch):
+    def loss_fn(params, batch, mask=None):
+        if mask is None:  # only used for full_data_map for validation
+            mask = jnp.ones(util.tree_multiplicity(batch))
+
         predictions = vmap(single_prediction, in_axes=(None, 0))(params,
                                                                  batch['R'])
         loss = 0.
         if 'U' in batch.keys():  # energy loss component
-            loss += gamma_u * max_likelihood.mse_loss(predictions['U'],
-                                                      batch['U'])
+            u_mask = jnp.ones_like(predictions['U']) * mask
+            loss += gamma_u * error_fn(predictions['U'], batch['U'], u_mask)
         if 'F' in batch.keys():  # forces loss component
-            loss += gamma_f * max_likelihood.mse_loss(predictions['F'],
-                                                      batch['F'])
+            f_mask = jnp.ones_like(predictions['F']) * mask[:, jnp.newaxis,
+                                                            jnp.newaxis]
+            loss += gamma_f * error_fn(predictions['F'], batch['F'], f_mask)
         if 'p' in batch.keys():  # virial loss component
-            loss += gamma_p * max_likelihood.mse_loss(predictions['p'],
-                                                      batch['p'])
+            p_mask = jnp.ones_like(predictions['p']) * mask[:, jnp.newaxis,
+                                                            jnp.newaxis]
+            loss += gamma_p * error_fn(predictions['p'], batch['p'], p_mask)
         return loss
-
-    return max_likelihood.pmap_update_fn(loss_fn, optimizer)
+    return loss_fn
 
 
 def init_mae_fn(val_loader, nbrs_init, energy_fn_template, batch_size=1,
