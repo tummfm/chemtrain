@@ -3,7 +3,7 @@ https://github.com/klicperajo/dimenet.
 """
 import haiku as hk
 from jax import nn, ops, numpy as jnp, scipy as jsp
-from jax_md import util, smap
+from jax_md import util
 from sympy import symbols, utilities
 
 from chemtrain import dimenet_basis_util
@@ -24,23 +24,6 @@ def high_precision_segment_sum(data, segment_ids, num_segments=None,
         bucket_size=bucket_size
     )
     return out_type(seg_sum)
-
-
-def canonicalize_species(species, n_particles):
-    """Ensures species are integer and initializes species to 0 if species=None.
-
-    Args:
-        species: (N_particles,) array of atom types or None
-        n_particles: Number of particles
-
-    Returns:
-        Integer species array.
-    """
-    if species is None:
-        species = jnp.zeros(n_particles, dtype=jnp.int32)
-    else:
-        smap._check_species_dtype(species)  # assert species are int
-    return species
 
 
 # Initializers

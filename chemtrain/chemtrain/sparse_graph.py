@@ -7,10 +7,9 @@ from typing import Optional, Callable, Tuple
 import chex
 import numpy as onp
 from jax import numpy as jnp, vmap, lax
-from jax_md import space, partition
+from jax_md import space, partition, smap
 
 from chemtrain.jax_md_mod import custom_space
-from chemtrain import layers
 
 
 @chex.dataclass
@@ -246,7 +245,7 @@ def sparse_graph_from_neighborlist(displacement_fn: Callable,
     assert neighbor.format.name == 'Dense', ('Currently only dense neighbor'
                                              ' lists supported.')
     n_particles, max_neighbors = neighbor.idx.shape
-    species = layers.canonicalize_species(species, n_particles)
+    species = _canonicalize_species(species, n_particles)
 
     neighbor_displacement_fn = space.map_neighbor(displacement_fn)
 
@@ -486,3 +485,20 @@ def pad_species(species_data):
         padded_species[i, :species.size] = species
         species_mask[i, :species.size] = True
     return padded_species, species_mask
+
+
+def _canonicalize_species(species, n_particles):
+    """Ensures species are integer and initializes species to 0 if species=None.
+
+    Args:
+        species: (N_particles,) array of atom types or None
+        n_particles: Number of particles
+
+    Returns:
+        Integer species array.
+    """
+    if species is None:
+        species = jnp.zeros(n_particles, dtype=jnp.int32)
+    else:
+        smap._check_species_dtype(species)  # assert species are int
+    return species
