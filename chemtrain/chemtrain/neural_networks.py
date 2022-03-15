@@ -1,5 +1,5 @@
-"""Some neural network models for potential energy and molecular property
- prediction.
+"""Neural network models for potential energy and molecular property
+prediction.
  """
 from functools import partial
 from typing import Callable, Dict, Any, Tuple

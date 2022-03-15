@@ -1,5 +1,22 @@
-"""Jax / haiku implementation of the outstanding DimeNet++ architecture.
-https://github.com/klicperajo/dimenet.
+# Copyright 2022 Multiscale Modeling of Fluid Materials, TU Munich
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Jax / Haiku implementation of layers to build the DimeNet++ architecture.
+
+The :ref:`dimenet_building_blocks` take components of
+:class:`~chemtrain.sparse_graph.SparseDirectionalGraph` as input. Please refer
+to this class for input descriptions.
 """
 import haiku as hk
 from jax import nn, ops, numpy as jnp, scipy as jsp
@@ -41,7 +58,6 @@ class OrthogonalVarianceScalingInit(hk.initializers.Initializer):
 
     Attributes:
         scale: Variance scaling factor
-        orth_init: Haiku Orthogonal initializer
     """
     def __init__(self, scale=2.):
         """Constructs the OrthogonalVarianceScaling Initializer.
@@ -51,13 +67,13 @@ class OrthogonalVarianceScalingInit(hk.initializers.Initializer):
         """
         super().__init__()
         self.scale = scale
-        self.orth_init = hk.initializers.Orthogonal()
+        self._orth_init = hk.initializers.Orthogonal()
 
     def __call__(self, shape, dtype=jnp.float32):
         assert len(shape) == 2
         fan_in, fan_out = shape
         # uniformly distributed orthogonal weight matrix
-        w_init = self.orth_init(shape, dtype)
+        w_init = self._orth_init(shape, dtype)
         w_init *= jnp.sqrt(self.scale / (max(1., (fan_in + fan_out))
                                          * jnp.var(w_init)))
         return w_init
@@ -102,12 +118,12 @@ class SmoothingEnvelope(hk.Module):
         self._b = p * (p + 2.)
         self._c = -p * (p + 1.) / 2.
 
-    def __call__(self, inputs):
+    def __call__(self, distances):
         """Returns the envelope values."""
-        envelope_val = (1. + self._a * inputs**self._p
-                        + self._b * inputs**(self._p + 1.)
-                        + self._c * inputs**(self._p + 2.))
-        return jnp.where(inputs < 1., envelope_val, 0.)
+        envelope_val = (1. + self._a * distances ** self._p
+                        + self._b * distances ** (self._p + 1.)
+                        + self._c * distances ** (self._p + 2.))
+        return jnp.where(distances < 1., envelope_val, 0.)
 
 
 class RadialBesselLayer(hk.Module):
@@ -443,7 +459,7 @@ class InteractionBlock(hk.Module):
             )
 
     def __call__(self, m_input, rbf, sbf, reduce_to_ji, expand_to_kj):
-        # directional message passing block:
+        """Returns messages after interaction via message-passing."""
         m_ji_angular = self._dense_kj(m_input)  # messages for expansion to k->j
         rbf = self._rbf1(rbf)
         rbf = self._rbf2(rbf)

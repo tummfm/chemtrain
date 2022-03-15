@@ -1,5 +1,8 @@
-"""Functions to extract the sparse (angular) graph representation employed in
-DimeNet.
+"""Functions to extract the sparse directional graph representation of a
+molecular state.
+
+The :class:`SparseDirectionalGraph` is the input to
+:class:`~chemtrain.neural_networks.DimeNetPP`.
 """
 import inspect
 from typing import Optional, Callable, Tuple
@@ -17,6 +20,7 @@ class SparseDirectionalGraph:
     """Sparse directial graph representation of a molecular state.
 
      Required arguments are necessary inputs for DimeNet++.
+     If masks are not provided, all entities are assumed to be present.
 
      Attributes:
          distance_ij: A (N_edges,) array storing for each the radial distances
@@ -86,6 +90,9 @@ class SparseDirectionalGraph:
 
     @classmethod
     def from_dict(cls, graph_dict):
+        """Initializes instance from dictionary containing all necessary keys
+        for initialization.
+        """
         return cls(**{
             key: value for key, value in graph_dict.items()
             if key in inspect.signature(cls).parameters
@@ -117,7 +124,8 @@ def angle(r_ij, r_kj):
     """Computes the angle (kj, ij) from vectors r_kj and r_ij,
     correctly selecting the quadrant.
 
-    Based on tan(theta) = |(r_ji x r_kj)| / (r_ji . r_kj).
+    Based on
+    :math:`\\tan(\\theta) = |(r_{ji} \\times r_{kj})| / (r_{ji} \\cdot r_{kj})`.
     Beware the non-differentability of arctan2(0,0).
 
     Args:
@@ -158,8 +166,9 @@ def safe_angle_mask(r_ji, r_kj, angle_mask):
 
 
 def angle_triplets(positions, displacement_fn, angle_idxs, angle_mask):
-    """Computes the angle for all triplets between 0 and pi. Masked angles are
-     set to pi/2.
+    """Computes the angle for all triplets between 0 and pi.
+
+     Masked angles are set to pi/2.
 
     Args:
         positions: Array pf particle positions (N_particles x 3)
@@ -390,7 +399,8 @@ def convert_dataset_to_graphs(r_cutoff, position_data, box, species,
         With padding, a SparseDirectionalGraph pytree containing all graphs of
         the dataset, stacked along axis 0. Without padding, a dictionary
         containing the whole definitions of the sparse molecular graph, given
-        as Lists. Refer to SparseDirectionalGraph for respective definitions.
+        as Lists. Refer to :class:`SparseDirectionalGraph` for respective
+        definitions.
     """
     # canonicalize inputs to lists
     if not isinstance(position_data, list):
