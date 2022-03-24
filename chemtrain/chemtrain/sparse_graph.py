@@ -496,7 +496,8 @@ def pad_per_atom_quantities(per_atom_data):
     """
     max_particles = max([species.size for species in per_atom_data])
     n_snapshots = len(per_atom_data)
-    padded_quantity = onp.zeros((n_snapshots, max_particles), dtype=int)
+    padded_quantity = onp.zeros((n_snapshots, max_particles),
+                                dtype=per_atom_data[0].dtype)
     quantity_mask = onp.zeros((n_snapshots, max_particles), dtype=bool)
     for i, quantity in enumerate(per_atom_data):
         padded_quantity[i, :quantity.size] = quantity
