@@ -26,7 +26,7 @@ def build_dataset(targets, graph_dataset):
 
 
 def init_loss_fn(model, error_fn):
-    """Returns a pmapped update function to optimize model parameters.
+    """Returns a loss function to optimize model parameters.
 
     Signature of error_fn:
     error = error_fn(predictions, batch, mask), where mask is a (batchsize,)
@@ -44,7 +44,6 @@ def init_loss_fn(model, error_fn):
         graph = sparse_graph.SparseDirectionalGraph.from_dict(batch)
         predictions = vmap(model, in_axes=(None, 0))(params, graph)
         return error_fn(predictions, batch, mask)
-
     return loss_fn
 
 

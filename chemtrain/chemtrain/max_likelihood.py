@@ -56,8 +56,8 @@ def pmap_update_fn(loss_fn, optimizer, n_devices):
 def val_loss_fn(loss_fn, val_loader, n_devices, batch_size=1, batch_cache=100):
     """Initializes a pmapped loss function.
 
-    The loss function can be used for evaluating the validation loss via a
-    full_data_map.
+    The loss function can be used for evaluating the validation or test
+    loss via a full_data_map.
 
     Usage:
     val_loss, data_state = batched_loss_fn(params, data_state)
@@ -394,8 +394,7 @@ class DataParallelTrainer(MLETrainerTemplate):
             checkpoint_path=checkpoint_path,
             reference_energy_fn_template=energy_fn_template)
 
-        (self.train_batch_losses, self.train_losses, self.val_losses,
-         self.validation_mae) = [], [], [], []
+        self.train_batch_losses, self.train_losses, self.val_losses = [], [], []
         self._early_stop = EarlyStopping(convergence_criterion)
 
         (self._batches_per_epoch, self._get_train_batch,
@@ -471,6 +470,7 @@ class DataParallelTrainer(MLETrainerTemplate):
 
         val_loss, self._val_data_state = self._val_loss_fn(self.state.params,
                                                            self._val_data_state)
+        self.val_losses.append(val_loss)
         print(f'Epoch {self._epoch}: Average train loss: {mean_train_loss:.5f} '
               f'Average val loss: {val_loss:.5f} Gradient norm:'
               f' {self.gradient_norm_history[-1]}'

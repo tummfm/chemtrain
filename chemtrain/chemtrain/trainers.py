@@ -14,10 +14,12 @@ class PropertyPrediction(max_likelihood.DataParallelTrainer):
     """Trainer for direct prediction of molecular properties."""
     def __init__(self, error_fn, model, init_params, optimizer, graph_dataset,
                  targets, batch_per_device=1, batch_cache=10, train_ratio=0.7,
-                 val_ratio=0.1, convergence_criterion='window_median',
+                 val_ratio=0.1, test_error_fn=None,
+                 convergence_criterion='window_median',
                  checkpoint_folder='Checkpoints'):
 
         # TODO documentation
+        self.model = model
         checkpoint_path = 'output/property_prediction/' + str(checkpoint_folder)
         dataset = self._build_dataset(targets, graph_dataset)
         loss_fn = property_prediction.init_loss_fn(model, error_fn)
@@ -27,9 +29,31 @@ class PropertyPrediction(max_likelihood.DataParallelTrainer):
                          train_ratio, val_ratio,
                          convergence_criterion=convergence_criterion)
 
+        if test_error_fn is not None:
+            test_acc_fn = property_prediction.init_loss_fn(model, test_error_fn)
+            self._test_data_fn, self._test_data_state = \
+                max_likelihood.val_loss_fn(
+                test_acc_fn, self.test_loader, self._n_devices, self.batch_size,
+                batch_cache
+            )
+        else:
+            self._test_data_fn, self._test_data_state = None, None
+
     @staticmethod
     def _build_dataset(targets, graph_dataset):
         return property_prediction.build_dataset(targets, graph_dataset)
+
+    def predict(self, input_graph):
+        """Prediction for a single input graph using the current param state."""
+        # TODO jit somewhere?
+        return self.model(self.params, input_graph)
+
+    def evaluate_testset_error(self):
+        assert self._test_data_fn is not None, ('"test_error_fn" is necessary'
+                                                ' during initialization.')
+        error, self._test_data_state = self._test_data_fn(
+            self.state.params, self._test_data_state)
+        print(f'Error on test set: {error}')
 
 
 class ForceMatching(max_likelihood.DataParallelTrainer):
