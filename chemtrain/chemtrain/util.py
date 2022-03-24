@@ -82,9 +82,13 @@ def tree_get_single(tree, n=0):
     return single_tree
 
 
-def tree_get_slice(tree, idx_start, idx_stop, take_every=1):
+def tree_get_slice(tree, idx_start, idx_stop, take_every=1, to_device=True):
     """Returns a slice of trees taken from a tree-replica along axis 0."""
-    return tree_map(lambda x: jnp.array(x[idx_start:idx_stop:take_every]), tree)
+    if to_device:
+        return tree_map(lambda x: jnp.array(x[idx_start:idx_stop:take_every]),
+                        tree)
+    else:
+        return tree_map(lambda x: x[idx_start:idx_stop:take_every], tree)
 
 
 def tree_replicate(tree, n_devices):

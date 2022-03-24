@@ -43,9 +43,11 @@ def train_val_test_split(dataset, train_ratio=0.7, val_ratio=0.1):
     dataset_size = leaves[0].shape[0]
     train_size = int(dataset_size * train_ratio)
     val_size = int(dataset_size * val_ratio)
-    train_data = util.tree_get_slice(dataset, 0, train_size)
-    val_data = util.tree_get_slice(dataset, train_size, train_size + val_size)
-    test_data = util.tree_get_slice(dataset, train_size + val_size, None)
+    train_data = util.tree_get_slice(dataset, 0, train_size, to_device=False)
+    val_data = util.tree_get_slice(dataset, train_size, train_size + val_size,
+                                   to_device=False)
+    test_data = util.tree_get_slice(dataset, train_size + val_size, None,
+                                    to_device=False)
     return train_data, val_data, test_data
 
 
