@@ -14,8 +14,10 @@ def build_dataset(targets, graph_dataset):
     property predictions.
 
     Args:
-        targets: # TODO
-        graph_dataset:
+        targets: Dict containing all targets to be predicted. Can be retrieved
+                 in error_fn under the respective key.
+        graph_dataset: Dataset of graphs, e.g. as obtained from
+                       sparse_graph.convert_dataset_to_graphs.
 
     Returns:
         A dictionary containing the combined dataset.
@@ -36,6 +38,7 @@ def init_loss_fn(model, error_fn):
                   and respective targets.
     """
     def loss_fn(params, batch, mask=None):
+        # for masking whole snapshots, e.g. when mapping over whole dataset
         if mask is None:
             mask = jnp.ones(util.tree_multiplicity(batch))
         graph = sparse_graph.SparseDirectionalGraph.from_dict(batch)

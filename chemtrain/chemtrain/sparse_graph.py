@@ -373,6 +373,10 @@ def convert_dataset_to_graphs(r_cutoff, position_data, box, species,
     """Converts input consisting of particle poistions and boxes to a dataset
     of sparse graph representations.
 
+    Due to the high memory cost of saving padded graphs, this preprocessing
+    step is only recomended for small datasets and only slightly changing
+    number of particles per box.
+
     This function tackles the general case, where the number of particles and
     boxes vary across different snapshots, introducing some overhead if particle
     number and the box is fixed. Due to this general setting, this function is
@@ -383,6 +387,8 @@ def convert_dataset_to_graphs(r_cutoff, position_data, box, species,
         position_data: Either a list of (N_particles, dim) arrays of particle
                        positions in case N_particles is not constant accross
                        snapshots or a (N_snapshots, N_particles, dim) array.
+                       The positions need to be given in real (non-fractional)
+                       coordinates.
         box: Either a single 1 or 2-dimensional box (if the box is constant
              across snapshots) or an (N_snapshots, dim) or
              (N_snapshots, dim, dim) array of boxes.
@@ -444,10 +450,11 @@ def convert_dataset_to_graphs(r_cutoff, position_data, box, species,
                                axis=-1))
         triplets.append(jnp.stack((graph.reduce_to_ji, graph.expand_to_kj,
                                    graph.triplet_mask), axis=-1))
+
     if padding:
         dists, edges = _pad_graph(max_edges, dists, edges)
         angles, triplets = _pad_graph(max_triplets, angles, triplets)
-        species, species_mask = pad_species(species)
+        species, species_mask = pad_per_atom_quantities(species)
     else:
         species_mask = [jnp.ones_like(species_arr) for species_arr in species]
 
@@ -473,28 +480,28 @@ def convert_dataset_to_graphs(r_cutoff, position_data, box, species,
     return graph_rep
 
 
-def pad_species(species_data):
-    """Pads species arrays.
+def pad_per_atom_quantities(per_atom_data):
+    """Pads list arrays containing per-atom quantities (e.g. species,
+    partial charges, ...).
 
-    Allow for straightforward batching without re-compilations in case of
+    Allows for straightforward batching without re-compilations in case of
     non-constant number of particles across snapshots.
 
     Args:
-        species_data: List of (N_particles,) species arrays containing the atom
-                      type of each particle.
+        per_atom_data: List of (N_particles,) arrays containing a scalar
+                       quantity of each particle.
 
     Returns:
-        A (N_snapshots, N_particles) padded species array and corresponding
-        species mask array.
+        A (N_snapshots, N_particles) array and corresponding mask array.
     """
-    max_particles = max([species.size for species in species_data])
-    n_snapshots = len(species_data)
-    padded_species = onp.zeros((n_snapshots, max_particles), dtype=int)
-    species_mask = onp.zeros((n_snapshots, max_particles), dtype=bool)
-    for i, species in enumerate(species_data):
-        padded_species[i, :species.size] = species
-        species_mask[i, :species.size] = True
-    return padded_species, species_mask
+    max_particles = max([species.size for species in per_atom_data])
+    n_snapshots = len(per_atom_data)
+    padded_quantity = onp.zeros((n_snapshots, max_particles), dtype=int)
+    quantity_mask = onp.zeros((n_snapshots, max_particles), dtype=bool)
+    for i, quantity in enumerate(per_atom_data):
+        padded_quantity[i, :quantity.size] = quantity
+        quantity_mask[i, :quantity.size] = True
+    return padded_quantity, quantity_mask
 
 
 def _canonicalize_species(species, n_particles):
