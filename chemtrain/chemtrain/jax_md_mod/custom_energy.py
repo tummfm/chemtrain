@@ -253,6 +253,7 @@ def customn_lennard_jones_neighbor_list(displacement_or_metric: DisplacementOrMe
                                 capacity_multiplier: float=1.25,
                                 initialize_neighbor_list: bool=True,
                                 fractional=True,
+                                disable_cell_list=False,
                                 ) -> Tuple[NeighborFn,
                                            Callable[[Array, NeighborList],
                                                     Array]]:
@@ -276,7 +277,7 @@ def customn_lennard_jones_neighbor_list(displacement_or_metric: DisplacementOrMe
 
   if initialize_neighbor_list:
     neighbor_fn = partition.neighbor_list(displacement_or_metric, box_size, r_cutoff, dr_threshold,
-                                          capacity_multiplier=capacity_multiplier, fractional_coordinates=fractional)
+                                          capacity_multiplier=capacity_multiplier, fractional_coordinates=fractional, disable_cell_list=disable_cell_list)
     return neighbor_fn, energy_fn
   return energy_fn
 
