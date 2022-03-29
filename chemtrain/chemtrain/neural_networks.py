@@ -268,6 +268,36 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
     return model.init, model.apply
 
 
+def dimenetpp_property_prediction(
+        r_cutoff: float,
+        n_targets: int = 1,
+        n_species: int = 100,
+        **model_kwargs) -> Tuple[nn.InitFn, Callable[[Any, jnp.ndarray],
+                                                     jnp.ndarray]]:
+    """Initializes a model that predicts global molecular properties.
+
+    Args:
+        r_cutoff: Radial cut-off distance of DimeNetPP and the neighbor list.
+        n_targets: Number of different molecular properties to predict.
+        n_species: Number of different atom species the network is supposed
+                   to process.
+        **model_kwargs: Kwargs to change the default structure of DimeNet++.
+
+    Returns:
+        A tuple of 2 functions: A init_fn that initializes the model parameters
+        and an apply_function that predicts global molecular properties.
+    """
+    @hk.without_apply_rng
+    @hk.transform
+    def property_predictor(
+            mol_graph: sparse_graph.SparseDirectionalGraph,
+            **dynamic_kwargs):
+        model = DimeNetPP(r_cutoff, n_species, n_targets, **model_kwargs)
+        per_atom_predictions = model(mol_graph, **dynamic_kwargs)
+        return jnp.sum(per_atom_predictions, axis=0)
+    return property_predictor.init, property_predictor.apply
+
+
 class PairwiseNN(hk.Module):
     """A neural network predicting pairwise edge quantities
 
