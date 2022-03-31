@@ -1,14 +1,14 @@
-import jax
-from jax import lax, vmap
+from functools import partial
+from typing import Callable, Tuple, Any
+
+from jax import vmap
 import jax.numpy as jnp
-import haiku as hk
-from jax_md import space, partition, nn, util, energy, smap
+from jax_md import space, partition, util, energy, smap
 from jax_md.energy import multiplicative_isotropic_cutoff, _sw_radial_interaction, _sw_angle_interaction
+
 from chemtrain.jax_md_mod import custom_interpolate, custom_nn
 from chemtrain.jax_md_mod.dropout_nn_util import dimenetpp_dropout_setup
-from functools import partial
 
-from typing import Callable, Tuple, Dict, Any
 # Types
 f32 = util.f32
 f64 = util.f64
@@ -254,6 +254,7 @@ def customn_lennard_jones_neighbor_list(displacement_or_metric: DisplacementOrMe
                                 capacity_multiplier: float=1.25,
                                 initialize_neighbor_list: bool=True,
                                 fractional=True,
+                                disable_cell_list=False,
                                 ) -> Tuple[NeighborFn,
                                            Callable[[Array, NeighborList],
                                                     Array]]:
@@ -277,7 +278,7 @@ def customn_lennard_jones_neighbor_list(displacement_or_metric: DisplacementOrMe
 
   if initialize_neighbor_list:
     neighbor_fn = partition.neighbor_list(displacement_or_metric, box_size, r_cutoff, dr_threshold,
-                                          capacity_multiplier=capacity_multiplier, fractional_coordinates=fractional)
+                                          capacity_multiplier=capacity_multiplier, fractional_coordinates=fractional, disable_cell_list=disable_cell_list)
     return neighbor_fn, energy_fn
   return energy_fn
 
@@ -431,8 +432,8 @@ def DimeNetPP_neighborlist(displacement: DisplacementFn,
         dropout_mode: A dict defining which fully connected layers to apply
                        dropout and at which rate(see dimenetpp_dropout_setup)
     Returns:
-        A tuple of 2 functions: A init_fn that initializes the model parameters 
-        and an energy function that computes the energy for a particular state 
+        A tuple of 2 functions: A init_fn that initializes the model parameters
+        and an energy function that computes the energy for a particular state
         given model parameters.
     """
     r_cutoff = jnp.array(r_cutoff, dtype=f32)
