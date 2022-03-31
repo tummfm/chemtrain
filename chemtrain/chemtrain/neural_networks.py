@@ -292,6 +292,16 @@ def dimenetpp_property_prediction(
     def property_predictor(
             mol_graph: sparse_graph.SparseDirectionalGraph,
             **dynamic_kwargs):
+        """Predicts global quantities for a given molecular graph.
+
+        Args:
+            mol_graph: An instance of sparse_graph.SparseDirectionalGraph
+                       defining the molecular graph connectivity.
+            dynamic_kwargs: Dynamic kwargs for DimeNet++.
+
+        Returns:
+            An (n_targets,) array of predicted global quantities.
+        """
         model = DimeNetPP(r_cutoff, n_species, n_targets, **model_kwargs)
         per_atom_predictions = model(mol_graph, **dynamic_kwargs)
         return jnp.sum(per_atom_predictions, axis=0)
