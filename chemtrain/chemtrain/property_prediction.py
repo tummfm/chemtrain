@@ -6,7 +6,7 @@ import haiku as hk
 from jax import vmap, numpy as jnp
 from jax_md import nn, util as jax_md_util
 
-from chemtrain import sparse_graph, util, neural_networks
+from chemtrain import sparse_graph, util, neural_networks, dropout
 
 
 def build_dataset(targets, graph_dataset):
@@ -103,4 +103,4 @@ def partial_charge_prediction(
         charge_correction = jnp.sum(charges) / mol_graph.n_particles
         partial_charges = (charges - charge_correction) * mol_graph.species_mask
         return partial_charges
-    return property_predictor.init, property_predictor.apply
+    return dropout.model_init_apply(property_predictor, model_kwargs)

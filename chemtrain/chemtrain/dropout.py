@@ -1,4 +1,5 @@
 """Customn function for enabling dropout applications in haiku."""
+from functools import wraps
 
 import haiku as hk
 from jax import random, vmap, numpy as jnp
@@ -11,6 +12,32 @@ from jax import random, vmap, numpy as jnp
 #  By optimizer via a (arbitrary) gradient and by the standard RNG update.
 #  This allows a more unified treatment in trainers, without frequent
 #  branching if dropout is used or not.
+
+
+def _dropout_wrapper(fun):
+    """Wraps Haiku apply fuctions such that combined dropout and models params
+     are split and supplied seperately as expected by model.
+     """
+    # first argument is params for Haiku models
+    @wraps(fun)
+    def dropout_fn(params, *args, **kwargs):
+        if dropout_is_used(params):
+            params, drop_key = split_dropout_params(params)
+            kwargs['dropout_key'] = drop_key
+        return fun(params, *args, **kwargs)
+    return dropout_fn
+
+
+def model_init_apply(model, model_kwargs):
+    """Returns Haiku model.init and model.apply that adapivly use dropout if
+    'dropout_key' is provided alongside parameters. If not, no dropout is
+    applied.
+    """
+    dropout_mode = model_kwargs.get('dropout_mode', None)
+    if dropout_mode is None:
+        return model.init, model.apply
+    else:
+        return model.init, _dropout_wrapper(model.apply)
 
 
 def split_dropout_params(meta_params):
@@ -97,7 +124,7 @@ def dimenetpp_setup(setup_dict,
         setup_dict: Dict containing the block name to be dropouted
                     alongside the target dropout rate for each block.
                     Available blocks are 'output', 'interaction' and
-                    'embedding'.
+                    'embedding'. If None, no layers will be dropped.
         num_dense_out: Number of fully-connected layers in output block
         n_interaction_blocks: Number of interaction blocks
         num_res_before_skip: Number of residual blocks before the skip

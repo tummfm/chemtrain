@@ -279,7 +279,7 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
         gnn_energy = util.high_precision_sum(per_atom_energies)
         return gnn_energy
 
-    return model.init, model.apply
+    return dropout.model_init_apply(model, dimenetpp_kwargs)
 
 
 def dimenetpp_property_prediction(
@@ -319,7 +319,7 @@ def dimenetpp_property_prediction(
         model = DimeNetPP(r_cutoff, n_species, n_targets, **model_kwargs)
         per_atom_predictions = model(mol_graph, **dynamic_kwargs)
         return jnp.sum(per_atom_predictions, axis=0)
-    return property_predictor.init, property_predictor.apply
+    return dropout.model_init_apply(property_predictor, model_kwargs)
 
 
 class PairwiseNN(hk.Module):
