@@ -1,23 +1,20 @@
 """Customn function for enabling dropout applications in haiku."""
 
 import haiku as hk
-import jax.nn
-from jax import random, numpy as jnp
+from jax import random, vmap, numpy as jnp
 
 
 # Note: This implementation currently stores the RNG key as float32
 #  rather than uint32. This way, both energy_params and the RNG key
-#  can be treated analogously in grad and optimizer of difftre.
+#  can be treated analogously in grad and optimizer of trainers.
 #  Therefore, the RNG key is updated twice per parameter update:
-#  By optimizer via (arbitrary) gradient and by the standard RNG update.
-#  This allows a more unified treatment in difftre, without frequent
+#  By optimizer via a (arbitrary) gradient and by the standard RNG update.
+#  This allows a more unified treatment in trainers, without frequent
 #  branching if dropout is used or not.
-# TODO implement properly, where branching is done at optimizer init
-#  and update as well as gradient computation
 
 
 def split_dropout_params(meta_params):
-    """Splitting up meta params, built up by energy_params and
+    """Splits up meta params, built up by energy_params and
     dropout_key.
     """
     return (meta_params['energy_params'],
@@ -25,7 +22,7 @@ def split_dropout_params(meta_params):
 
 
 def next_dropout_params(meta_params):
-    """Splits dropout_key and re-packes it in meta_params."""
+    """Steps dropout_key and re-packes it in meta_params."""
     _, old_dropout_key = split_dropout_params(meta_params)
     new_dropout_key, _ = random.split(old_dropout_key, 2)
     return build_dropout_params(meta_params['energy_params'], new_dropout_key)
@@ -47,8 +44,8 @@ def build_dropout_params(energy_params, dropout_key):
             'Dropout_RNG_key': jnp.float32(dropout_key)}
 
 
-def construct_dropout_dict(dropout_key, dropout_setup):
-    """Splits and distributes the random key for all dropout_nn_util.Linear
+def construct_dropout_params(dropout_key, dropout_setup):
+    """Splits and distributes the random key for all dropout.Linear
     layers.
     """
     dropout_key_dict = {}
@@ -79,8 +76,7 @@ class Linear(hk.Module):
         else:  # apply dropout
             dropout_key = dropout_dict[self.module_name]['key']
             if self.shared:
-                vectorized_dropout = jax.vmap(hk.dropout,
-                                              in_axes=(None, None, 0))
+                vectorized_dropout = vmap(hk.dropout, in_axes=(None, None, 0))
                 dropped_array = vectorized_dropout(dropout_key, dropout_dict[
                     self.module_name]['do_rate'], linear_output)
             else:
@@ -89,15 +85,13 @@ class Linear(hk.Module):
             return dropped_array
 
 
-def dimenetpp_dropout_setup(setup_dict,
-                            num_dense_out,
-                            n_interaction_blocks,
-                            num_res_before_skip,
-                            num_res_after_skip,
-                            overall_dropout_rate=None):
-    """
-    Function that builds dropout_setup Dict containing Dropout
-    hyperparameters for DimeNet++.
+def dimenetpp_setup(setup_dict,
+                    num_dense_out,
+                    n_interaction_blocks,
+                    num_res_before_skip,
+                    num_res_after_skip,
+                    overall_dropout_rate=None):
+    """Builds the Dropout hyperparameters for DimeNet++.
 
     Args:
         setup_dict: Dict containing the block name to be dropouted
@@ -111,7 +105,7 @@ def dimenetpp_dropout_setup(setup_dict,
         overall_dropout_rate: If given, will override all droput rates
                               with this global rate.
 
-    Returns: dropout_setup: Dict encoding dropout structure of DimeNet++
+    Returns: dropout_setup - a dict encoding dropout structure of DimeNet++
     """
     def index_to_layer_name(i):
         if i == 0:

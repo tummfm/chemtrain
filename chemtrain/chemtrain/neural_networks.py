@@ -8,7 +8,7 @@ import haiku as hk
 from jax import numpy as jnp, nn as jax_nn
 from jax_md import smap, space, partition, nn, util
 
-from chemtrain import layers, sparse_graph
+from chemtrain import layers, sparse_graph, dropout
 
 
 class DimeNetPP(hk.Module):
@@ -44,6 +44,7 @@ class DimeNetPP(hk.Module):
                  activation: Callable = jax_nn.swish,
                  envelope_p: int = 6,
                  init_kwargs: Dict[str, Any] = None,
+                 dropout_mode: Dict[str, Any] = None,
                  name: str = 'DimeNetPP'):
         """Initializes the DimeNet++ model
 
@@ -81,10 +82,18 @@ class DimeNetPP(hk.Module):
             activation: Activation function
             envelope_p: Power of envelope polynomial
             init_kwargs: Kwargs for initializaion of Linear layers
+            dropout_mode: A dict defining which fully connected layers to apply
+                          dropout and at which rate
+                          (see dropout.dimenetpp_setup). If None, no Dropout is
+                          applied.
             name: Name of DimeNet++ model
         """
         super().__init__(name=name)
-
+        self.dropout_setup = dropout.dimenetpp_setup(dropout_mode,
+                                                     num_dense_out,
+                                                     n_interaction_blocks,
+                                                     num_residual_before_skip,
+                                                     num_residual_after_skip)
         if init_kwargs is None:
             init_kwargs = {
                 'w_init': layers.OrthogonalVarianceScalingInit(scale=1.),
@@ -130,11 +139,15 @@ class DimeNetPP(hk.Module):
             graph: An instance of sparse_graph.SparseDirectionalGraph defining
                    the molecular graph connectivity.
             **dyn_kwargs: Kwargs supplied on-the-fly, such as 'kT' for
-                          temperature-dependent models.
+                          temperature-dependent models or 'dropout_key' for
+                          Dropout.
 
         Returns:
             An (n_partciles, num_targets) array of predicted per-atom quantities
         """
+        dropout_key = dyn_kwargs.get('dropout_key', None)
+        dropout_params = dropout.construct_dropout_params(dropout_key,
+                                                          self.dropout_setup)
         n_particles = graph.species.size
         # cutoff all non-existing edges: are encoded as 0 by rbf envelope
         # non-existing triplets will be masked explicitly in DimeNet++
@@ -147,16 +160,17 @@ class DimeNetPP(hk.Module):
                               graph.expand_to_kj)
 
         messages = self._embedding_layer(rbf, graph.species, graph.idx_i,
-                                         graph.idx_j, **dyn_kwargs)
-        per_atom_quantities = self._output_blocks[0](messages, rbf, graph.idx_i,
-                                                     n_particles)
+                                         graph.idx_j, dropout_params,
+                                         **dyn_kwargs)
+        per_atom_quantities = self._output_blocks[0](
+            messages, rbf, graph.idx_i, n_particles, dropout_params)
 
         for i in range(self._n_interactions):
             messages = self._int_blocks[i](
-                messages, rbf, sbf, graph.reduce_to_ji, graph.expand_to_kj)
-            per_atom_quantities += self._output_blocks[i + 1](messages, rbf,
-                                                              graph.idx_i,
-                                                              n_particles)
+                messages, rbf, sbf, graph.reduce_to_ji, graph.expand_to_kj,
+                dropout_params)
+            per_atom_quantities += self._output_blocks[i + 1](
+                messages, rbf, graph.idx_i, n_particles, dropout_params)
         return per_atom_quantities
 
 
