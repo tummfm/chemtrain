@@ -12,7 +12,7 @@ from jax_sgmc import data
 import numpy as onp
 import optax
 
-from chemtrain import util, data_processing
+from chemtrain import util, data_processing, dropout
 
 
 def pmap_update_fn(loss_fn, optimizer, n_devices):
@@ -228,6 +228,10 @@ class MLETrainerTemplate(util.TrainerInterface):
             start_time = time.time()
             for batch in self._get_batch():
                 self._update(batch)
+                if dropout.dropout_is_used(self.params):
+                    params = dropout.next_dropout_params(self.params)
+                    self.params = params
+
             duration = (time.time() - start_time) / 60.
             self.update_times.append(duration)
             self._evaluate_convergence(duration, thresh)

@@ -24,6 +24,7 @@ from jax_md import util
 from sympy import symbols, utilities
 
 from chemtrain import dimenet_basis_util
+from chemtrain.dropout import Linear
 
 
 # util
@@ -245,16 +246,19 @@ class ResidualLayer(hk.Module):
             name: Name of the Residual layer
         """
         super().__init__(name=name)
-        self._residual = hk.Sequential([
-            hk.Linear(layer_size, name='ResidualFirstLinear', **init_kwargs),
-            activation,
-            hk.Linear(layer_size, name='ResidualSecondLinear', **init_kwargs),
-            activation
-        ])
+        self._layer1 = hk.Sequential([Linear(
+            layer_size, name='ResidualSubLayer0', **init_kwargs),
+            activation])
+        self._layer2 = hk.Sequential([Linear(
+            layer_size, name='ResidualSubLayer1', **init_kwargs),
+            activation])
 
-    def __call__(self, inputs):
+    def __call__(self, inputs, dropout_dict=None):
         """Returns the ouput of the Residual layer."""
-        out = inputs + self._residual(inputs)
+        non_linear_part = inputs
+        non_linear_part = self._layer1(non_linear_part, dropout_dict)
+        non_linear_part = self._layer2(non_linear_part, dropout_dict)
+        out = inputs + non_linear_part
         return out
 
 
@@ -299,16 +303,16 @@ class EmbeddingBlock(hk.Module):
         # unlike the original DimeNet implementation, there is no activation
         # and bias in RBF_Dense as shown in the network sketch. This is
         # consistent with other Layers processing rbf values in the network
-        self._rbf_dense = hk.Linear(embed_size, name='RBF_Dense',
-                                    with_bias=False, **init_kwargs)
+        self._rbf_dense = Linear(embed_size, name='RBF_Dense',
+                                 with_bias=False, **init_kwargs)
         self._dense_after_concat = hk.Sequential(
-            [hk.Linear(embed_size, name='Concat_Dense', **init_kwargs),
+            [Linear(embed_size, name='Concat_Dense', **init_kwargs),
              activation]
         )
 
-    def __call__(self, rbf, species, idx_i, idx_j, **kwargs):
+    def __call__(self, rbf, species, idx_i, idx_j, dropout_dict=None, **kwargs):
         """Returns output of the Embedding block."""
-        transformed_rbf = self._rbf_dense(rbf)
+        transformed_rbf = self._rbf_dense(rbf, dropout_dict)
 
         type_i = species[idx_i]
         type_j = species[idx_j]
@@ -324,7 +328,8 @@ class EmbeddingBlock(hk.Module):
             kbt_embeds /= kwargs['kT']
             edge_embedding = jnp.concatenate([edge_embedding, kbt_embeds],
                                              axis=-1)
-        embedded_messages = self._dense_after_concat(edge_embedding)
+        embedded_messages = self._dense_after_concat(edge_embedding,
+                                                     dropout_dict)
         return embedded_messages
 
 
@@ -351,26 +356,26 @@ class OutputBlock(hk.Module):
         if out_embed_size is None:
             out_embed_size = int(2 * embed_size)
 
-        self._rbf_dense = hk.Linear(embed_size, with_bias=False,
-                                    name='RBF_Dense', **init_kwargs)
-        self._upprojection = hk.Linear(out_embed_size, with_bias=False,
-                                       name='Upprojection', **init_kwargs)
+        self._rbf_dense = Linear(embed_size, with_bias=False,
+                                 name='RBF_Dense', **init_kwargs)
+        self._upprojection = Linear(out_embed_size, with_bias=False,
+                                    name='Upprojection', **init_kwargs)
 
         # transform summed messages via multiple dense layers before predicting
         # target quantities
         self._dense_layers = []
         for _ in range(num_dense):
             self._dense_layers.append(hk.Sequential([
-                hk.Linear(out_embed_size, with_bias=True, name='Dense_Series',
-                          **init_kwargs), activation])
+                Linear(out_embed_size, with_bias=True, name='Dense_Series',
+                       **init_kwargs), activation])
             )
 
-        self._dense_final = hk.Linear(num_targets, with_bias=False,
-                                      name='Final_output', **init_kwargs)
+        self._dense_final = Linear(num_targets, with_bias=False,
+                                   name='Final_output', **init_kwargs)
 
-    def __call__(self, messages, rbf, idx_i, n_particles):
+    def __call__(self, messages, rbf, idx_i, n_particles, dropout_dict=None):
         """Returns predicted per-atom quantities."""
-        transformed_rbf = self._rbf_dense(rbf)
+        transformed_rbf = self._rbf_dense(rbf, dropout_dict)
         # rbf is masked correctly and transformation only via weights
         # Hence rbf acts as mask
         messages *= transformed_rbf
@@ -379,9 +384,9 @@ class OutputBlock(hk.Module):
         summed_messages = high_precision_segment_sum(messages, idx_i,
                                                      num_segments=n_particles)
 
-        upsampled_messages = self._upprojection(summed_messages)
+        upsampled_messages = self._upprojection(summed_messages, dropout_dict)
         for dense_layer in self._dense_layers:
-            upsampled_messages = dense_layer(upsampled_messages)
+            upsampled_messages = dense_layer(upsampled_messages, dropout_dict)
 
         per_atom_targets = self._dense_final(upsampled_messages)
         return per_atom_targets
@@ -417,30 +422,30 @@ class InteractionBlock(hk.Module):
             angle_int_embed_size = int(embed_size / 2)
 
         # directional message passing block
-        self._rbf1 = hk.Linear(basis_int_embed_size, name='rbf1',
-                               with_bias=False, **init_kwargs)
-        self._rbf2 = hk.Linear(embed_size, name='rbf2',
-                               with_bias=False, **init_kwargs)
-        self._sbf1 = hk.Linear(basis_int_embed_size, name='sbf1',
-                               with_bias=False, **init_kwargs)
-        self._sbf2 = hk.Linear(angle_int_embed_size, name='sbf2',
-                               with_bias=False, **init_kwargs)
+        self._rbf1 = Linear(basis_int_embed_size, name='rbf1',
+                            with_bias=False, **init_kwargs)
+        self._rbf2 = Linear(embed_size, name='rbf2',
+                            with_bias=False, **init_kwargs)
+        self._sbf1 = Linear(basis_int_embed_size, name='sbf1',
+                            with_bias=False, **init_kwargs)
+        self._sbf2 = Linear(angle_int_embed_size, name='sbf2',
+                            with_bias=False, **init_kwargs)
 
         self._dense_kj = hk.Sequential([
-            hk.Linear(embed_size, name='Dense_kj', **init_kwargs), activation]
+            Linear(embed_size, name='Dense_kj', **init_kwargs), activation]
         )
         self._down_projection = hk.Sequential([
-            hk.Linear(angle_int_embed_size, name='Downprojection',
-                      with_bias=False, **init_kwargs), activation]
+            Linear(angle_int_embed_size, name='Downprojection',
+                   with_bias=False, **init_kwargs), activation]
         )
         self._up_projection = hk.Sequential([
-            hk.Linear(embed_size, name='Upprojection', with_bias=False,
-                      **init_kwargs), activation]
+            Linear(embed_size, name='Upprojection', with_bias=False,
+                   **init_kwargs), activation]
         )
 
         # propagation block:
         self._dense_ji = hk.Sequential(
-            [hk.Linear(embed_size, name='Dense_ji', **init_kwargs), activation]
+            [Linear(embed_size, name='Dense_ji', **init_kwargs), activation]
         )
 
         self._res_before_skip = []
@@ -448,8 +453,9 @@ class InteractionBlock(hk.Module):
             self._res_before_skip.append(ResidualLayer(
                 embed_size, activation, init_kwargs, name='ResLayerBeforeSkip')
             )
-        self._final_before_skip = hk.Sequential([hk.Linear(
-            embed_size, name='FinalBeforeSkip', **init_kwargs), activation]
+        self._final_before_skip = hk.Sequential(
+            [Linear(embed_size, name='FinalBeforeSkip', **init_kwargs),
+             activation]
         )
 
         self._res_after_skip = []
@@ -458,38 +464,40 @@ class InteractionBlock(hk.Module):
                 embed_size, activation, init_kwargs, name='ResLayerAfterSkip')
             )
 
-    def __call__(self, m_input, rbf, sbf, reduce_to_ji, expand_to_kj):
+    def __call__(self, m_input, rbf, sbf, reduce_to_ji, expand_to_kj,
+                 dropout_dict=None):
         """Returns messages after interaction via message-passing."""
-        m_ji_angular = self._dense_kj(m_input)  # messages for expansion to k->j
-        rbf = self._rbf1(rbf)
-        rbf = self._rbf2(rbf)
+        # transformed messages for expansion to k -> j
+        m_ji_angular = self._dense_kj(m_input, dropout_dict)
+        rbf = self._rbf1(rbf, dropout_dict)
+        rbf = self._rbf2(rbf, dropout_dict)
         m_ji_angular *= rbf
 
-        m_ji_angular = self._down_projection(m_ji_angular)
+        m_ji_angular = self._down_projection(m_ji_angular, dropout_dict)
         m_kj = m_ji_angular[expand_to_kj]  # expand to nodes k connecting to j
 
-        sbf = self._sbf1(sbf)
-        sbf = self._sbf2(sbf)
+        sbf = self._sbf1(sbf, dropout_dict)
+        sbf = self._sbf2(sbf, dropout_dict)
         # automatic mask: sbf was masked during initial computation.
         # Sbf1 and 2 only weights, no biases
         m_kj *= sbf
 
         aggregated_m_ji = high_precision_segment_sum(
             m_kj, reduce_to_ji, num_segments=m_input.shape[0])
-        propagated_messages = self._up_projection(aggregated_m_ji)
+        propagated_messages = self._up_projection(aggregated_m_ji, dropout_dict)
 
         # add directional messages to original ones:
         # afterwards only independent edge transformations.
         # masking is lost, but rbf masks in output layer before aggregation
-        m_ji = self._dense_ji(m_input)
+        m_ji = self._dense_ji(m_input, dropout_dict)
         m_combined = m_ji + propagated_messages
 
         for layer in self._res_before_skip:
-            m_combined = layer(m_combined)
-        m_combined = self._final_before_skip(m_combined)
+            m_combined = layer(m_combined, dropout_dict)
+        m_combined = self._final_before_skip(m_combined, dropout_dict)
 
         m_ji_with_skip = m_combined + m_input
 
         for layer in self._res_after_skip:
-            m_ji_with_skip = layer(m_ji_with_skip)
+            m_ji_with_skip = layer(m_ji_with_skip, dropout_dict)
         return m_ji_with_skip
