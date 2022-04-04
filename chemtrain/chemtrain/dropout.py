@@ -44,7 +44,7 @@ def split_dropout_params(meta_params):
     """Splits up meta params, built up by energy_params and
     dropout_key.
     """
-    return (meta_params['energy_params'],
+    return (meta_params['haiku_params'],
             jnp.uint32(meta_params['Dropout_RNG_key']))
 
 
@@ -52,7 +52,7 @@ def next_dropout_params(meta_params):
     """Steps dropout_key and re-packes it in meta_params."""
     _, old_dropout_key = split_dropout_params(meta_params)
     new_dropout_key, _ = random.split(old_dropout_key, 2)
-    return build_dropout_params(meta_params['energy_params'], new_dropout_key)
+    return build_dropout_params(meta_params['haiku_params'], new_dropout_key)
 
 
 def dropout_is_used(meta_params):
@@ -67,7 +67,7 @@ def build_dropout_params(energy_params, dropout_key):
     dropout_key.
     """
 
-    return {'energy_params': energy_params,
+    return {'haiku_params': energy_params,
             'Dropout_RNG_key': jnp.float32(dropout_key)}
 
 
@@ -134,6 +134,7 @@ def dimenetpp_setup(setup_dict,
 
     Returns: dropout_setup - a dict encoding dropout structure of DimeNet++
     """
+    # TODO replace this and only select per-block? Use haiku.MLP dropout?
     def index_to_layer_name(i):
         if i == 0:
             return ''

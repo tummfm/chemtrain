@@ -388,10 +388,9 @@ class DataParallelTrainer(MLETrainerTemplate):
 
         # replicate params and optimizer states for pmap
         opt_state = optimizer.init(init_params)  # initialize optimizer state
-        init_params = util.tree_replicate(init_params, self._n_devices)
-        opt_state = util.tree_replicate(opt_state, self._n_devices)
-        init_state = util.TrainerState(params=init_params,
-                                       opt_state=opt_state)
+        init_params = self._replicate_params(init_params)
+        opt_state = self._replicate_params(opt_state)
+        init_state = util.TrainerState(params=init_params, opt_state=opt_state)
 
         super().__init__(
             optimizer=optimizer, init_state=init_state,
@@ -497,7 +496,7 @@ class DataParallelTrainer(MLETrainerTemplate):
 
     @params.setter
     def params(self, loaded_params):
-        replicated_params = util.tree_replicate(loaded_params, self._n_devices)
+        replicated_params = self._replicate_params(loaded_params)
         self.state = self.state.replace(params=replicated_params)
 
     @property
@@ -507,3 +506,8 @@ class DataParallelTrainer(MLETrainerTemplate):
     def move_to_device(self):
         super().move_to_device()
         self._early_stop.move_to_device()
+
+    def _replicate_params(self, params):
+        """Replicate params along n_devices for pmap."""
+        # TODO replace n_devices by jax.devices()?
+        return util.tree_replicate(params, self._n_devices)

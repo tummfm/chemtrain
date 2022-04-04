@@ -7,7 +7,8 @@ from jax import value_and_grad, random, numpy as jnp
 from jax_sgmc import data
 
 from chemtrain import (util, force_matching, traj_util, reweighting,
-                       probabilistic, max_likelihood, property_prediction)
+                       probabilistic, max_likelihood, property_prediction,
+                       dropout)
 
 
 class PropertyPrediction(max_likelihood.DataParallelTrainer):
@@ -33,9 +34,8 @@ class PropertyPrediction(max_likelihood.DataParallelTrainer):
             test_acc_fn = property_prediction.init_loss_fn(model, test_error_fn)
             self._test_data_fn, self._test_data_state = \
                 max_likelihood.val_loss_fn(
-                test_acc_fn, self.test_loader, self._n_devices, self.batch_size,
-                batch_cache
-            )
+                    test_acc_fn, self.test_loader, self._n_devices,
+                    self.batch_size, batch_cache)
         else:
             self._test_data_fn, self._test_data_state = None, None
 
@@ -51,8 +51,14 @@ class PropertyPrediction(max_likelihood.DataParallelTrainer):
     def evaluate_testset_error(self):
         assert self._test_data_fn is not None, ('"test_error_fn" is necessary'
                                                 ' during initialization.')
-        error, self._test_data_state = self._test_data_fn(
-            self.state.params, self._test_data_state)
+        if dropout.dropout_is_used(self.best_params):
+            # all nodes present during inference
+            params, _ = dropout.split_dropout_params(self.best_params)
+            params = self._replicate_params(params)
+        else:
+            params = self._replicate_params(self.best_params)
+        error, self._test_data_state = self._test_data_fn(params,
+                                                          self._test_data_state)
         print(f'Error on test set: {error}')
 
 
