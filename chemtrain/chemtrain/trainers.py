@@ -46,7 +46,12 @@ class PropertyPrediction(max_likelihood.DataParallelTrainer):
     def predict(self, input_graph):
         """Prediction for a single input graph using the current param state."""
         # TODO jit somewhere?
-        return self.model(self.best_params, input_graph)
+        # TODO save best params including dropout key?
+        if dropout.dropout_is_used(self.best_params):
+            params, _ = dropout.split_dropout_params(self.best_params)
+        else:
+            params = self.best_params
+        return self.model(params, input_graph)
 
     def evaluate_testset_error(self):
         assert self._test_data_fn is not None, ('"test_error_fn" is necessary'
