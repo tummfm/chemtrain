@@ -176,7 +176,7 @@ class DimeNetPP(hk.Module):
 
 def dimenetpp_neighborlist(displacement: space.DisplacementFn,
                            r_cutoff: float,
-                           n_species: int = 10,
+                           n_species: int = 100,
                            positions_test: jnp.ndarray = None,
                            neighbor_test: partition.NeighborList = None,
                            max_triplet_multiplier: float = 1.25,

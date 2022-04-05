@@ -73,7 +73,7 @@ def molecular_property_predictor(model, n_per_atom=0):
 
 def partial_charge_prediction(
         r_cutoff: float,
-        n_species: int = 10,
+        n_species: int = 100,
         model_class: ClassVar = neural_networks.DimeNetPP,
         **model_kwargs) -> Tuple[nn.InitFn, Callable[[Any, jax_md_util.Array],
                                                      jax_md_util.Array]]:
