@@ -141,10 +141,11 @@ def dimenetpp_setup(setup_dict,
         else:
             return '_' + str(i)
 
+    # For maximum flexibility, each layer can be addressed seperately.
     # These names are hardcoded to naming of layers in DimeNetPP
     # If you change layer names, make sure to adjust these
     delimiter = '/~/'
-    net_prefix = 'Energy'
+    net_prefix = 'DimeNetPP'
     output_prefix = 'Output'
     interaction_prefix = 'Interaction'
     embedding_prefix = 'Embedding'

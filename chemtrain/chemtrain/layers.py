@@ -247,10 +247,10 @@ class ResidualLayer(hk.Module):
         """
         super().__init__(name=name)
         self._layer1 = hk.Sequential([Linear(
-            layer_size, name='ResidualSubLayer0', **init_kwargs),
+            layer_size, name='ResidualSubLayer', **init_kwargs),
             activation])
         self._layer2 = hk.Sequential([Linear(
-            layer_size, name='ResidualSubLayer1', **init_kwargs),
+            layer_size, name='ResidualSubLayer', **init_kwargs),
             activation])
 
     def __call__(self, inputs, dropout_dict=None):
@@ -451,7 +451,7 @@ class InteractionBlock(hk.Module):
         self._res_before_skip = []
         for _ in range(num_res_before_skip):
             self._res_before_skip.append(ResidualLayer(
-                embed_size, activation, init_kwargs, name='ResLayerBeforeSkip')
+                embed_size, activation, init_kwargs)
             )
         self._final_before_skip = hk.Sequential(
             [Linear(embed_size, name='FinalBeforeSkip', **init_kwargs),
@@ -461,7 +461,7 @@ class InteractionBlock(hk.Module):
         self._res_after_skip = []
         for _ in range(num_res_after_skip):
             self._res_after_skip.append(ResidualLayer(
-                embed_size, activation, init_kwargs, name='ResLayerAfterSkip')
+                embed_size, activation, init_kwargs)
             )
 
     def __call__(self, m_input, rbf, sbf, reduce_to_ji, expand_to_kj,
