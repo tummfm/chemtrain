@@ -46,7 +46,7 @@ class PropertyPrediction(max_likelihood.DataParallelTrainer):
     def predict(self, input_graph):
         """Prediction for a single input graph using the current param state."""
         # TODO jit somewhere?
-        return self.model(self.params, input_graph)
+        return self.model(self.best_params, input_graph)
 
     def evaluate_testset_error(self):
         assert self._test_data_fn is not None, ('"test_error_fn" is necessary'
@@ -162,7 +162,8 @@ class Difftre(reweighting.PropagationBase):
 
         self.batch_losses, self.epoch_losses = [], []
         self.predictions = {}
-        self.early_stop = max_likelihood.EarlyStopping(convergence_criterion)
+        self.early_stop = max_likelihood.EarlyStopping(init_params,
+                                                       convergence_criterion)
         # TODO doc: beware that for too short trajectory might have overfittet
         #  to single trajectory; if in doubt, set reweighting ratio = 1 towards
         #  end of optimization
@@ -454,7 +455,8 @@ class RelativeEntropy(reweighting.PropagationBase):
         # track of dataloader states for reference snapshots
         self.data_states = {}
 
-        self.early_stop = max_likelihood.EarlyStopping(convergence_criterion)
+        self.early_stop = max_likelihood.EarlyStopping(init_params,
+                                                       convergence_criterion)
 
     def _set_dataset(self, key, reference_data, reference_batch_size,
                      batch_cache=1):

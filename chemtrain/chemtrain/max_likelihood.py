@@ -283,7 +283,7 @@ class EarlyStopping:
     * 'max_loss': Stops when the loss decreased below the maximum allowed loss
                   specified cia thresh.
     """
-    def __init__(self, criterion, pq_window_size=5):
+    def __init__(self, params, criterion, pq_window_size=5):
         """Initialize EarlyStopping.
 
         Args:
@@ -295,7 +295,7 @@ class EarlyStopping:
         # own loss history that can be reset on the fly if needed.
         self._epoch_losses = []
         self.best_loss = 1.e16
-        self.best_params = None  # need to be moved on device if loaded
+        self.best_params = copy.copy(params)  # move on device, if loaded
 
         self.pq_window_size = pq_window_size
 
@@ -398,7 +398,7 @@ class DataParallelTrainer(MLETrainerTemplate):
             reference_energy_fn_template=energy_fn_template)
 
         self.train_batch_losses, self.train_losses, self.val_losses = [], [], []
-        self._early_stop = EarlyStopping(convergence_criterion)
+        self._early_stop = EarlyStopping(init_params, convergence_criterion)
 
         (self._batches_per_epoch, self._get_train_batch,
          self._train_batch_state, self.val_loader, self.test_loader
