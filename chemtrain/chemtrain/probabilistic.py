@@ -3,7 +3,7 @@
 import abc
 import time
 
-from jax import (lax, vmap, checkpoint, random, jit, device_count,
+from jax import (lax, vmap, pmap, checkpoint, random, jit, device_count,
                  scipy as jscipy, numpy as jnp, tree_map)
 from jax_md import quantity
 from jax_sgmc import data, potential
@@ -316,6 +316,38 @@ class MCMCForceMatchingTemplate(ProbabilisticFMTrainerTemplate):
 
 
 # Uncertainty propagation
+
+def init_dropout_uq_fwd(model, meta_params, n_dropout_samples=16):
+    n_devices = device_count()
+    # TODO add sequential mapping to allow defining batch_per_device and
+    #  large number of dropout samples that don't fit memory
+    batch_per_device = int(n_dropout_samples / n_devices)
+    util.assert_distributable(n_dropout_samples, n_devices, batch_per_device)
+    haiku_params, _ = dropout.split_dropout_params(meta_params)
+
+    def meta_param_model(key, model_input):
+        dropout_params = dropout.build_dropout_params(haiku_params, key)
+        return model(dropout_params, model_input)
+
+    def predict_distribution(key, model_input):
+        keys = random.split(key, n_dropout_samples)
+        keys = keys.reshape((batch_per_device, 2))
+        # keys = keys.reshape((n_devices, batch_per_device, 2))  # 2 per key
+        # key_batched_model = pmap(vmap(meta_param_model, (0, None)))
+        key_batched_model = vmap(meta_param_model, (0, None))
+        # model_input = util.tree_replicate(model_input, n_devices)
+        predictions = key_batched_model(keys, model_input)
+        shape_predictions = predictions.shape
+        # reshape such that all sampled force predictions are along axis 0
+        # vectored_predictions = predictions.reshape((-1, *shape_predictions[2:]))
+        # swap axes such that batch is along axis 0, which is needed for
+        # full-data-map
+        # vectored_predictions = jnp.swapaxes(vectored_predictions, 0, 1)
+        vectored_predictions = jnp.swapaxes(predictions, 0, 1)
+        # TODO check that reshape is correct when pmapping
+        return vectored_predictions
+    return predict_distribution
+
 
 def init_force_uq(energy_fn_template, n_splits=16, vmap_batch_size=1):
     n_devies = device_count()
