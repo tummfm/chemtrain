@@ -457,8 +457,7 @@ class DataParallelTrainer(MLETrainerTemplate):
         self.state = self.state.replace(params=params, opt_state=opt_state)
         self.train_batch_losses.append(train_loss)  # only from single device
 
-        single_grad = util.tree_get_single(curr_grad)
-        self.gradient_norm_history.append(util.tree_norm(single_grad))
+        self.gradient_norm_history.append(util.tree_norm(curr_grad))
 
     def _evaluate_convergence(self, duration, thresh):
         """Prints progress, saves best obtained params and signals converged if
