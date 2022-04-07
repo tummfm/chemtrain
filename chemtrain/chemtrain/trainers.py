@@ -34,8 +34,7 @@ class PropertyPrediction(max_likelihood.DataParallelTrainer):
             test_acc_fn = property_prediction.init_loss_fn(model, test_error_fn)
             self._test_data_fn, self._test_data_state = \
                 max_likelihood.val_loss_fn(
-                    test_acc_fn, self.test_loader, self._n_devices,
-                    self.batch_size, batch_cache)
+                    test_acc_fn, self.test_loader, self.batch_size, batch_cache)
         else:
             self._test_data_fn, self._test_data_state = None, None
 
@@ -59,9 +58,9 @@ class PropertyPrediction(max_likelihood.DataParallelTrainer):
         if dropout.dropout_is_used(self.best_params):
             # all nodes present during inference
             params, _ = dropout.split_dropout_params(self.best_params)
-            params = self._replicate_params(params)
+            params = util.tree_replicate(params)
         else:
-            params = self._replicate_params(self.best_params)
+            params = util.tree_replicate(self.best_params)
         error, self._test_data_state = self._test_data_fn(params,
                                                           self._test_data_state)
         print(f'Error on test set: {error}')
@@ -76,6 +75,7 @@ class ForceMatching(max_likelihood.DataParallelTrainer):
     based on padded sparse neighborlists.
     Caution: Currently neighborlist overflow is not checked.
     Make sure to build nbrs_init large enough.
+    # TODO generalize to padded particles and without neighborlists
 
     Virial data is pressure tensor, i.e. negative stress tensor
 
@@ -93,6 +93,8 @@ class ForceMatching(max_likelihood.DataParallelTrainer):
 
         virial_fn = force_matching.init_virial_fn(
             virial_data, energy_fn_template, box_tensor)
+        self.model = force_matching.init_single_prediction(
+            nbrs_init, energy_fn_template, virial_fn)
         loss_fn = force_matching.init_loss_fn(
             energy_fn_template, nbrs_init, gamma_f=gamma_f,
             gamma_p=gamma_p, virial_fn=virial_fn

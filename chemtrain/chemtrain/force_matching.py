@@ -3,7 +3,7 @@ such as energy, forces and virial pressure.
 """
 from collections import namedtuple
 
-from jax import vmap, value_and_grad, numpy as jnp, device_count
+from jax import vmap, value_and_grad, numpy as jnp
 
 from chemtrain import max_likelihood, util
 from chemtrain.jax_md_mod import custom_quantity
@@ -163,6 +163,6 @@ def init_mae_fn(val_loader, nbrs_init, energy_fn_template, batch_size=1,
         return maes
 
     mean_abs_error, init_data_state = max_likelihood.val_loss_fn(
-        abs_error, val_loader, device_count(), batch_size, batch_cache)
+        abs_error, val_loader, batch_size, batch_cache)
 
     return mean_abs_error, init_data_state

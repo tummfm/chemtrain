@@ -380,16 +380,16 @@ class DataParallelTrainer(MLETrainerTemplate):
                  train_ratio=0.7, val_ratio=0.1,
                  convergence_criterion='window_median',
                  energy_fn_template=None):
-        self._n_devices = device_count()
-        self._update_fn = pmap_update_fn(loss_fn, optimizer, self._n_devices)
-        self.batch_size = batch_per_device * self._n_devices
+        n_devices = device_count()
+        self._update_fn = pmap_update_fn(loss_fn, optimizer, n_devices)
+        self.batch_size = batch_per_device * n_devices
         self.batch_cache = batch_cache
         self._loss_fn = loss_fn
 
         # replicate params and optimizer states for pmap
         opt_state = optimizer.init(init_params)  # initialize optimizer state
-        init_params = self._replicate_params(init_params)
-        opt_state = self._replicate_params(opt_state)
+        init_params = util.tree_replicate(init_params)
+        opt_state = util.tree_replicate(opt_state)
         init_state = util.TrainerState(params=init_params, opt_state=opt_state)
 
         super().__init__(
@@ -405,8 +405,7 @@ class DataParallelTrainer(MLETrainerTemplate):
          ) = self._process_dataset(dataset, train_ratio, val_ratio)
 
         self._val_loss_fn, self._val_data_state = val_loss_fn(
-            loss_fn, self.val_loader, self._n_devices, self.batch_size,
-            batch_cache
+            loss_fn, self.val_loader, self.batch_size, batch_cache
         )
 
     def update_dataset(self, train_ratio=0.1, val_ratio=0.1, **dataset_kwargs):
@@ -419,7 +418,6 @@ class DataParallelTrainer(MLETrainerTemplate):
             **dataset_kwargs: Kwargs to supply to self._build_dataset to
                       re-build the dataset
         """
-        self._n_devices = device_count()
         # reset convergence criterion as loss might not be comparable
         self._early_stop.reset_convergence_losses()
         dataset = self._build_dataset(**dataset_kwargs)
@@ -428,7 +426,7 @@ class DataParallelTrainer(MLETrainerTemplate):
          ) = self._process_dataset(dataset, train_ratio, val_ratio)
 
         self._val_loss_fn, self._val_data_state = val_loss_fn(
-            self._loss_fn, self.val_loader, self._n_devices, self.batch_size,
+            self._loss_fn, self.val_loader, self.batch_size,
             self.batch_cache
         )
 
@@ -496,7 +494,7 @@ class DataParallelTrainer(MLETrainerTemplate):
 
     @params.setter
     def params(self, loaded_params):
-        replicated_params = self._replicate_params(loaded_params)
+        replicated_params = util.tree_replicate(loaded_params)
         self.state = self.state.replace(params=replicated_params)
 
     @property
@@ -506,8 +504,3 @@ class DataParallelTrainer(MLETrainerTemplate):
     def move_to_device(self):
         super().move_to_device()
         self._early_stop.move_to_device()
-
-    def _replicate_params(self, params):
-        """Replicate params along n_devices for pmap."""
-        # TODO replace n_devices by jax.devices()?
-        return util.tree_replicate(params, self._n_devices)

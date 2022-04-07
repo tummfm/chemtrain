@@ -7,7 +7,7 @@ from typing import Any
 import chex
 import cloudpickle as pickle
 # import h5py
-from jax import tree_map, tree_leaves, tree_flatten, numpy as jnp
+from jax import tree_map, tree_leaves, tree_flatten, device_count, numpy as jnp
 from jax_md import simulate
 
 
@@ -91,9 +91,9 @@ def tree_get_slice(tree, idx_start, idx_stop, take_every=1, to_device=True):
         return tree_map(lambda x: x[idx_start:idx_stop:take_every], tree)
 
 
-def tree_replicate(tree, n_devices):
+def tree_replicate(tree):
     """Replicates a pytree along the first axis for pmap."""
-    return tree_map(lambda x: jnp.array([x] * n_devices), tree)
+    return tree_map(lambda x: jnp.array([x] * device_count()), tree)
 
 
 def tree_split(tree, n_devices):
