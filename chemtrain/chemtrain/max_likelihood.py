@@ -53,22 +53,55 @@ def pmap_update_fn(loss_fn, optimizer, n_devices):
     return batch_update
 
 
-def val_loss_fn(loss_fn, val_loader, n_devices, batch_size=1, batch_cache=100):
+def predict_val_data(model, val_loader, batch_size=1, batch_cache=100):
+    """Model predictions for whole validation/test dataset.
+
+    Can be used to monitor validation loss as well as postprocessing.
+    """
+    init_fun, map_fun = data.full_reference_data(val_loader, batch_cache,
+                                                 batch_size)
+    init_data_state = init_fun()
+
+    pmap_model = pmap(model)
+
+    def batched_model(params, batch, unused_state):
+        batch = util.tree_split(batch, device_count())
+        loss = pmap_model(params, batch)
+        return loss, unused_state
+
+    @jit
+    def mapped_model_fn(params, data_state):
+        data_state, (predictions, _) = map_fun(partial(batched_model, params),
+                                               data_state, None)
+        # correct for masked samples:
+        # Loss function averages over batch_size, which we undo to divide
+        # by the real number of samples.
+        if isinstance(batch_losses, dict):
+            average = {key: jnp.sum(values) * batch_size / n_val_samples
+                       for key, values in batch_losses.items()}
+        else:
+            average = jnp.sum(batch_losses) * batch_size / n_val_samples
+        return average, data_state
+    return mapped_model_fn, init_data_state
+
+
+def val_loss_fn(loss_fn, val_loader, batch_size=1, batch_cache=100):
     """Initializes a pmapped loss function.
 
     The loss function can be used for evaluating the validation or test
     loss via a full_data_map.
 
+    This function is not equipped to deal with padded atoms.  # TODO
+
     Usage:
     val_loss, data_state = batched_loss_fn(params, data_state)
 
     For pmap, params needs to be N_devices times duplicated along axis 0.
-    Batch is reshaped by this function.
+    The data batch is reshaped accordingly by this function.
 
     Args:
         loss_fn: Loss function that takes (params, batch) as input.
         val_loader: NumpyDataLoader for validation set
-        n_devices: Number of devices
         batch_size: Mini-batch size
         batch_cache: Number of batches to cache on GPU to reduce host-device
                      communication
@@ -88,6 +121,7 @@ def val_loss_fn(loss_fn, val_loader, n_devices, batch_size=1, batch_cache=100):
         return loss
 
     def batched_loss(params, batch, mask, unused_scan_carry):
+        n_devices = device_count()
         batch = util.tree_split(batch, n_devices)
         mask = util.tree_split(mask, n_devices)
         # unused_scan_carry = util.tree_replicate(unused_scan_carry, n_devices)
@@ -118,15 +152,11 @@ def _masked_loss(per_element_loss, mask=None):
     else:
         assert mask.shape == per_element_loss.shape, ('Mask requires same shape'
                                                       ' as targets.')
-        return jnp.mean(per_element_loss * mask)
+        return jnp.sum(per_element_loss * mask) / jnp.sum(mask)
 
 
 def mse_loss(predictions, targets, mask=None):
     """Computes mean squared error loss for given predictions and targets.
-
-    If mask is True, the mean over the batch is returned irrespectively.
-    It is the user's repsonsibility to average over the correct numer of
-    non-masked samples
 
     Args:
         predictions: Array of predictions
@@ -144,10 +174,6 @@ def mse_loss(predictions, targets, mask=None):
 
 def mae_loss(predictions, targets, mask=None):
     """Computes the mean absolute error for given predictions and targets.
-
-    If mask is True, the mean over the batch is returned irrespectively.
-    It is the user's repsonsibility to average over the correct numer of
-    non-masked samples
 
     Args:
         predictions: Array of predictions
