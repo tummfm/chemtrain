@@ -96,6 +96,21 @@ def tree_replicate(tree):
     return tree_map(lambda x: jnp.array([x] * device_count()), tree)
 
 
+def tree_axis_swap(tree, axis1=0, axis2=1):
+    """Swaps axes of all leaves of a pytree."""
+    return tree_map(lambda x: jnp.swapaxes(x, axis1, axis2), tree)
+
+
+def tree_concat(tree):
+    """For output computed in parallel via pmap, restacks all leaves such that
+    the parallel dimension is again along axis 0 and the leading pmap dimension
+    vanishes.
+    """
+    def stack_leaf(leaf):
+        return jnp.concatenate([leaf[i] for i in range(leaf.shape[0])])
+    return tree_map(lambda x: stack_leaf(x), tree)
+
+
 def tree_split(tree, n_devices):
     """Splits the first axis of `tree` evenly across the number of devices."""
     assert tree_leaves(tree)[0].shape[0] % n_devices == 0, \
@@ -189,6 +204,8 @@ class TrainerInterface(abc.ABC):
     """Abstract class defining the user interface of trainers as well as
     checkpointing functionality.
     """
+    # TODO write protocol classes for better documentation of initialized
+    #  functions
     def __init__(self, checkpoint_path, reference_energy_fn_template=None):
         """A reference energy_fn_template can be provided, but is not mandatory
         due to the dependence of the template on the box via the displacement

@@ -5,7 +5,7 @@ from collections import namedtuple
 
 from jax import vmap, value_and_grad, numpy as jnp
 
-from chemtrain import max_likelihood, util
+from chemtrain import max_likelihood
 from chemtrain.jax_md_mod import custom_quantity
 
 # Note:
@@ -31,7 +31,7 @@ def build_dataset(position_data, energy_data=None, force_data=None,
                   virial_data=None):
     """Builds the force-matching dataset depending on available data.
 
-    Interface of force-loss function depends on dict keys set here.
+    Interface of force-loss functions depends on dict keys set here.
     """
     dataset = {'R': position_data}
     if energy_data is not None:
@@ -40,7 +40,10 @@ def build_dataset(position_data, energy_data=None, force_data=None,
         dataset['F'] = force_data
     if virial_data is not None:
         dataset['p'] = virial_data
-    return dataset
+    target_key_list = list(dataset)
+    target_key_list.remove('R')
+    assert target_key_list, "At least one target quantity needs to be supplied."
+    return dataset, target_key_list
 
 
 def init_virial_fn(virial_data, energy_fn_template, box_tensor):
@@ -75,13 +78,16 @@ def init_model(nbrs_init, energy_fn_template, virial_fn=None):
     Args:
         nbrs_init: Initial neighbor list.
         energy_fn_template: Energy_fn_template to get energy_fn from params.
-        virial_fn: Virial function. If None, no virial pressure is predicted.
+        virial_fn: Function to compute virial pressure. If None, no virial
+                   pressure is predicted.
 
     Returns:
-        A function(params, positions) returning a dict of predictions
-         containing energy ('U'), forces('F') and if applicable virial ('p').
+        A function(params, batch) returning a dict of predictions
+        containing energy ('U'), forces('F') and if applicable virial ('p').
+        The batch is assumed to be a dict contain particle positions under 'R'.
     """
-    def fm_model(params, positions):
+    def fm_model(params, batch):
+        positions = batch['R']
         energy_fn = energy_fn_template(params)
         # TODO check for neighborlist overflow and hand through
         nbrs = nbrs_init.update(positions)
@@ -94,49 +100,30 @@ def init_model(nbrs_init, energy_fn_template, virial_fn=None):
     return fm_model
 
 
-def init_loss_fn(energy_fn_template, nbrs_init, gamma_u=1.,
-                 gamma_f=1., gamma_p=1.e-6, virial_fn=None,
+def init_loss_fn(gamma_u=1., gamma_f=1., gamma_p=1.e-6,
                  error_fn=max_likelihood.mse_loss):
-    """Initializes update functions for energy and/or force matching.
-
-    The returned functions are jit and can therefore not be pickled.
+    """Initializes loss function for energy/force matching.
 
     Args:
-        energy_fn_template: Energy function template
-        nbrs_init: Initial neighbor list
         gamma_u: Weight for potential energy loss component
         gamma_f: Weight for force loss component
         gamma_p: Weight for virial loss component
-        virial_fn: Function to compute virial pressure
         error_fn: Function quantifying the deviation of the model and the
                   targets. By default, a mean-squared error.
 
     Returns:
-        A tuple (batch_update, batched_loss_fn) of pmapped functions. The former
-        computes the gradient and updates the parameters via the optimizer.
-        The latter returns the loss value, e.g. for the validation set.
+        loss_fn(predictions, targets), which returns a scalar loss value for a
+        batch of predictions and targets.
     """
-    single_prediction = init_single_prediction(nbrs_init, energy_fn_template,
-                                               virial_fn)
-
-    def loss_fn(params, batch, mask=None):
-        if mask is None:  # only used for full_data_map for validation
-            mask = jnp.ones(util.tree_multiplicity(batch))
-
-        predictions = vmap(single_prediction, in_axes=(None, 0))(params,
-                                                                 batch['R'])
+    def loss_fn(predictions, targets):
         loss = 0.
-        if 'U' in batch.keys():  # energy loss component
-            u_mask = jnp.ones_like(predictions['U']) * mask
-            loss += gamma_u * error_fn(predictions['U'], batch['U'], u_mask)
-        if 'F' in batch.keys():  # forces loss component
-            f_mask = jnp.ones_like(predictions['F']) * mask[:, jnp.newaxis,
-                                                            jnp.newaxis]
-            loss += gamma_f * error_fn(predictions['F'], batch['F'], f_mask)
-        if 'p' in batch.keys():  # virial loss component
-            p_mask = jnp.ones_like(predictions['p']) * mask[:, jnp.newaxis,
-                                                            jnp.newaxis]
-            loss += gamma_p * error_fn(predictions['p'], batch['p'], p_mask)
+        if 'U' in targets.keys():  # energy loss component
+            # TODO possibly add masks to generalize to padded species
+            loss += gamma_u * error_fn(predictions['U'], targets['U'])
+        if 'F' in targets.keys():  # forces loss component
+            loss += gamma_f * error_fn(predictions['F'], targets['F'])
+        if 'p' in targets.keys():  # virial loss component
+            loss += gamma_p * error_fn(predictions['p'], targets['p'])
         return loss
     return loss_fn
 
@@ -148,9 +135,10 @@ def init_mae_fn(val_loader, nbrs_init, energy_fn_template, batch_size=1,
     validation set. These metrics are usually better interpretable than a
     (combined) MSE loss value.
     """
-    single_prediction = init_single_prediction(nbrs_init, energy_fn_template,
-                                               virial_fn)
-
+    # TODO refactor afterwards: Delete masks and take model input
+    single_prediction = init_model(nbrs_init, energy_fn_template,
+                                   virial_fn)
+    # TODO refactor loss_fn such that single components can be returned.
     def abs_error(params, batch, mask):
         predictions = vmap(single_prediction, in_axes=(None, 0))(params,
                                                                  batch['R'])

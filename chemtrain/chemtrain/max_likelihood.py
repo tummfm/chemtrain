@@ -6,7 +6,7 @@ import copy
 from functools import partial
 import time
 
-from jax import (jit, lax, pmap, value_and_grad, tree_map, device_count,
+from jax import (jit, lax, vmap, pmap, value_and_grad, tree_map, device_count,
                  numpy as jnp)
 from jax_sgmc import data
 import numpy as onp
@@ -15,27 +15,38 @@ import optax
 from chemtrain import util, data_processing, dropout
 
 
-def pmap_update_fn(loss_fn, optimizer, n_devices):
+def pmap_update_fn(model, loss_fn, optimizer):
     """Initializes a pmapped function for updating parameters.
 
     Usage:
     params, opt_state, loss, grad = update_fn(params, opt_state, batch)
 
-    For pmap, params and opt_state need to be N_devices times duplicated along
-    axis 0. Batch is reshaped by this function.
+    Loss and grad are only a single instance, no n_device replica.
+    Params and opt_state need to be N_devices times duplicated along axis 0.
+    Batch is reshaped by this function.
 
     Args:
-        loss_fn: Loss function to minimize that takes (params, batch) as input.
+        model: A model with signature model(params, batch), which predicts
+               outputs used in loss function.
+        loss_fn: Loss function(predictions, targets) returning the scalar loss
+                 value for a batch.
         optimizer: Optax optimizer
-        n_devices: Number of devices
 
     Returns:
         A function that computes the gradient and updates the parameters via the
         optimizer.
     """
+    batched_model = vmap(model, in_axes=(None, 0))
+
+    # loss as function of params and batch for optimization.
+    def param_loss_fn(params, batch):
+        predictions = batched_model(params, batch)
+        loss = loss_fn(predictions, batch)
+        return loss
+
     @partial(pmap, axis_name='devices')
     def pmap_batch_update(params, opt_state, batch):
-        loss, grad = value_and_grad(loss_fn)(params, batch)
+        loss, grad = value_and_grad(param_loss_fn)(params, batch)
 
         # step optimizer within pmap to minimize communication overhead
         grad = lax.pmean(grad, axis_name='devices')
@@ -46,101 +57,100 @@ def pmap_update_fn(loss_fn, optimizer, n_devices):
 
     @jit
     def batch_update(params, opt_state, batch):
-        batch = util.tree_split(batch, n_devices)
+        batch = util.tree_split(batch, device_count())
         new_params, opt_state, loss, grad = pmap_batch_update(params, opt_state,
                                                               batch)
         return new_params, opt_state, loss[0], util.tree_get_single(grad)
     return batch_update
 
 
-def predict_val_data(model, val_loader, batch_size=1, batch_cache=100):
+def init_val_predictions(model, val_loader, batch_size=1, batch_cache=100,
+                         restack=False):
     """Model predictions for whole validation/test dataset.
 
-    Can be used to monitor validation loss as well as postprocessing.
+    Usage:
+    predictions, data_state = batched_loss_fn(params, data_state)
+
+    Params needs to be N_devices times duplicated along axis 0.
+
+    Args:
+        model: A model with signature model(params, batch), which predicts
+               outputs used in loss function.
+        val_loader: Validation or test set NumpyDataLoader.
+        batch_size: Total batch size that is processed in parallel
+        batch_cache: Number of batches to cache.
+
+    Returns:
+        Tuple (predictions, data_state). predictions contains model predictions
+        for the whole validation dataset and data_state is used to start the
+        data loading in the next evaluation.
     """
     init_fun, map_fun = data.full_reference_data(val_loader, batch_cache,
                                                  batch_size)
     init_data_state = init_fun()
 
-    pmap_model = pmap(model)
+    batched_model = vmap(model, in_axes=(None, 0))
+    pmap_model = pmap(batched_model)
 
-    def batched_model(params, batch, unused_state):
+    def single_batch(params, batch, unused_state):
         batch = util.tree_split(batch, device_count())
-        loss = pmap_model(params, batch)
-        return loss, unused_state
+        batch_prediction = pmap_model(params, batch)
+        # TODO possibly bug here
+        batch_prediction_along_0 = util.tree_axis_swap(batch_prediction)
+        return batch_prediction_along_0, unused_state
 
     @jit
     def mapped_model_fn(params, data_state):
-        data_state, (predictions, _) = map_fun(partial(batched_model, params),
+        data_state, (predictions, _) = map_fun(partial(single_batch, params),
                                                data_state, None)
-        # correct for masked samples:
-        # Loss function averages over batch_size, which we undo to divide
-        # by the real number of samples.
-        if isinstance(batch_losses, dict):
-            average = {key: jnp.sum(values) * batch_size / n_val_samples
-                       for key, values in batch_losses.items()}
-        else:
-            average = jnp.sum(batch_losses) * batch_size / n_val_samples
-        return average, data_state
+        if restack:
+            # TODO possibly bug here: Does not seem to be reshaped correctly
+            predictions = util.tree_concat(predictions)
+        return predictions, data_state
     return mapped_model_fn, init_data_state
 
 
-def val_loss_fn(loss_fn, val_loader, batch_size=1, batch_cache=100):
-    """Initializes a pmapped loss function.
-
-    The loss function can be used for evaluating the validation or test
-    loss via a full_data_map.
-
-    This function is not equipped to deal with padded atoms.  # TODO
+def init_val_loss_fn(model, loss_fn, val_loader, val_targets_keys, batch_size=1,
+                     batch_cache=100):
+    """Initializes a pmapped loss function that computes the validation loss.
 
     Usage:
     val_loss, data_state = batched_loss_fn(params, data_state)
 
-    For pmap, params needs to be N_devices times duplicated along axis 0.
-    The data batch is reshaped accordingly by this function.
+    Params needs to be N_devices times duplicated along axis 0.
 
     Args:
-        loss_fn: Loss function that takes (params, batch) as input.
-        val_loader: NumpyDataLoader for validation set
-        batch_size: Mini-batch size
+        model: A model with signature model(params, batch), which predicts
+               outputs used in loss function.
+        loss_fn: Loss function(predictions, targets) returning the scalar loss
+                 value for a batch.
+        val_loader: NumpyDataLoader for validation set.
+        val_targets_keys: Dict containing targets of whole val
+        batch_size: Total batch size that is processed in parallel.
         batch_cache: Number of batches to cache on GPU to reduce host-device
-                     communication
+                     communication.
 
     Returns:
-        A pmapped function that returns the loss value.
+        A pmapped function that returns the average validation loss.
     """
-    n_val_samples = val_loader._observation_count
-    init_fun, map_fun = data.full_reference_data(val_loader, batch_cache,
-                                                 batch_size)
-    init_data_state = init_fun()
 
-    @partial(pmap, axis_name='devices')
-    def pmap_loss_fn(*args, **kwargs):
-        loss = loss_fn(*args, **kwargs)
-        loss = lax.pmean(loss, axis_name='devices')
-        return loss
+    # We compute the validation error over the whole dataset at once, because
+    # otherwise it is non-trivial to compute the correct error for masked
+    # batches with different number of masked targets without explicitly knowing
+    # the mask in this function
+    # If predictions and targets of the whole validation dataset does not fit
+    # memory, a more specialized approach needs to be taken.
 
-    def batched_loss(params, batch, mask, unused_scan_carry):
-        n_devices = device_count()
-        batch = util.tree_split(batch, n_devices)
-        mask = util.tree_split(mask, n_devices)
-        # unused_scan_carry = util.tree_replicate(unused_scan_carry, n_devices)
-        loss = pmap_loss_fn(params, batch, mask)
-        return util.tree_get_single(loss), unused_scan_carry
+    target_data = {key: val_loader._reference_data[key]
+                   for key in val_targets_keys}
 
-    @jit
+    mapped_predictions_fn, init_data_state = init_val_predictions(
+        model, val_loader, batch_size, batch_cache, restack=True)
+
     def mapped_loss_fn(params, data_state):
-        data_state, (batch_losses, _) = map_fun(partial(batched_loss, params),
-                                                data_state, None, masking=True)
-        # correct for masked samples:
-        # Loss function averages over batch_size, which we undo to divide
-        # by the real number of samples.
-        if isinstance(batch_losses, dict):
-            average = {key: jnp.sum(values) * batch_size / n_val_samples
-                       for key, values in batch_losses.items()}
-        else:
-            average = jnp.sum(batch_losses) * batch_size / n_val_samples
-        return average, data_state
+        predictions, data_state = mapped_predictions_fn(params, data_state)
+        val_loss = loss_fn(predictions, target_data)
+        return val_loss, data_state
 
     return mapped_loss_fn, init_data_state
 
@@ -414,14 +424,14 @@ class DataParallelTrainer(MLETrainerTemplate):
     As pmap requires constant batch dimensions, data with unequal number of
     atoms needs to be padded and to be compatible with this trainer.
     """
-    def __init__(self, dataset, loss_fn, init_params, optimizer,
+    def __init__(self, dataset_dict, loss_fn, model, init_params, optimizer,
                  checkpoint_path, batch_per_device, batch_cache,
                  train_ratio=0.7, val_ratio=0.1,
                  convergence_criterion='window_median',
                  energy_fn_template=None):
-        n_devices = device_count()
-        self._update_fn = pmap_update_fn(loss_fn, optimizer, n_devices)
-        self.batch_size = batch_per_device * n_devices
+        self.model = model
+        self._update_fn = pmap_update_fn(model, loss_fn, optimizer)
+        self.batch_size = batch_per_device * device_count()
         self.batch_cache = batch_cache
         self._loss_fn = loss_fn
 
@@ -440,11 +450,12 @@ class DataParallelTrainer(MLETrainerTemplate):
         self._early_stop = EarlyStopping(init_params, convergence_criterion)
 
         (self._batches_per_epoch, self._get_train_batch,
-         self._train_batch_state, self.val_loader, self.test_loader
-         ) = self._process_dataset(dataset, train_ratio, val_ratio)
+         self._train_batch_state, self.val_loader, self.test_loader, target_keys
+         ) = self._process_dataset(dataset_dict, train_ratio, val_ratio)
 
-        self._val_loss_fn, self._val_data_state = val_loss_fn(
-            loss_fn, self.val_loader, self.batch_size, batch_cache
+        self._val_loss_fn, self._val_data_state = init_val_loss_fn(
+            self.model, self._loss_fn, self.val_loader, target_keys,
+            self.batch_size, self.batch_cache
         )
 
     def update_dataset(self, train_ratio=0.1, val_ratio=0.1, **dataset_kwargs):
@@ -452,34 +463,34 @@ class DataParallelTrainer(MLETrainerTemplate):
         useful for active learning applications.
 
         Args:
-            train_ratio: Percantage of dataset to use for training.
-            val_ratio: Percantage of dataset to use for validation.
+            train_ratio: Percentage of dataset to use for training.
+            val_ratio: Percentage of dataset to use for validation.
             **dataset_kwargs: Kwargs to supply to self._build_dataset to
                       re-build the dataset
         """
         # reset convergence criterion as loss might not be comparable
         self._early_stop.reset_convergence_losses()
-        dataset = self._build_dataset(**dataset_kwargs)
         (self._batches_per_epoch, self._get_train_batch,
-         self._train_batch_state, self.val_loader, self.test_loader
-         ) = self._process_dataset(dataset, train_ratio, val_ratio)
+         self._train_batch_state, self.val_loader, self.test_loader, target_keys
+         ) = self._process_dataset(dataset_kwargs, train_ratio, val_ratio)
 
-        self._val_loss_fn, self._val_data_state = val_loss_fn(
-            self._loss_fn, self.val_loader, self.batch_size,
-            self.batch_cache
+        self._val_loss_fn, self._val_data_state = init_val_loss_fn(
+            self.model, self._loss_fn, self.val_loader, target_keys,
+            self.batch_size, self.batch_cache
         )
 
-    def _process_dataset(self, dataset, train_ratio=0.7, val_ratio=0.1):
+    def _process_dataset(self, dataset_dict, train_ratio=0.7, val_ratio=0.1):
+        dataset, target_keys = self._build_dataset(**dataset_dict)
         train_loader, val_loader, test_loader = \
             data_processing.init_dataloaders(dataset, train_ratio, val_ratio)
         init_train_state, get_train_batch = data.random_reference_data(
             train_loader, self.batch_cache, self.batch_size)
-        train_batch_state = init_train_state()
+        train_batch_state = init_train_state()  # TODO add in epochs
 
-        observation_count = train_loader._observation_count
+        observation_count = train_loader._observation_count  # TODO get from loader
         batches_per_epoch = observation_count // self.batch_size
         return (batches_per_epoch, get_train_batch, train_batch_state,
-                val_loader, test_loader)
+                val_loader, test_loader, target_keys)
 
     def _get_batch(self):
         for _ in range(self._batches_per_epoch):
@@ -520,9 +531,14 @@ class DataParallelTrainer(MLETrainerTemplate):
 
     @abc.abstractmethod
     def _build_dataset(self, *args, **kwargs):
-        """Function that returns the dataset as a Dictionary for the specific
-        problem at hand. The data for each leaf of the dataset is assumed to be
-        stacked along axis 0.
+        """Function that returns a tuple (dataset, target_keys).
+        The 'dataset' is a dictionary for the specific problem at hand.
+        The data for each leaf of the dataset is assumed to be stacked along
+        axis 0. 'target_keys' is a list of keys that are necessary to evaluate
+        the loss_fn, assuming the model prediction is available. In the simplest
+        case, the same keys as in 'dataset' can be provided. For a memory
+        expensive dataset, keys that are only needed as model input can be
+        omitted to save GPU memory.
         """
 
     @property

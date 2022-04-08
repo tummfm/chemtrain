@@ -91,28 +91,29 @@ class ForceMatching(max_likelihood.DataParallelTrainer):
                  checkpoint_folder='Checkpoints'):
 
         checkpoint_path = 'output/force_matching/' + str(checkpoint_folder)
-        dataset = self._build_dataset(position_data, energy_data, force_data,
-                                      virial_data)
+        dataset_dict = {'position_data': position_data,
+                        'energy_data': energy_data,
+                        'force_data': force_data,
+                        'virial_data': virial_data
+                        }
 
         virial_fn = force_matching.init_virial_fn(
             virial_data, energy_fn_template, box_tensor)
-        self.model = force_matching.init_model(
-            nbrs_init, energy_fn_template, virial_fn)
-        loss_fn = force_matching.init_loss_fn(
-            energy_fn_template, nbrs_init, gamma_f=gamma_f,
-            gamma_p=gamma_p, virial_fn=virial_fn
-        )
+        model = force_matching.init_model(nbrs_init, energy_fn_template,
+                                          virial_fn)
+        loss_fn = force_matching.init_loss_fn(gamma_f=gamma_f, gamma_p=gamma_p)
 
-        super().__init__(dataset, loss_fn, init_params, optimizer,
+        super().__init__(dataset_dict, loss_fn, model, init_params, optimizer,
                          checkpoint_path, batch_per_device, batch_cache,
                          train_ratio, val_ratio,
                          convergence_criterion=convergence_criterion,
                          energy_fn_template=energy_fn_template)
 
-        self.mae_fn, self.mae_init_state = force_matching.init_mae_fn(
-            self.test_loader, nbrs_init, energy_fn_template,
-            self.batch_size, batch_cache, virial_fn
-        )
+        # TODO refactor
+        # self.mae_fn, self.mae_init_state = force_matching.init_mae_fn(
+        #     self.test_loader, nbrs_init, energy_fn_template,
+        #     self.batch_size, batch_cache, virial_fn
+        # )
 
     @staticmethod
     def _build_dataset(position_data, energy_data=None, force_data=None,
@@ -474,7 +475,7 @@ class RelativeEntropy(reweighting.PropagationBase):
         reference_loader = data.NumpyDataLoader(R=reference_data)
         init_reference_batch, get_reference_batch = data.random_reference_data(
             reference_loader, batch_cache, reference_batch_size)
-        init_reference_batch_state = init_reference_batch()
+        init_reference_batch_state = init_reference_batch()  # TODO in epochs
         self.data_states[key] = init_reference_batch_state
         return get_reference_batch
 
