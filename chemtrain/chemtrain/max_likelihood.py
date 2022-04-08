@@ -210,6 +210,11 @@ class MLETrainerTemplate(util.TrainerInterface):
         self.gradient_norm_history = []
         self._converged = False
         self._diverged = False
+        self._dropout = dropout.dropout_is_used(self.params)
+        # Note: make sure not to use such a construct during training as an
+        # if-statement based on params forces the python part to wait for the
+        # completion of the batch, hence losing the advantage of asynchronous
+        # dispatch, which can become the bottleneck in high-throughput learning.
 
     def _step_optimizer(self, curr_grad):
         """Wrapper around step_optimizer that is useful whenever the
@@ -254,7 +259,13 @@ class MLETrainerTemplate(util.TrainerInterface):
             start_time = time.time()
             for batch in self._get_batch():
                 self._update(batch)
-                if dropout.dropout_is_used(self.params):
+                if self._dropout:
+                    # TODO refactor this as this needs to wait for when
+                    #  params will again be available, slowing down re-loading
+                    #  of batches. We could set dropout key as kwarg and keep
+                    #  track of keys in this class. Also refactor dropout in
+                    #  DimeNet taking advantage of haiku RNG key management and
+                    #  built-in dropout in MLP
                     params = dropout.next_dropout_params(self.params)
                     self.params = params
 
