@@ -411,6 +411,8 @@ class EarlyStopping:
 class DataParallelTrainer(MLETrainerTemplate):
     """Trainer functionalities for MLE training based on a dataset, where
     parallelization can simply be accomplished by pmapping over batched data.
+    As pmap requires constant batch dimensions, data with unequal number of
+    atoms needs to be padded and to be compatible with this trainer.
     """
     def __init__(self, dataset, loss_fn, init_params, optimizer,
                  checkpoint_path, batch_per_device, batch_cache,

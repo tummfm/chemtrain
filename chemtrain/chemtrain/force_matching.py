@@ -15,8 +15,6 @@ from chemtrain.jax_md_mod import custom_quantity
 #  neighbor list as many cut-off interactions are otherwise computed.
 #  For the sake of a simpler implementation, the slight inefficiency
 #  in the case of DimeNet++ is accepted for now.
-#  A more efficient implementation is based on pre-computation of neighborlists
-#  for each snapshot in the dataset.
 
 State = namedtuple(
     'State',
@@ -68,11 +66,22 @@ def init_virial_fn(virial_data, energy_fn_template, box_tensor):
     return virial_fn
 
 
-def init_single_prediction(nbrs_init, energy_fn_template, virial_fn=None):
-    """Initialize predictions for a single snapshot. Can be used to
-    parametrize potentials from per-snapshot energy, force and/or virial.
+def init_model(nbrs_init, energy_fn_template, virial_fn=None):
+    """Initialize predictions of energy, forces and virial (if applicable)
+    for a single snapshot.
+
+    Beware, currently overflow of neighbor list is not checked.
+
+    Args:
+        nbrs_init: Initial neighbor list.
+        energy_fn_template: Energy_fn_template to get energy_fn from params.
+        virial_fn: Virial function. If None, no virial pressure is predicted.
+
+    Returns:
+        A function(params, positions) returning a dict of predictions
+         containing energy ('U'), forces('F') and if applicable virial ('p').
     """
-    def single_prediction(params, positions):
+    def fm_model(params, positions):
         energy_fn = energy_fn_template(params)
         # TODO check for neighborlist overflow and hand through
         nbrs = nbrs_init.update(positions)
@@ -82,7 +91,7 @@ def init_single_prediction(nbrs_init, energy_fn_template, virial_fn=None):
         if virial_fn is not None:
             predictions['p'] = - virial_fn(State(positions), nbrs, params)
         return predictions
-    return single_prediction
+    return fm_model
 
 
 def init_loss_fn(energy_fn_template, nbrs_init, gamma_u=1.,

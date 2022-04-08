@@ -20,6 +20,9 @@ class PropertyPrediction(max_likelihood.DataParallelTrainer):
                  checkpoint_folder='Checkpoints'):
 
         # TODO documentation
+
+        # TODO build graph on-the-fly as memory moving might be bottleneck here
+
         self.model = model
         checkpoint_path = 'output/property_prediction/' + str(checkpoint_folder)
         dataset = self._build_dataset(targets, graph_dataset)
@@ -93,7 +96,7 @@ class ForceMatching(max_likelihood.DataParallelTrainer):
 
         virial_fn = force_matching.init_virial_fn(
             virial_data, energy_fn_template, box_tensor)
-        self.model = force_matching.init_single_prediction(
+        self.model = force_matching.init_model(
             nbrs_init, energy_fn_template, virial_fn)
         loss_fn = force_matching.init_loss_fn(
             energy_fn_template, nbrs_init, gamma_f=gamma_f,

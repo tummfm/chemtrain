@@ -65,7 +65,7 @@ def init_likelihood(energy_fn_template, nbrs_init, virial_fn=None,
                       but any jax.scipy logpdf with the same signature can
                       be provided.
     """
-    single_prediction = force_matching.init_single_prediction(
+    single_prediction = force_matching.init_model(
         nbrs_init, energy_fn_template, virial_fn)
 
     def sum_log_likelihood(predictions, targets, std):
