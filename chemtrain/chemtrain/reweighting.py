@@ -457,7 +457,7 @@ class PropagationBase(max_likelihood.MLETrainerTemplate):
         else:
             raise NotImplementedError('Only batch_size = 1 or -1 implemented.')
 
-        return (batch for batch in batch_list)
+        return (batch.tolist() for batch in batch_list)
 
     def _print_measured_statepoint(self):
         """Print meausured kbT (and pressure for npt ensemble) for all

@@ -59,7 +59,10 @@ def dropout_is_used(meta_params):
     """A function that returns whether dropout is used by
     checking if the 'Dropout_RNG_key' is set or exists at all.
     """
-    return 'Dropout_RNG_key' in meta_params.keys()
+    try:
+        return 'Dropout_RNG_key' in meta_params.keys()
+    except AttributeError:
+        return False
 
 
 def build_dropout_params(energy_params, dropout_key):
