@@ -95,7 +95,6 @@ def init_val_predictions(model, val_loader, batch_size=1, batch_cache=100,
     def single_batch(params, batch, unused_state):
         batch = util.tree_split(batch, device_count())
         batch_prediction = pmap_model(params, batch)
-        # TODO possibly bug here
         batch_prediction_along_0 = util.tree_axis_swap(batch_prediction)
         return batch_prediction_along_0, unused_state
 
@@ -485,7 +484,7 @@ class DataParallelTrainer(MLETrainerTemplate):
             data_processing.init_dataloaders(dataset, train_ratio, val_ratio)
         init_train_state, get_train_batch = data.random_reference_data(
             train_loader, self.batch_cache, self.batch_size)
-        train_batch_state = init_train_state()  # TODO add in epochs
+        train_batch_state = init_train_state(shuffle=True)
 
         observation_count = train_loader._observation_count  # TODO get from loader
         batches_per_epoch = observation_count // self.batch_size
