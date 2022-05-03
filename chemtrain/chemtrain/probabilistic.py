@@ -230,8 +230,8 @@ def init_log_posterior_fn(likelihood, prior, train_loader, batch_size,
                                                   batch_size)
     data_state = init_fun()
 
-    # TODO this is not valid with dataloader; possibly use masked
-    #  epoch-wise loader
+    # TODO this is not valid with dataloader; possibly use new dataloader and
+    #  adjust full_potential
     def log_posterior_fn(sample):
         potential_val, _ = full_potential_fn(sample, data_state, fmap_fun)
         return -potential_val  # potential is negative posterior

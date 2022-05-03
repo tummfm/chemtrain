@@ -5,6 +5,7 @@ from blackjax import nuts, stan_warmup
 from coax.utils._jit import jit
 from jax import value_and_grad, random, numpy as jnp
 from jax_sgmc import data
+from jax_sgmc.data import numpy_loader
 
 from chemtrain import (util, force_matching, traj_util, reweighting,
                        probabilistic, max_likelihood, property_prediction,
@@ -472,10 +473,10 @@ class RelativeEntropy(reweighting.PropagationBase):
     def _set_dataset(self, key, reference_data, reference_batch_size,
                      batch_cache=1):
         """Set dataset and loader corresponding to current state point."""
-        reference_loader = data.NumpyDataLoader(R=reference_data)
+        reference_loader = numpy_loader.NumpyDataLoader(R=reference_data)
         init_reference_batch, get_reference_batch = data.random_reference_data(
             reference_loader, batch_cache, reference_batch_size)
-        init_reference_batch_state = init_reference_batch()  # TODO in epochs
+        init_reference_batch_state = init_reference_batch(shuffle=True)
         self.data_states[key] = init_reference_batch_state
         return get_reference_batch
 

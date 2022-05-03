@@ -3,7 +3,7 @@ learning.
 """
 import numpy as onp
 from jax import tree_flatten, lax
-from jax_sgmc import data
+from jax_sgmc.data import numpy_loader
 
 from chemtrain.jax_md_mod import custom_space
 from chemtrain import util
@@ -65,9 +65,9 @@ def init_dataloaders(dataset, train_ratio=0.7, val_ratio=0.1):
     """
     train_set, val_set, test_set = train_val_test_split(
         dataset, train_ratio, val_ratio)
-    train_loader = data.NumpyDataLoader(**train_set)
-    val_loader = data.NumpyDataLoader(**val_set)
-    test_loader = data.NumpyDataLoader(**test_set)
+    train_loader = numpy_loader.NumpyDataLoader(**train_set)
+    val_loader = numpy_loader.NumpyDataLoader(**val_set)
+    test_loader = numpy_loader.NumpyDataLoader(**test_set)
     return train_loader, val_loader, test_loader
 
 
