@@ -64,12 +64,11 @@ def pmap_update_fn(model, loss_fn, optimizer):
     return batch_update
 
 
-def init_val_predictions(model, val_loader, batch_size=1, batch_cache=100,
-                         restack=False):
+def init_val_predictions(model, val_loader, batch_size=1, batch_cache=10):
     """Model predictions for whole validation/test dataset.
 
     Usage:
-    predictions, data_state = batched_loss_fn(params, data_state)
+    predictions, data_state = mapped_model_fn(params, data_state)
 
     Params needs to be N_devices times duplicated along axis 0.
 
@@ -85,26 +84,31 @@ def init_val_predictions(model, val_loader, batch_size=1, batch_cache=100,
         for the whole validation dataset and data_state is used to start the
         data loading in the next evaluation.
     """
+    # TODO clould do without data state using data.full_reference_mapper,
+    #  but then trainers can't be pickled due to '_thread.lock' used.
     init_fun, map_fun = data.full_reference_data(val_loader, batch_cache,
                                                  batch_size)
     init_data_state = init_fun()
 
     batched_model = vmap(model, in_axes=(None, 0))
-    pmap_model = pmap(batched_model)
 
+    # TODO somehow does not work with pmap and multiple GPUs for few last
+    #  batches, but works for single GPU
+    # pmap_model = pmap(batched_model)
+    #
     def single_batch(params, batch, unused_state):
-        batch = util.tree_split(batch, device_count())
-        batch_prediction = pmap_model(params, batch)
-        batch_prediction_along_0 = util.tree_axis_swap(batch_prediction)
-        return batch_prediction_along_0, unused_state
+        # batch = util.tree_split(batch, device_count())
+        # batch_prediction = pmap_model(params, batch)
+        # predictions = util.tree_concat(batch_prediction)
+        predictions = batched_model(params, batch)
+        return predictions, unused_state
 
     @jit
     def mapped_model_fn(params, data_state):
-        data_state, (predictions, _) = map_fun(partial(single_batch, params),
+        params_no_pmap = util.tree_get_single(params)
+        data_state, (predictions, _) = map_fun(partial(single_batch,
+                                                       params_no_pmap),
                                                data_state, None)
-        if restack:
-            # TODO possibly bug here: Does not seem to be reshaped correctly
-            predictions = util.tree_concat(predictions)
         return predictions, data_state
     return mapped_model_fn, init_data_state
 
@@ -144,7 +148,7 @@ def init_val_loss_fn(model, loss_fn, val_loader, val_targets_keys, batch_size=1,
                    for key in val_targets_keys}
 
     mapped_predictions_fn, init_data_state = init_val_predictions(
-        model, val_loader, batch_size, batch_cache, restack=True)
+        model, val_loader, batch_size, batch_cache)
 
     def mapped_loss_fn(params, data_state):
         predictions, data_state = mapped_predictions_fn(params, data_state)
@@ -486,7 +490,7 @@ class DataParallelTrainer(MLETrainerTemplate):
             train_loader, self.batch_cache, self.batch_size)
         train_batch_state = init_train_state(shuffle=True)
 
-        observation_count = train_loader._observation_count  # TODO get from loader
+        observation_count = train_loader.static_information['observation_count']
         batches_per_epoch = observation_count // self.batch_size
         return (batches_per_epoch, get_train_batch, train_batch_state,
                 val_loader, test_loader, target_keys)

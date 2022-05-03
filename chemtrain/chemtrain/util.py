@@ -106,9 +106,7 @@ def tree_concat(tree):
     the parallel dimension is again along axis 0 and the leading pmap dimension
     vanishes.
     """
-    def stack_leaf(leaf):
-        return jnp.concatenate([leaf[i] for i in range(leaf.shape[0])])
-    return tree_map(lambda x: stack_leaf(x), tree)
+    return tree_map(partial(jnp.concatenate, axis=0), tree)
 
 
 def tree_split(tree, n_devices):
