@@ -113,8 +113,8 @@ def init_val_predictions(model, val_loader, batch_size=1, batch_cache=10):
     return mapped_model_fn, init_data_state
 
 
-def init_val_loss_fn(model, loss_fn, val_loader, val_targets_keys, batch_size=1,
-                     batch_cache=100):
+def init_val_loss_fn(model, loss_fn, val_loader, val_targets_keys=None,
+                     batch_size=1, batch_cache=100):
     """Initializes a pmapped loss function that computes the validation loss.
 
     Usage:
@@ -144,8 +144,11 @@ def init_val_loss_fn(model, loss_fn, val_loader, val_targets_keys, batch_size=1,
     # If predictions and targets of the whole validation dataset does not fit
     # memory, a more specialized approach needs to be taken.
 
-    target_data = {key: val_loader._reference_data[key]
-                   for key in val_targets_keys}
+    if val_targets_keys is None:
+        target_data = val_loader._reference_data
+    else:
+        target_data = {key: val_loader._reference_data[key]
+                       for key in val_targets_keys}
 
     mapped_predictions_fn, init_data_state = init_val_predictions(
         model, val_loader, batch_size, batch_cache)

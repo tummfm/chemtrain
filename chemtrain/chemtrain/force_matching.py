@@ -3,7 +3,7 @@ such as energy, forces and virial pressure.
 """
 from collections import namedtuple
 
-from jax import vmap, value_and_grad, numpy as jnp
+from jax import value_and_grad, numpy as jnp
 
 from chemtrain import max_likelihood
 from chemtrain.jax_md_mod import custom_quantity
@@ -40,10 +40,17 @@ def build_dataset(position_data, energy_data=None, force_data=None,
         dataset['F'] = force_data
     if virial_data is not None:
         dataset['p'] = virial_data
+    return dataset, _dataset_target_keys(dataset)
+
+
+def _dataset_target_keys(dataset):
+    """Dataset keys excluding particle positions for validation loss with
+    possibly masked atoms.
+    """
     target_key_list = list(dataset)
     target_key_list.remove('R')
-    assert target_key_list, "At least one target quantity needs to be supplied."
-    return dataset, target_key_list
+    assert target_key_list, 'At least one target quantity needs to be supplied.'
+    return target_key_list
 
 
 def init_virial_fn(virial_data, energy_fn_template, box_tensor):
@@ -101,7 +108,7 @@ def init_model(nbrs_init, energy_fn_template, virial_fn=None):
 
 
 def init_loss_fn(gamma_u=1., gamma_f=1., gamma_p=1.e-6,
-                 error_fn=max_likelihood.mse_loss):
+                 error_fn=max_likelihood.mse_loss, individual=False):
     """Initializes loss function for energy/force matching.
 
     Args:
@@ -110,21 +117,35 @@ def init_loss_fn(gamma_u=1., gamma_f=1., gamma_p=1.e-6,
         gamma_p: Weight for virial loss component
         error_fn: Function quantifying the deviation of the model and the
                   targets. By default, a mean-squared error.
+        individual: Default False initializes a loss function that returns
+                    scalar loss weighted by gammas. If True, returns all
+                    individual components, e.g. for testing purposes. In this
+                    case, gamma values are unused.
 
     Returns:
         loss_fn(predictions, targets), which returns a scalar loss value for a
         batch of predictions and targets.
     """
-    def loss_fn(predictions, targets):
-        loss = 0.
+    def loss_fn(predictions, targets, mask=None):
+        errors = {}
+        loss_val = 0.
         if 'U' in targets.keys():  # energy loss component
-            # TODO possibly add masks to generalize to padded species
-            loss += gamma_u * error_fn(predictions['U'], targets['U'])
+            errors['energy'] = error_fn(predictions['U'], targets['U'])
+            loss_val += gamma_u * errors['energy']
         if 'F' in targets.keys():  # forces loss component
-            loss += gamma_f * error_fn(predictions['F'], targets['F'])
+            if mask is None:  # only forces need mask, U and p are unchanged
+                mask = jnp.ones_like(predictions['F'])
+            errors['forces'] = error_fn(predictions['F'], targets['F'], mask)
+            loss_val += gamma_f * errors['forces']
         if 'p' in targets.keys():  # virial loss component
-            loss += gamma_p * error_fn(predictions['p'], targets['p'])
-        return loss
+            errors['pressure'] = error_fn(predictions['p'], targets['p'])
+            loss_val += gamma_p * errors['pressure']
+
+        if individual:
+            return errors
+        else:
+            return loss_val
+
     return loss_fn
 
 
@@ -135,31 +156,12 @@ def init_mae_fn(val_loader, nbrs_init, energy_fn_template, batch_size=1,
     validation set. These metrics are usually better interpretable than a
     (combined) MSE loss value.
     """
-    # TODO refactor afterwards: Delete masks and take model input
-    single_prediction = init_model(nbrs_init, energy_fn_template,
-                                   virial_fn)
-    # TODO refactor loss_fn such that single components can be returned.
-    def abs_error(params, batch, mask):
-        predictions = vmap(single_prediction, in_axes=(None, 0))(params,
-                                                                 batch['R'])
-        maes = {}
-        if 'U' in batch.keys():  # energy loss component
-            u_mask = jnp.ones_like(predictions['U']) * mask
-            maes['energy'] = max_likelihood.mae_loss(predictions['U'],
-                                                     batch['U'], u_mask)
-        if 'F' in batch.keys():  # forces loss component
-            f_mask = jnp.ones_like(predictions['F']) * mask[:, jnp.newaxis,
-                                                            jnp.newaxis]
-            maes['forces'] = max_likelihood.mae_loss(predictions['F'],
-                                                     batch['F'], f_mask)
-        if 'p' in batch.keys():  # virial loss component
-            p_mask = jnp.ones_like(predictions['p']) * mask[:, jnp.newaxis,
-                                                            jnp.newaxis]
-            maes['pressure'] = max_likelihood.mae_loss(predictions['p'],
-                                                       batch['p'], p_mask)
-        return maes
+    model = init_model(nbrs_init, energy_fn_template, virial_fn)
 
-    mean_abs_error, init_data_state = max_likelihood.val_loss_fn(
-        abs_error, val_loader, batch_size, batch_cache)
+    abs_error = init_loss_fn(error_fn=max_likelihood.mae_loss, individual=True)
+
+    target_keys = _dataset_target_keys(val_loader._reference_data)
+    mean_abs_error, init_data_state = max_likelihood.init_val_loss_fn(
+        model, abs_error, val_loader, target_keys, batch_size, batch_cache)
 
     return mean_abs_error, init_data_state

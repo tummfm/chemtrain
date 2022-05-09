@@ -110,11 +110,10 @@ class ForceMatching(max_likelihood.DataParallelTrainer):
                          convergence_criterion=convergence_criterion,
                          energy_fn_template=energy_fn_template)
 
-        # TODO refactor
-        # self.mae_fn, self.mae_init_state = force_matching.init_mae_fn(
-        #     self.test_loader, nbrs_init, energy_fn_template,
-        #     self.batch_size, batch_cache, virial_fn
-        # )
+        self.mae_fn, self.mae_init_state = force_matching.init_mae_fn(
+            self.test_loader, nbrs_init, energy_fn_template,
+            self.batch_size, batch_cache, virial_fn
+        )
 
     @staticmethod
     def _build_dataset(position_data, energy_data=None, force_data=None,
