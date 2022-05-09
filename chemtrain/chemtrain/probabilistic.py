@@ -73,7 +73,7 @@ def init_likelihood(energy_fn_template, nbrs_init, virial_fn=None,
         return jnp.sum(likelihoods)
 
     def likelihood_fn(sample, observation):
-        prediction = single_prediction(sample['params'], observation['R'])
+        prediction = single_prediction(sample['params'], observation)
 
         likelihood = 0.
         if 'U' in observation.keys():  # energy likelihood component
@@ -156,8 +156,8 @@ def init_force_matching(
         used for training, validation and testing. The test_set can be used for
         further analyses of the trained model on unseen data.
     """
-    dataset = force_matching.build_dataset(position_data, energy_data,
-                                           force_data, virial_data)
+    dataset, _ = force_matching.build_dataset(position_data, energy_data,
+                                              force_data, virial_data)
     train_loader, val_loader, test_loader = data_processing.init_dataloaders(
         dataset, train_ratio, val_ratio)
 
