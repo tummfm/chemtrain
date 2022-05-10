@@ -89,12 +89,13 @@ def init_model(nbrs_init, energy_fn_template, virial_fn=None):
                    pressure is predicted.
 
     Returns:
-        A function(params, batch) returning a dict of predictions
+        A function(params, single_observation) returning a dict of predictions
         containing energy ('U'), forces('F') and if applicable virial ('p').
-        The batch is assumed to be a dict contain particle positions under 'R'.
+        The single_observation is assumed to be a dict contain particle
+        positions under 'R'.
     """
-    def fm_model(params, batch):
-        positions = batch['R']
+    def fm_model(params, single_observation):
+        positions = single_observation['R']
         energy_fn = energy_fn_template(params)
         # TODO check for neighborlist overflow and hand through
         nbrs = nbrs_init.update(positions)

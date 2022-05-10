@@ -392,7 +392,9 @@ class EarlyStopping:
             curr_epoch_loss: Validation loss of the most recent epoch
             thresh: Convergence threshold. Specific definition depends on the
                     selected convergence criterion.
-            params: Optimization parameters to save in case of being best
+            params: Optimization parameters to save in case of being best. Make
+                    sure to supply non-devive-replicated params,
+                    i.e. self.params.
             save_best_params: If best params are supposed to be tracked
 
         Returns:
@@ -437,6 +439,7 @@ class DataParallelTrainer(MLETrainerTemplate):
                  energy_fn_template=None):
         self.model = model
         self._update_fn = pmap_update_fn(model, loss_fn, optimizer)
+        self.batch_per_device = batch_per_device
         self.batch_size = batch_per_device * device_count()
         self.batch_cache = batch_cache
         self._loss_fn = loss_fn
@@ -453,15 +456,16 @@ class DataParallelTrainer(MLETrainerTemplate):
             reference_energy_fn_template=energy_fn_template)
 
         self.train_batch_losses, self.train_losses, self.val_losses = [], [], []
-        self._early_stop = EarlyStopping(init_params, convergence_criterion)
+        self._early_stop = EarlyStopping(self.params, convergence_criterion)
 
         (self._batches_per_epoch, self._get_train_batch,
-         self._train_batch_state, self.val_loader, self.test_loader, target_keys
+         self._train_batch_state, self.val_loader, self.test_loader,
+         self.target_keys
          ) = self._process_dataset(dataset_dict, train_ratio, val_ratio)
 
         self._val_loss_fn, self._val_data_state = init_val_loss_fn(
-            self.model, self._loss_fn, self.val_loader, target_keys,
-            self.batch_size, self.batch_cache
+            self.model, self._loss_fn, self.val_loader, self.target_keys,
+            batch_per_device, self.batch_cache
         )
 
     def update_dataset(self, train_ratio=0.1, val_ratio=0.1, **dataset_kwargs):
@@ -482,7 +486,7 @@ class DataParallelTrainer(MLETrainerTemplate):
 
         self._val_loss_fn, self._val_data_state = init_val_loss_fn(
             self.model, self._loss_fn, self.val_loader, target_keys,
-            self.batch_size, self.batch_cache
+            self.batch_per_device, self.batch_cache
         )
 
     def _process_dataset(self, dataset_dict, train_ratio=0.7, val_ratio=0.1):
@@ -560,6 +564,21 @@ class DataParallelTrainer(MLETrainerTemplate):
     @property
     def best_params(self):
         return self._early_stop.best_params
+
+    @property
+    def best_inference_params(self):
+        """Returns best model params irrespective whether dropout is used."""
+        if dropout.dropout_is_used(self.best_params):
+            # all nodes present during inference
+            params, _ = dropout.split_dropout_params(self.best_params)
+        else:
+            params = self.best_params
+        return params
+
+    @property
+    def best_inference_params_replicated(self):
+        inference_params = self.best_inference_params
+        return util.tree_replicate(inference_params)
 
     def move_to_device(self):
         super().move_to_device()

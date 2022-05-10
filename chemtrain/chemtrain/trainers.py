@@ -8,8 +8,7 @@ from jax_sgmc import data
 from jax_sgmc.data import numpy_loader
 
 from chemtrain import (util, force_matching, traj_util, reweighting,
-                       probabilistic, max_likelihood, property_prediction,
-                       dropout)
+                       probabilistic, max_likelihood, property_prediction)
 
 
 class PropertyPrediction(max_likelihood.DataParallelTrainer):
@@ -46,27 +45,17 @@ class PropertyPrediction(max_likelihood.DataParallelTrainer):
     def _build_dataset(targets, graph_dataset):
         return property_prediction.build_dataset(targets, graph_dataset)
 
-    def predict(self, input_graph):
+    def predict(self, batch):
         """Prediction for a single input graph using the current param state."""
         # TODO jit somewhere?
-        # TODO save best params including dropout key?
-        if dropout.dropout_is_used(self.best_params):
-            params, _ = dropout.split_dropout_params(self.best_params)
-        else:
-            params = self.best_params
-        return self.model(params, input_graph)
+        return self.model(self.best_inference_params, batch)
 
     def evaluate_testset_error(self):
-        assert self._test_data_fn is not None, ('"test_error_fn" is necessary'
-                                                ' during initialization.')
-        if dropout.dropout_is_used(self.best_params):
-            # all nodes present during inference
-            params, _ = dropout.split_dropout_params(self.best_params)
-            params = util.tree_replicate(params)
-        else:
-            params = util.tree_replicate(self.best_params)
-        error, self._test_data_state = self._test_data_fn(params,
-                                                          self._test_data_state)
+        assert self._test_fn is not None, ('"test_error_fn" is necessary'
+                                           ' during initialization.')
+
+        error, self._test_state = self._test_fn(
+            self.best_inference_params_replicated, self._test_state)
         print(f'Error on test set: {error}')
 
 
@@ -112,7 +101,7 @@ class ForceMatching(max_likelihood.DataParallelTrainer):
 
         self.mae_fn, self.mae_init_state = force_matching.init_mae_fn(
             self.test_loader, nbrs_init, energy_fn_template,
-            self.batch_size, batch_cache, virial_fn
+            batch_per_device, batch_cache, virial_fn
         )
 
     @staticmethod
@@ -122,8 +111,8 @@ class ForceMatching(max_likelihood.DataParallelTrainer):
                                             force_data, virial_data)
 
     def evaluate_mae_testset(self):
-        maes, self.mae_init_state = self.mae_fn(self.state.params,
-                                                self.mae_init_state)
+        maes, self.mae_init_state = self.mae_fn(
+            self.best_inference_params_replicated, self.mae_init_state)
         for key, mae_value in maes.items():
             print(f'{key}: MAE = {mae_value:.4f}')
 
@@ -173,8 +162,6 @@ class Difftre(reweighting.PropagationBase):
 
         self.batch_losses, self.epoch_losses = [], []
         self.predictions = {}
-        self.early_stop = max_likelihood.EarlyStopping(init_params,
-                                                       convergence_criterion)
         # TODO doc: beware that for too short trajectory might have overfittet
         #  to single trajectory; if in doubt, set reweighting ratio = 1 towards
         #  end of optimization
@@ -186,6 +173,9 @@ class Difftre(reweighting.PropagationBase):
             checkpoint_path=checkpoint_path, reweight_ratio=reweight_ratio,
             sim_batch_size=sim_batch_size,
             energy_fn_template=energy_fn_template)
+
+        self.early_stop = max_likelihood.EarlyStopping(self.params,
+                                                       convergence_criterion)
 
     def add_statepoint(self, energy_fn_template, simulator_template,
                        neighbor_fn, timings, kbt, quantities,
@@ -466,7 +456,7 @@ class RelativeEntropy(reweighting.PropagationBase):
         # track of dataloader states for reference snapshots
         self.data_states = {}
 
-        self.early_stop = max_likelihood.EarlyStopping(init_params,
+        self.early_stop = max_likelihood.EarlyStopping(self.params,
                                                        convergence_criterion)
 
     def _set_dataset(self, key, reference_data, reference_batch_size,
