@@ -13,9 +13,9 @@ from chemtrain import (util, force_matching, traj_util, reweighting,
 
 class PropertyPrediction(max_likelihood.DataParallelTrainer):
     """Trainer for direct prediction of molecular properties."""
-    def __init__(self, error_fn, model, init_params, optimizer, graph_dataset,
-                 targets, batch_per_device=1, batch_cache=10, train_ratio=0.7,
-                 val_ratio=0.1, test_error_fn=None,
+    def __init__(self, error_fn, prediction_model, init_params, optimizer,
+                 graph_dataset, targets, batch_per_device=1, batch_cache=10,
+                 train_ratio=0.7, val_ratio=0.1, test_error_fn=None,
                  convergence_criterion='window_median',
                  checkpoint_folder='Checkpoints'):
 
@@ -23,23 +23,23 @@ class PropertyPrediction(max_likelihood.DataParallelTrainer):
 
         # TODO build graph on-the-fly as memory moving might be bottleneck here
 
-        self.model = model
+        model = property_prediction.init_model(prediction_model)
         checkpoint_path = 'output/property_prediction/' + str(checkpoint_folder)
-        dataset = self._build_dataset(targets, graph_dataset)
-        loss_fn = property_prediction.init_loss_fn(model, error_fn)
+        dataset_dict = {'targets': targets, 'graph_dataset': graph_dataset}
+        loss_fn = property_prediction.init_loss_fn(error_fn)
 
-        super().__init__(dataset, loss_fn, init_params, optimizer,
+        super().__init__(dataset_dict, loss_fn, model, init_params, optimizer,
                          checkpoint_path, batch_per_device, batch_cache,
                          train_ratio, val_ratio,
                          convergence_criterion=convergence_criterion)
 
         if test_error_fn is not None:
-            test_acc_fn = property_prediction.init_loss_fn(model, test_error_fn)
-            self._test_data_fn, self._test_data_state = \
-                max_likelihood.val_loss_fn(
-                    test_acc_fn, self.test_loader, self.batch_size, batch_cache)
+            test_loss_fn = property_prediction.init_loss_fn(test_error_fn)
+            self._test_fn, self._test_state = max_likelihood.init_val_loss_fn(
+                self.model, test_loss_fn, self.test_loader, self.target_keys,
+                batch_per_device, batch_cache)
         else:
-            self._test_data_fn, self._test_data_state = None, None
+            self._test_fn, self._test_state = None, None
 
     @staticmethod
     def _build_dataset(targets, graph_dataset):

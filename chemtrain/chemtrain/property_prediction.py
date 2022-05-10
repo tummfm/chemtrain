@@ -3,10 +3,10 @@ from functools import wraps
 from typing import ClassVar, Tuple, Callable, Any
 
 import haiku as hk
-from jax import vmap, numpy as jnp
+from jax import numpy as jnp
 from jax_md import nn, util as jax_md_util
 
-from chemtrain import sparse_graph, util, neural_networks, dropout
+from chemtrain import sparse_graph, neural_networks, dropout
 
 
 def build_dataset(targets, graph_dataset):
@@ -20,29 +20,36 @@ def build_dataset(targets, graph_dataset):
                        sparse_graph.convert_dataset_to_graphs.
 
     Returns:
-        A dictionary containing the combined dataset.
+        A dictionary containing the combined dataset and a list of target keys
     """
-    return {**targets, **graph_dataset.to_dict()}
+    target_keys = list(targets)
+    target_keys.append('species_mask')
+    return {**targets, **graph_dataset.to_dict()}, target_keys
 
 
-def init_loss_fn(model, error_fn):
+def init_model(prediction_model):
+    """Initializes a model that returns predictions for a single observation."""
+    def mol_prediction_model(params, observation):
+        graph = sparse_graph.SparseDirectionalGraph.from_dict(observation)
+        predictions = prediction_model(params, graph)
+        return predictions
+    return mol_prediction_model
+
+
+def init_loss_fn(error_fn):
     """Returns a loss function to optimize model parameters.
 
     Signature of error_fn:
-    error = error_fn(predictions, batch, mask), where mask is a (batchsize,)
-    boolean array.
+    error = error_fn(predictions, batch, mask) ,
+    where mask has the same shape as species to mask padded particles.
 
     Args:
         model: Molecular property prediction model (Haiku apply_fn).
         error_fn: Error model quantifying the discrepancy between preditions
                   and respective targets.
     """
-    def loss_fn(params, batch, mask=None):
-        # for masking whole snapshots, e.g. when mapping over whole dataset
-        if mask is None:
-            mask = jnp.ones(util.tree_multiplicity(batch))
-        graph = sparse_graph.SparseDirectionalGraph.from_dict(batch)
-        predictions = vmap(model, in_axes=(None, 0))(params, graph)
+    def loss_fn(predictions, batch):
+        mask = jnp.ones_like(predictions) * batch['species_mask']
         return error_fn(predictions, batch, mask)
     return loss_fn
 
