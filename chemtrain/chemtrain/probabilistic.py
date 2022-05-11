@@ -317,19 +317,35 @@ class MCMCForceMatchingTemplate(ProbabilisticFMTrainerTemplate):
 
 # Uncertainty propagation
 
-def init_dropout_uq_fwd(model, meta_params, n_dropout_samples=16):
-    n_devices = device_count()
+def init_dropout_uq_fwd(batched_model, meta_params, n_dropout_samples=16):
+    """Initializes a function that predicts a distribution of predictions for
+    different dropout configurations, e.g. for uncertainty quantification.
+
+    Args:
+        batched_model: A model with signature model(params, batch), which
+                       was trained using dropout.
+        meta_params: Final trained meta_params
+        n_dropout_samples: Number of predictions to run
+
+    Returns:
+        The function predict_distribution(key, model_input) predicts
+        n_dropout_samples predictions for different dropout configurations to
+        be used e.g. for uncertainty quantification.
+    """
     # TODO add sequential mapping to allow defining batch_per_device and
     #  large number of dropout samples that don't fit memory
-    batch_per_device = int(n_dropout_samples / n_devices)
-    util.assert_distributable(n_dropout_samples, n_devices, batch_per_device)
+    # n_devices = device_count()
+    # batch_per_device = int(n_dropout_samples / n_devices)
+    # util.assert_distributable(n_dropout_samples, n_devices, batch_per_device)
+    batch_per_device = n_dropout_samples
     haiku_params, _ = dropout.split_dropout_params(meta_params)
 
     def meta_param_model(key, model_input):
         dropout_params = dropout.build_dropout_params(haiku_params, key)
-        return model(dropout_params, model_input)
+        return batched_model(dropout_params, model_input)
 
     def predict_distribution(key, model_input):
+        # TODO enable with pmap, once this works in validation loss function
         keys = random.split(key, n_dropout_samples)
         keys = keys.reshape((batch_per_device, 2))
         # keys = keys.reshape((n_devices, batch_per_device, 2))  # 2 per key
@@ -337,16 +353,53 @@ def init_dropout_uq_fwd(model, meta_params, n_dropout_samples=16):
         key_batched_model = vmap(meta_param_model, (0, None))
         # model_input = util.tree_replicate(model_input, n_devices)
         predictions = key_batched_model(keys, model_input)
-        shape_predictions = predictions.shape
+        # shape_predictions = predictions.shape
         # reshape such that all sampled force predictions are along axis 0
         # vectored_predictions = predictions.reshape((-1, *shape_predictions[2:]))
         # swap axes such that batch is along axis 0, which is needed for
         # full-data-map
         # vectored_predictions = jnp.swapaxes(vectored_predictions, 0, 1)
         vectored_predictions = jnp.swapaxes(predictions, 0, 1)
-        # TODO check that reshape is correct when pmapping
         return vectored_predictions
     return predict_distribution
+
+
+def dropout_uq_predictions(batched_model, meta_params, val_loader,
+                           n_dropout_samples=8, batch_size=1,
+                           batch_cache=10):
+    """Returns forward UQ predictions for a trained model on a validation
+    dataset.
+
+    Args:
+        batched_model: A model with signature model(params, batch), which
+                       was trained using dropout.
+        meta_params: Final trained meta_params
+        val_loader: Validation data loader.
+        n_dropout_samples: Number of predictions with different dropout
+                           configurations for each data observation.
+        batch_size: Number of input observations to vectorize. n_dropout_samples
+                    are already vmapped over.
+        batch_cache: Number of input observations cached in GPU memory.
+
+    Returns:
+        A tuple (uncertainties, no_dropout_predictions) containing for each data
+        observation n_dropout_samples dropout predictions as well as the mean
+        prediction with dropout disabled.
+    """
+    data_map = data.full_data_mapper(val_loader, batch_cache, batch_size)
+
+    uq_fn = init_dropout_uq_fwd(batched_model, meta_params, n_dropout_samples)
+    no_drop_params, _ = dropout.split_dropout_params(meta_params)
+
+    def mapping_fn(batch, key):
+        prediction = batched_model(no_drop_params, batch)
+        key, drop_key = random.split(key, 2)
+        uq_samples = uq_fn(drop_key, batch)
+        return (uq_samples, prediction), key
+
+    (uncertainties, no_dropout_predictions), _ = data_map(mapping_fn,
+                                                          random.PRNGKey(0))
+    return uncertainties, no_dropout_predictions
 
 
 def init_force_uq(energy_fn_template, n_splits=16, vmap_batch_size=1):
@@ -389,7 +442,7 @@ def init_force_uq(energy_fn_template, n_splits=16, vmap_batch_size=1):
 def infer_output_uncertainty(param_sets, init_state, trajectory_generator,
                              quantities, total_samples, kt_schedule=None,
                              vmap_simulations_per_device=1):
-    n_devies = device_count()
+    # n_devices = device_count()
 
     # Check whether dropout was used or not
     dropout_active = dropout.dropout_is_used(param_sets)
