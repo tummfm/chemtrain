@@ -36,8 +36,8 @@ class PropertyPrediction(max_likelihood.DataParallelTrainer):
         if test_error_fn is not None:
             test_loss_fn = property_prediction.init_loss_fn(test_error_fn)
             self._test_fn, self._test_state = max_likelihood.init_val_loss_fn(
-                self.model, test_loss_fn, self.test_loader, self.target_keys,
-                batch_per_device, batch_cache)
+                self.batched_model, test_loss_fn, self.test_loader,
+                self.target_keys, batch_per_device, batch_cache)
         else:
             self._test_fn, self._test_state = None, None
 
@@ -45,10 +45,10 @@ class PropertyPrediction(max_likelihood.DataParallelTrainer):
     def _build_dataset(targets, graph_dataset):
         return property_prediction.build_dataset(targets, graph_dataset)
 
-    def predict(self, batch):
+    def predict(self, single_observation):
         """Prediction for a single input graph using the current param state."""
         # TODO jit somewhere?
-        return self.model(self.best_inference_params, batch)
+        return self.model(self.best_inference_params, single_observation)
 
     def evaluate_testset_error(self):
         assert self._test_fn is not None, ('"test_error_fn" is necessary'

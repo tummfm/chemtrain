@@ -15,7 +15,7 @@ import optax
 from chemtrain import util, data_processing, dropout
 
 
-def pmap_update_fn(model, loss_fn, optimizer):
+def pmap_update_fn(batched_model, loss_fn, optimizer):
     """Initializes a pmapped function for updating parameters.
 
     Usage:
@@ -26,8 +26,8 @@ def pmap_update_fn(model, loss_fn, optimizer):
     Batch is reshaped by this function.
 
     Args:
-        model: A model with signature model(params, batch), which predicts
-               outputs used in loss function.
+        batched_model: A model with signature model(params, batch), which
+                       predicts a batch of outputs used in loss function.
         loss_fn: Loss function(predictions, targets) returning the scalar loss
                  value for a batch.
         optimizer: Optax optimizer
@@ -36,8 +36,6 @@ def pmap_update_fn(model, loss_fn, optimizer):
         A function that computes the gradient and updates the parameters via the
         optimizer.
     """
-    batched_model = vmap(model, in_axes=(None, 0))
-
     # loss as function of params and batch for optimization.
     def param_loss_fn(params, batch):
         predictions = batched_model(params, batch)
@@ -64,7 +62,8 @@ def pmap_update_fn(model, loss_fn, optimizer):
     return batch_update
 
 
-def init_val_predictions(model, val_loader, batch_size=1, batch_cache=10):
+def init_val_predictions(batched_model, val_loader, batch_size=1,
+                         batch_cache=10):
     """Model predictions for whole validation/test dataset.
 
     Usage:
@@ -73,8 +72,8 @@ def init_val_predictions(model, val_loader, batch_size=1, batch_cache=10):
     Params needs to be N_devices times duplicated along axis 0.
 
     Args:
-        model: A model with signature model(params, batch), which predicts
-               outputs used in loss function.
+        batched_model: A model with signature model(params, batch), which
+                       predicts a batch of outputs used in loss function.
         val_loader: Validation or test set NumpyDataLoader.
         batch_size: Total batch size that is processed in parallel
         batch_cache: Number of batches to cache.
@@ -89,8 +88,6 @@ def init_val_predictions(model, val_loader, batch_size=1, batch_cache=10):
     init_fun, map_fun = data.full_reference_data(val_loader, batch_cache,
                                                  batch_size)
     init_data_state = init_fun()
-
-    batched_model = vmap(model, in_axes=(None, 0))
 
     # TODO somehow does not work with pmap and multiple GPUs for few last
     #  batches, but works for single GPU
@@ -438,7 +435,8 @@ class DataParallelTrainer(MLETrainerTemplate):
                  convergence_criterion='window_median',
                  energy_fn_template=None):
         self.model = model
-        self._update_fn = pmap_update_fn(model, loss_fn, optimizer)
+        self.batched_model = vmap(model, in_axes=(None, 0))
+        self._update_fn = pmap_update_fn(self.batched_model, loss_fn, optimizer)
         self.batch_per_device = batch_per_device
         self.batch_size = batch_per_device * device_count()
         self.batch_cache = batch_cache
@@ -459,13 +457,13 @@ class DataParallelTrainer(MLETrainerTemplate):
         self._early_stop = EarlyStopping(self.params, convergence_criterion)
 
         (self._batches_per_epoch, self._get_train_batch,
-         self._train_batch_state, self.val_loader, self.test_loader,
-         self.target_keys
+         self._train_batch_state, self.train_loader, self.val_loader,
+         self.test_loader, self.target_keys
          ) = self._process_dataset(dataset_dict, train_ratio, val_ratio)
 
         self._val_loss_fn, self._val_data_state = init_val_loss_fn(
-            self.model, self._loss_fn, self.val_loader, self.target_keys,
-            batch_per_device, self.batch_cache
+            self.batched_model, self._loss_fn, self.val_loader,
+            self.target_keys, batch_per_device, self.batch_cache
         )
 
     def update_dataset(self, train_ratio=0.1, val_ratio=0.1, **dataset_kwargs):
@@ -481,11 +479,12 @@ class DataParallelTrainer(MLETrainerTemplate):
         # reset convergence criterion as loss might not be comparable
         self._early_stop.reset_convergence_losses()
         (self._batches_per_epoch, self._get_train_batch,
-         self._train_batch_state, self.val_loader, self.test_loader, target_keys
+         self._train_batch_state, self.train_loader, self.val_loader,
+         self.test_loader, target_keys
          ) = self._process_dataset(dataset_kwargs, train_ratio, val_ratio)
 
         self._val_loss_fn, self._val_data_state = init_val_loss_fn(
-            self.model, self._loss_fn, self.val_loader, target_keys,
+            self.batched_model, self._loss_fn, self.val_loader, target_keys,
             self.batch_per_device, self.batch_cache
         )
 
@@ -500,7 +499,7 @@ class DataParallelTrainer(MLETrainerTemplate):
         observation_count = train_loader.static_information['observation_count']
         batches_per_epoch = observation_count // self.batch_size
         return (batches_per_epoch, get_train_batch, train_batch_state,
-                val_loader, test_loader, target_keys)
+                train_loader, val_loader, test_loader, target_keys)
 
     def _get_batch(self):
         for _ in range(self._batches_per_epoch):
