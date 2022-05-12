@@ -402,6 +402,31 @@ def dropout_uq_predictions(batched_model, meta_params, val_loader,
     return uncertainties, no_dropout_predictions
 
 
+def uq_calibration(uq_samples, targets, mask=None):
+    """Returns the scaling factor alpha, such that alpha * sigma is a
+    UQ estimate that is calibrated on the validation data set.
+
+    Args:
+        uq_samples: A (n_samples, n_uq_estimates, *) array of UQ predictions
+        targets: A (n_samples, *) array of target labels
+        mask: : A boolean (n_samples, *) mask array such that padded predictions
+                are treated correctly.
+    """
+    m = uq_samples.shape[1]
+    predicted_mean = jnp.mean(uq_samples, axis=1)
+    predicted_var = jnp.var(uq_samples, axis=1, ddof=1)
+    squared_errors = (predicted_mean - targets)**2
+
+    if mask is not None:
+        predicted_var = predicted_var[mask]
+        squared_errors = squared_errors[mask]
+
+    variance_multples = squared_errors / predicted_var
+    mean_error_multiple = jnp.mean(variance_multples)
+    alpha_sq = -1. / m + (m - 3) / (m - 1) * mean_error_multiple
+    return jnp.sqrt(alpha_sq)
+
+
 def init_force_uq(energy_fn_template, n_splits=16, vmap_batch_size=1):
     n_devies = device_count()
     util.assert_distributable(n_splits, n_devies, vmap_batch_size)
