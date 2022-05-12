@@ -3,7 +3,7 @@ from functools import wraps
 from typing import ClassVar, Tuple, Callable, Any
 
 import haiku as hk
-from jax import numpy as jnp
+from jax import vmap, numpy as jnp
 from jax_md import nn, util as jax_md_util
 
 from chemtrain import sparse_graph, neural_networks, dropout
@@ -52,6 +52,19 @@ def init_loss_fn(error_fn):
         mask = jnp.ones_like(predictions) * batch['species_mask']
         return error_fn(predictions, batch, mask)
     return loss_fn
+
+
+def per_species_results(species, results):
+    """"""
+    @vmap
+    def process_single_species(species_idx):
+        species_mask = (species == species_idx)
+        species_members = jnp.count_nonzero(species_mask)
+        screened_results = jnp.where(species_mask, results, 0.)
+        return jnp.sum(screened_results) / species_members
+
+    unique_species = jnp.unique(species)
+    return process_single_species(unique_species), unique_species
 
 
 def molecular_property_predictor(model, n_per_atom=0):
