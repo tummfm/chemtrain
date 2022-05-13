@@ -54,17 +54,27 @@ def init_loss_fn(error_fn):
     return loss_fn
 
 
-def per_species_results(species, results):
-    """"""
+def per_species_results(species, per_atom_quantities, species_idxs):
+    """Sorts per-atom results by species and returns a per-species mean.
+
+    Args:
+        species: An array storing for each atom the corresponding species.
+        per_atom_quantities: An array with the same shape as species, storing
+                             per-atom quantities to be evaluated per-species.
+        species_idxs: A (species,) array storing species-types for evaluation,
+                      e.g. jnp.unique(species).
+
+    Returns:
+        A (species,) array of per-species quantities.
+    """
     @vmap
     def process_single_species(species_idx):
         species_mask = (species == species_idx)
         species_members = jnp.count_nonzero(species_mask)
-        screened_results = jnp.where(species_mask, results, 0.)
-        return jnp.sum(screened_results) / species_members
-
-    unique_species = jnp.unique(species)
-    return process_single_species(unique_species), unique_species
+        screened_results = jnp.where(species_mask, per_atom_quantities, 0.)
+        mean_if_species_exists = jnp.sum(screened_results) / species_members
+        return jnp.where(species_members == 0, 0., mean_if_species_exists)
+    return process_single_species(species_idxs)
 
 
 def molecular_property_predictor(model, n_per_atom=0):
