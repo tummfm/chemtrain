@@ -85,6 +85,8 @@ def init_val_predictions(batched_model, val_loader, batch_size=1,
     """
     # TODO clould do without data state using data.full_reference_mapper,
     #  but then trainers can't be pickled due to '_thread.lock' used.
+    batch_size = min(val_loader.static_information['observation_count'],
+                     batch_size)  # case where validation data very small
     init_fun, map_fun = data.full_reference_data(val_loader, batch_cache,
                                                  batch_size)
     init_data_state = init_fun()
