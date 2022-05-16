@@ -33,7 +33,7 @@ class PropertyPrediction(max_likelihood.DataParallelTrainer):
                          train_ratio, val_ratio,
                          convergence_criterion=convergence_criterion)
 
-        if test_error_fn is not None:
+        if test_error_fn is not None and self.test_loader is not None:
             test_loss_fn = property_prediction.init_loss_fn(test_error_fn)
             self._test_fn, self._test_state = max_likelihood.init_val_loss_fn(
                 self.batched_model, test_loss_fn, self.test_loader,
@@ -53,6 +53,8 @@ class PropertyPrediction(max_likelihood.DataParallelTrainer):
     def evaluate_testset_error(self):
         assert self._test_fn is not None, ('"test_error_fn" is necessary'
                                            ' during initialization.')
+        assert self.test_loader is not None, ('No test set available. Check'
+                                              ' train and val ratios.')
 
         error, self._test_state = self._test_fn(
             self.best_inference_params_replicated, self._test_state)
@@ -99,10 +101,13 @@ class ForceMatching(max_likelihood.DataParallelTrainer):
                          convergence_criterion=convergence_criterion,
                          energy_fn_template=energy_fn_template)
 
-        self.mae_fn, self.mae_init_state = force_matching.init_mae_fn(
-            self.test_loader, nbrs_init, energy_fn_template,
-            batch_per_device, batch_cache, virial_fn
-        )
+        if self.test_loader is not None:
+            self.mae_fn, self.mae_init_state = force_matching.init_mae_fn(
+                self.test_loader, nbrs_init, energy_fn_template,
+                batch_per_device, batch_cache, virial_fn
+            )
+        else:
+            self.mae_fn, self.mae_init_state = None, None
 
     @staticmethod
     def _build_dataset(position_data, energy_data=None, force_data=None,
@@ -111,6 +116,8 @@ class ForceMatching(max_likelihood.DataParallelTrainer):
                                             force_data, virial_data)
 
     def evaluate_mae_testset(self):
+        assert self.test_loader is not None, ('No test set available. Check'
+                                              ' train and val ratios.')
         maes, self.mae_init_state = self.mae_fn(
             self.best_inference_params_replicated, self.mae_init_state)
         for key, mae_value in maes.items():

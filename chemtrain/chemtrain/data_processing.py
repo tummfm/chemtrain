@@ -29,6 +29,8 @@ def train_val_test_split(dataset, train_ratio=0.7, val_ratio=0.1):
     """Train-validation-test split for datasets. Works on arbitrary pytrees,
     including chex.dataclasses, dictionaries and single arrays.
 
+    If a subset ratio ratios is 0, returns None for the respective subset.
+
     Args:
         dataset: Dataset pytree. Samples are assumed to be stacked along
                  axis 0.
@@ -39,20 +41,29 @@ def train_val_test_split(dataset, train_ratio=0.7, val_ratio=0.1):
         Tuple (train_data, val_data, test_data) with the same shape as the input
         pytree, but split along axis 0.
     """
+    def retreive_datasubset(start, end):
+        data_subset = util.tree_get_slice(dataset, start, end, to_device=False)
+        subset_leaves, _ = tree_flatten(data_subset)
+        subset_size = subset_leaves[0].shape[0]
+        if subset_size == 0:
+            data_subset = None
+        return data_subset
+
     leaves, _ = tree_flatten(dataset)
     dataset_size = leaves[0].shape[0]
     train_size = int(dataset_size * train_ratio)
     val_size = int(dataset_size * val_ratio)
-    train_data = util.tree_get_slice(dataset, 0, train_size, to_device=False)
-    val_data = util.tree_get_slice(dataset, train_size, train_size + val_size,
-                                   to_device=False)
-    test_data = util.tree_get_slice(dataset, train_size + val_size, None,
-                                    to_device=False)
+    train_data = retreive_datasubset(0, train_size)
+    val_data = retreive_datasubset(train_size, train_size + val_size)
+    test_data = retreive_datasubset(train_size + val_size, None)
     return train_data, val_data, test_data
 
 
 def init_dataloaders(dataset, train_ratio=0.7, val_ratio=0.1):
     """Splits dataset and initializes dataloaders.
+
+    If the validation or test ratios are 0, returns None for the respective
+    dataloader.
 
     Args:
         dataset: Dictionary containing the whole dataset. The NumpyDataLoader
@@ -63,11 +74,18 @@ def init_dataloaders(dataset, train_ratio=0.7, val_ratio=0.1):
     Returns:
         A tuple (train_loader, val_loader, test_loader) of NumpyDataLoaders.
     """
+    def init_subloader(data_subset):
+        if data_subset is None:
+            loader = None
+        else:
+            loader = numpy_loader.NumpyDataLoader(**data_subset)
+        return loader
+
     train_set, val_set, test_set = train_val_test_split(
         dataset, train_ratio, val_ratio)
-    train_loader = numpy_loader.NumpyDataLoader(**train_set)
-    val_loader = numpy_loader.NumpyDataLoader(**val_set)
-    test_loader = numpy_loader.NumpyDataLoader(**test_set)
+    train_loader = init_subloader(train_set)
+    val_loader = init_subloader(val_set)
+    test_loader = init_subloader(test_set)
     return train_loader, val_loader, test_loader
 
 
