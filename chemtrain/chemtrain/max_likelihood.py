@@ -440,7 +440,6 @@ class DataParallelTrainer(MLETrainerTemplate):
         self.batched_model = vmap(model, in_axes=(None, 0))
         self._update_fn = pmap_update_fn(self.batched_model, loss_fn, optimizer)
         self.batch_per_device = batch_per_device
-        self.batch_size = batch_per_device * device_count()
         self.batch_cache = batch_cache
         self._loss_fn = loss_fn
 
@@ -468,7 +467,7 @@ class DataParallelTrainer(MLETrainerTemplate):
             self.target_keys, batch_per_device, self.batch_cache
         )
 
-    def update_dataset(self, train_ratio=0.1, val_ratio=0.1, **dataset_kwargs):
+    def update_dataset(self, train_ratio=0.7, val_ratio=0.1, **dataset_kwargs):
         """Allows changing dataset on the fly, which is particularly
         useful for active learning applications.
 
@@ -491,15 +490,17 @@ class DataParallelTrainer(MLETrainerTemplate):
         )
 
     def _process_dataset(self, dataset_dict, train_ratio=0.7, val_ratio=0.1):
+        # considers case of re-training with different number of GPUs
+        batch_size = self.batch_per_device * device_count()
         dataset, target_keys = self._build_dataset(**dataset_dict)
         train_loader, val_loader, test_loader = \
             data_processing.init_dataloaders(dataset, train_ratio, val_ratio)
         init_train_state, get_train_batch = data.random_reference_data(
-            train_loader, self.batch_cache, self.batch_size)
+            train_loader, self.batch_cache, batch_size)
         train_batch_state = init_train_state(shuffle=True)
 
         observation_count = train_loader.static_information['observation_count']
-        batches_per_epoch = observation_count // self.batch_size
+        batches_per_epoch = observation_count // batch_size
         return (batches_per_epoch, get_train_batch, train_batch_state,
                 train_loader, val_loader, test_loader, target_keys)
 
