@@ -9,6 +9,7 @@ import cloudpickle as pickle
 # import h5py
 from jax import tree_map, tree_leaves, tree_flatten, device_count, numpy as jnp
 from jax_md import simulate
+import numpy as onp
 
 
 # freezing seems to give slight performance improvement
@@ -89,6 +90,25 @@ def tree_get_slice(tree, idx_start, idx_stop, take_every=1, to_device=True):
                         tree)
     else:
         return tree_map(lambda x: x[idx_start:idx_stop:take_every], tree)
+
+
+def tree_take(tree, indicies, axis=0, on_cpu=True):
+    """Tree-wise application of numpy.take."""
+    numpy = onp if on_cpu else jnp
+    return tree_map(lambda x: numpy.take(x, indicies, axis), tree)
+
+
+def tree_delete(tree, indicies, axis=None, on_cpu=True):
+    """Returns a tree, where entries at position indicies along axis are
+    deleted from the original tree.
+    """
+    numpy = onp if on_cpu else jnp
+    return tree_map(lambda leaf: numpy.delete(leaf, indicies, axis=axis), tree)
+
+
+def tree_append(orig_tree, tree_to_append, axis=None, on_cpu=True):
+    numpy = onp if on_cpu else jnp
+    return tree_map(partial(numpy.append, axis=axis), orig_tree, tree_to_append)
 
 
 def tree_replicate(tree):
