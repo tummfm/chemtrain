@@ -83,6 +83,12 @@ def tree_get_single(tree, n=0):
     return single_tree
 
 
+def tree_set(tree, new_data, idx=0):
+    """Overrides entry of tree at idx with new_data."""
+    return tree_map(lambda leaf, new_data_leaf: leaf.at[idx].set(new_data_leaf),
+                    tree, new_data)
+
+
 def tree_get_slice(tree, idx_start, idx_stop, take_every=1, to_device=True):
     """Returns a slice of trees taken from a tree-replica along axis 0."""
     if to_device:

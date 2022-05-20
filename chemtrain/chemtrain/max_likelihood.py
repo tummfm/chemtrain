@@ -273,17 +273,7 @@ class MLETrainerTemplate(util.TrainerInterface):
         for _ in range(start_epoch, end_epoch):
             start_time = time.time()
             for batch in self._get_batch():
-                self._update(batch)
-                if self._dropout:
-                    # TODO refactor this as this needs to wait for when
-                    #  params will again be available, slowing down re-loading
-                    #  of batches. We could set dropout key as kwarg and keep
-                    #  track of keys in this class. Also refactor dropout in
-                    #  DimeNet taking advantage of haiku RNG key management and
-                    #  built-in dropout in MLP
-                    params = dropout.next_dropout_params(self.params)
-                    self.params = params
-
+                self._update_with_dropout(batch)
             duration = (time.time() - start_time) / 60.
             self.update_times.append(duration)
             self._evaluate_convergence(duration, thresh)
@@ -295,6 +285,19 @@ class MLETrainerTemplate(util.TrainerInterface):
         else:
             if thresh is not None:
                 print('Maximum number of epochs reached without convergence.')
+
+    def _update_with_dropout(self, batch):
+        """Updates params, while keeping track of Dropout."""
+        self._update(batch)
+        if self._dropout:
+            # TODO refactor this as this needs to wait for when
+            #  params will again be available, slowing down re-loading
+            #  of batches. We could set dropout key as kwarg and keep
+            #  track of keys in this class. Also refactor dropout in
+            #  DimeNet taking advantage of haiku RNG key management and
+            #  built-in dropout in MLP
+            params = dropout.next_dropout_params(self.params)
+            self.params = params
 
     @abc.abstractmethod
     def _get_batch(self):
@@ -544,6 +547,21 @@ class DataParallelTrainer(MLETrainerTemplate):
               f'Average val loss: {val_loss} Gradient norm:'
               f' {self.gradient_norm_history[-1]}'
               f' Elapsed time = {duration:.3f} min')
+
+    def update_with_single_sample(self, **sample):
+        """A single params update step, where a batch is taken from the training
+        set and one sample of the batch is substituted by the provided sample.
+
+        Args:
+            **sample: Kwargs storing the sample daata to supply to
+                      self._build_dataset to build the sample in the correct
+                      pytree. Analogous usage as update_dataset, but the dataset
+                      only consists of a single observation.
+        """
+        ordered_sample, _ = self._build_dataset(**sample)
+        batch = next(self._get_batch())
+        updated_batch = util.tree_set(batch, ordered_sample)
+        self._update_with_dropout(updated_batch)
 
     @abc.abstractmethod
     def _build_dataset(self, *args, **kwargs):
