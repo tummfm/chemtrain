@@ -49,6 +49,7 @@ def train_val_test_split(dataset, train_ratio=0.7, val_ratio=0.1):
             data_subset = None
         return data_subset
 
+    assert train_ratio + val_ratio <= 1., 'Distribution of data exceeds 100%.'
     leaves, _ = tree_flatten(dataset)
     dataset_size = leaves[0].shape[0]
     train_size = int(dataset_size * train_ratio)

@@ -462,10 +462,11 @@ class DataParallelTrainer(MLETrainerTemplate):
          self.test_loader, self.target_keys
          ) = self._process_dataset(dataset_dict, train_ratio, val_ratio)
 
-        self._val_loss_fn, self._val_data_state = init_val_loss_fn(
-            self.batched_model, self._loss_fn, self.val_loader,
-            self.target_keys, batch_per_device, self.batch_cache
-        )
+        if self.val_loader is not None:  # no validation dataset
+            self._val_loss_fn, self._val_data_state = init_val_loss_fn(
+                self.batched_model, self._loss_fn, self.val_loader,
+                self.target_keys, batch_per_device, self.batch_cache
+            )
 
     def update_dataset(self, train_ratio=0.7, val_ratio=0.1, **dataset_kwargs):
         """Allows changing dataset on the fly, which is particularly
@@ -484,10 +485,11 @@ class DataParallelTrainer(MLETrainerTemplate):
          self.test_loader, target_keys
          ) = self._process_dataset(dataset_kwargs, train_ratio, val_ratio)
 
-        self._val_loss_fn, self._val_data_state = init_val_loss_fn(
-            self.batched_model, self._loss_fn, self.val_loader, target_keys,
-            self.batch_per_device, self.batch_cache
-        )
+        if self.val_loader is not None:
+            self._val_loss_fn, self._val_data_state = init_val_loss_fn(
+                self.batched_model, self._loss_fn, self.val_loader, target_keys,
+                self.batch_per_device, self.batch_cache
+            )
 
     def _process_dataset(self, dataset_dict, train_ratio=0.7, val_ratio=0.1):
         # considers case of re-training with different number of GPUs
@@ -530,16 +532,18 @@ class DataParallelTrainer(MLETrainerTemplate):
                               ) / self._batches_per_epoch
         self.train_losses.append(mean_train_loss)
 
-        val_loss, self._val_data_state = self._val_loss_fn(self.state.params,
-                                                           self._val_data_state)
-        self.val_losses.append(val_loss)
+        if self.val_loader is not None:
+            val_loss, self._val_data_state = self._val_loss_fn(
+                self.state.params, self._val_data_state)
+            self.val_losses.append(val_loss)
+            self._converged = self._early_stop.early_stopping(val_loss, thresh,
+                                                              self.params)
+        else:
+            val_loss = None
         print(f'Epoch {self._epoch}: Average train loss: {mean_train_loss:.5f} '
-              f'Average val loss: {val_loss:.5f} Gradient norm:'
+              f'Average val loss: {val_loss} Gradient norm:'
               f' {self.gradient_norm_history[-1]}'
               f' Elapsed time = {duration:.3f} min')
-
-        self._converged = self._early_stop.early_stopping(val_loss, thresh,
-                                                          self.params)
 
     @abc.abstractmethod
     def _build_dataset(self, *args, **kwargs):
