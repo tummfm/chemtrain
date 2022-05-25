@@ -563,6 +563,19 @@ class DataParallelTrainer(MLETrainerTemplate):
         updated_batch = util.tree_set(batch, ordered_sample)
         self._update_with_dropout(updated_batch)
 
+    def set_testloader(self, testdata):
+        """Set testloader to use provided test data.
+
+        Args:
+            **testdata: Kwargs storing the sample daata to supply to
+                        self._build_dataset to build the sample in the correct
+                        pytree. Analogous usage as update_dataset, but the
+                        dataset only consists of a single observation.
+        """
+        dataset, _ = self._build_dataset(**testdata)
+        _, _, test_loader = data_processing.init_dataloaders(dataset, 0., 0.)
+        self.test_loader = test_loader
+
     @abc.abstractmethod
     def _build_dataset(self, *args, **kwargs):
         """Function that returns a tuple (dataset, target_keys).
