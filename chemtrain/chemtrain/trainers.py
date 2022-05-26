@@ -47,10 +47,6 @@ class PropertyPrediction(max_likelihood.DataParallelTrainer):
     def evaluate_testset_error(self, best_params=True):
         assert self.test_loader is not None, ('No test set available. Check'
                                               ' train and val ratios.')
-        # try initializaing test function again, in case loader was set
-        # afterwards
-        if self._test_fn is None:
-            self._init_test_fn()
         assert self._test_fn is not None, ('"test_error_fn" is necessary'
                                            ' during initialization.')
 
@@ -109,14 +105,9 @@ class ForceMatching(max_likelihood.DataParallelTrainer):
                          train_ratio, val_ratio,
                          convergence_criterion=convergence_criterion,
                          energy_fn_template=energy_fn_template)
-
-        if self.test_loader is not None:
-            self.mae_fn, self.mae_init_state = force_matching.init_mae_fn(
-                self.test_loader, nbrs_init, energy_fn_template,
-                batch_per_device, batch_cache, virial_fn
-            )
-        else:
-            self.mae_fn, self.mae_init_state = None, None
+        self._virial_fn = virial_fn
+        self._nbrs_init = nbrs_init
+        self._init_test_fn()
 
     @staticmethod
     def _build_dataset(position_data, energy_data=None, force_data=None,
@@ -132,6 +123,16 @@ class ForceMatching(max_likelihood.DataParallelTrainer):
             self.best_inference_params_replicated, self.mae_init_state)
         for key, mae_value in maes.items():
             print(f'{key}: MAE = {mae_value:.4f}')
+
+    def _init_test_fn(self):
+        if self.test_loader is not None:
+            self.mae_fn, self.mae_init_state = force_matching.init_mae_fn(
+                self.test_loader, self._nbrs_init,
+                self.reference_energy_fn_template, self.batch_per_device,
+                self.batch_cache, self._virial_fn
+            )
+        else:
+            self.mae_fn, self.mae_init_state = None, None
 
 
 class Difftre(reweighting.PropagationBase):

@@ -575,6 +575,7 @@ class DataParallelTrainer(MLETrainerTemplate):
         dataset, _ = self._build_dataset(**testdata)
         _, _, test_loader = data_processing.init_dataloaders(dataset, 0., 0.)
         self.test_loader = test_loader
+        self._init_test_fn()  # re-init test function to adjust to new data set
 
     @abc.abstractmethod
     def _build_dataset(self, *args, **kwargs):
@@ -586,6 +587,12 @@ class DataParallelTrainer(MLETrainerTemplate):
         case, the same keys as in 'dataset' can be provided. For a memory
         expensive dataset, keys that are only needed as model input can be
         omitted to save GPU memory.
+        """
+
+    @abc.abstractmethod
+    def _init_test_fn(self):
+        """Function that sets self._test_fn and self._test_state to evalaute
+        test set loss.
         """
 
     @property
