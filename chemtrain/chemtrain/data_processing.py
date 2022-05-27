@@ -79,7 +79,7 @@ def init_dataloaders(dataset, train_ratio=0.7, val_ratio=0.1):
         if data_subset is None:
             loader = None
         else:
-            loader = numpy_loader.NumpyDataLoader(**data_subset)
+            loader = numpy_loader.NumpyDataLoader(**data_subset, copy=False)
         return loader
 
     train_set, val_set, test_set = train_val_test_split(
