@@ -1,6 +1,7 @@
 """This module provides utilities for setting up probabilistic trainers,
  such as trainers.SGMC"""
 import abc
+from functools import partial
 import time
 
 from jax import (lax, vmap, pmap, checkpoint, random, jit, device_count,
@@ -317,7 +318,7 @@ class MCMCForceMatchingTemplate(ProbabilisticFMTrainerTemplate):
 
 # Uncertainty propagation
 
-def init_dropout_uq_fwd(batched_model, meta_params, n_dropout_samples=16):
+def init_dropout_uq_fwd(batched_model, meta_params, n_dropout_samples=8):
     """Initializes a function that predicts a distribution of predictions for
     different dropout configurations, e.g. for uncertainty quantification.
 
@@ -332,12 +333,9 @@ def init_dropout_uq_fwd(batched_model, meta_params, n_dropout_samples=16):
         n_dropout_samples predictions for different dropout configurations to
         be used e.g. for uncertainty quantification.
     """
-    # TODO add sequential mapping to allow defining batch_per_device and
-    #  large number of dropout samples that don't fit memory
-    # n_devices = device_count()
-    # batch_per_device = int(n_dropout_samples / n_devices)
-    # util.assert_distributable(n_dropout_samples, n_devices, batch_per_device)
-    batch_per_device = n_dropout_samples
+    n_devices = device_count()
+    batch_per_device = int(n_dropout_samples / n_devices)
+    util.assert_distributable(n_dropout_samples, n_devices, batch_per_device)
     haiku_params, _ = dropout.split_dropout_params(meta_params)
 
     def meta_param_model(key, model_input):
@@ -345,28 +343,24 @@ def init_dropout_uq_fwd(batched_model, meta_params, n_dropout_samples=16):
         return batched_model(dropout_params, model_input)
 
     def predict_distribution(key, model_input):
-        # TODO enable with pmap, once this works in validation loss function
         keys = random.split(key, n_dropout_samples)
-        keys = keys.reshape((batch_per_device, 2))
-        # keys = keys.reshape((n_devices, batch_per_device, 2))  # 2 per key
-        # key_batched_model = pmap(vmap(meta_param_model, (0, None)))
-        key_batched_model = vmap(meta_param_model, (0, None))
-        # model_input = util.tree_replicate(model_input, n_devices)
+        keys = keys.reshape((n_devices, batch_per_device, 2))  # 2 per key
+        key_batched_model = pmap(vmap(meta_param_model, (0, None)))
+        model_input = util.tree_replicate(model_input)
         predictions = key_batched_model(keys, model_input)
-        # shape_predictions = predictions.shape
-        # reshape such that all sampled force predictions are along axis 0
-        # vectored_predictions = predictions.reshape((-1, *shape_predictions[2:]))
+        # reshape to move from multiple devices back to single device after pmap
+        vectored_predictions = predictions.reshape((-1, *predictions.shape[2:]))
         # swap axes such that batch is along axis 0, which is needed for
         # full-data-map
-        # vectored_predictions = jnp.swapaxes(vectored_predictions, 0, 1)
-        vectored_predictions = jnp.swapaxes(predictions, 0, 1)
+        vectored_predictions = jnp.swapaxes(vectored_predictions, 0, 1)
         return vectored_predictions
     return predict_distribution
 
 
 def dropout_uq_predictions(batched_model, meta_params, val_loader,
+                           init_rng_key=random.PRNGKey(0),
                            n_dropout_samples=8, batch_size=1,
-                           batch_cache=10):
+                           batch_cache=10, include_without_dropout=True):
     """Returns forward UQ predictions for a trained model on a validation
     dataset.
 
@@ -374,17 +368,21 @@ def dropout_uq_predictions(batched_model, meta_params, val_loader,
         batched_model: A model with signature model(params, batch), which
                        was trained using dropout.
         meta_params: Final trained meta_params
-        val_loader: Validation data loader.
+        val_loader: Validation data loader
+        init_rng_key: Initial PRNGKey to use for sampling dropout configurations
         n_dropout_samples: Number of predictions with different dropout
                            configurations for each data observation.
         batch_size: Number of input observations to vectorize. n_dropout_samples
                     are already vmapped over.
         batch_cache: Number of input observations cached in GPU memory.
+        include_without_dropout: Whether to also output prediction with Dropout
+                                 disabled.
 
     Returns:
         A tuple (uncertainties, no_dropout_predictions) containing for each data
         observation n_dropout_samples dropout predictions as well as the mean
-        prediction with dropout disabled.
+        prediction with dropout disabled. If include_without_dropout is False,
+        only uncertainties are returned.
     """
     data_map = data.full_data_mapper(val_loader, batch_cache, batch_size)
 
@@ -392,14 +390,18 @@ def dropout_uq_predictions(batched_model, meta_params, val_loader,
     no_drop_params, _ = dropout.split_dropout_params(meta_params)
 
     def mapping_fn(batch, key):
-        prediction = batched_model(no_drop_params, batch)
         key, drop_key = random.split(key, 2)
         uq_samples = uq_fn(drop_key, batch)
-        return (uq_samples, prediction), key
+        if include_without_dropout:
+            prediction = batched_model(no_drop_params, batch)
+            return (uq_samples, prediction), key
+        else:
+            return uq_samples, key
 
-    (uncertainties, no_dropout_predictions), _ = data_map(mapping_fn,
-                                                          random.PRNGKey(0))
-    return uncertainties, no_dropout_predictions
+    # need to jit data mapper for correct dataloading under pmap
+    mapper = jit(partial(data_map, mapping_fn))
+    output, _ = mapper(init_rng_key)
+    return output
 
 
 def uq_calibration(uq_samples, targets, mask=None):
