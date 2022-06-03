@@ -163,8 +163,8 @@ def init_mae_fn(val_loader, nbrs_init, energy_fn_template, batch_size=1,
     abs_error = init_loss_fn(error_fn=max_likelihood.mae_loss, individual=True)
 
     target_keys = _dataset_target_keys(val_loader._reference_data)
-    mean_abs_error, init_data_state = max_likelihood.init_val_loss_fn(
+    mean_abs_error, data_release_fn = max_likelihood.init_val_loss_fn(
         batched_model, abs_error, val_loader, target_keys, batch_size,
         batch_cache)
 
-    return mean_abs_error, init_data_state
+    return mean_abs_error, data_release_fn

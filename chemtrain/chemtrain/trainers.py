@@ -52,18 +52,19 @@ class PropertyPrediction(max_likelihood.DataParallelTrainer):
 
         params = (self.best_inference_params_replicated
                   if best_params else self.state.params)
-        error, self._test_state = self._test_fn(params, self._test_state)
+        error = self._test_fn(params)
         print(f'Error on test set: {error}')
         return error
 
     def _init_test_fn(self):
         if self.test_error_fn is not None and self.test_loader is not None:
             test_loss_fn = property_prediction.init_loss_fn(self.test_error_fn)
-            self._test_fn, self._test_state = max_likelihood.init_val_loss_fn(
+            self._test_fn, data_release_fn = max_likelihood.init_val_loss_fn(
                 self.batched_model, test_loss_fn, self.test_loader,
-                self.target_keys, self.batch_per_device, self.batch_cache)
+                self.target_keys, self.batch_size, self.batch_cache)
+            self.release_fns.append(data_release_fn)
         else:
-            self._test_fn, self._test_state = None, None
+            self._test_fn = None
 
 
 class ForceMatching(max_likelihood.DataParallelTrainer):
@@ -119,20 +120,20 @@ class ForceMatching(max_likelihood.DataParallelTrainer):
         assert self.test_loader is not None, ('No test set available. Check'
                                               ' train and val ratios or add a'
                                               ' test_loader manually.')
-        maes, self.mae_init_state = self.mae_fn(
-            self.best_inference_params_replicated, self.mae_init_state)
+        maes = self.mae_fn(self.best_inference_params_replicated)
         for key, mae_value in maes.items():
             print(f'{key}: MAE = {mae_value:.4f}')
 
     def _init_test_fn(self):
         if self.test_loader is not None:
-            self.mae_fn, self.mae_init_state = force_matching.init_mae_fn(
+            self.mae_fn, data_release_fn = force_matching.init_mae_fn(
                 self.test_loader, self._nbrs_init,
-                self.reference_energy_fn_template, self.batch_per_device,
+                self.reference_energy_fn_template, self.batch_size,
                 self.batch_cache, self._virial_fn
             )
+            self.release_fns.append(data_release_fn)
         else:
-            self.mae_fn, self.mae_init_state = None, None
+            self.mae_fn = None
 
 
 class Difftre(reweighting.PropagationBase):

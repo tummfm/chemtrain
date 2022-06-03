@@ -6,7 +6,8 @@ import copy
 from functools import partial
 import time
 
-from jax import (jit, lax, vmap, pmap, value_and_grad, tree_map, device_count,
+from coax.utils._jit import jit
+from jax import (lax, vmap, pmap, value_and_grad, tree_map, device_count,
                  numpy as jnp)
 from jax_sgmc import data
 import numpy as onp
@@ -83,33 +84,25 @@ def init_val_predictions(batched_model, val_loader, batch_size=1,
         for the whole validation dataset and data_state is used to start the
         data loading in the next evaluation.
     """
-    # TODO clould do without data state using data.full_reference_mapper,
-    #  but then trainers can't be pickled due to '_thread.lock' used.
-    batch_size = min(val_loader.static_information['observation_count'],
-                     batch_size)  # case where validation data very small
-    init_fun, map_fun = data.full_reference_data(val_loader, batch_cache,
-                                                 batch_size)
-    init_data_state = init_fun()
+    # case where validation data is very small
+    batch_size = min(val_loader.static_information['observation_count']
+                     // device_count(), batch_size)
+    map_fun, data_release = data.full_data_mapper(val_loader, batch_cache,
+                                                  batch_size)
 
-    # TODO somehow does not work with pmap and multiple GPUs for few last
-    #  batches, but works for single GPU
-    # pmap_model = pmap(batched_model)
-    #
+    pmap_model = pmap(batched_model)
+
     def single_batch(params, batch, unused_state):
-        # batch = util.tree_split(batch, device_count())
-        # batch_prediction = pmap_model(params, batch)
-        # predictions = util.tree_concat(batch_prediction)
-        predictions = batched_model(params, batch)
+        batch = util.tree_split(batch, device_count())
+        batch_prediction = pmap_model(params, batch)
+        predictions = util.tree_concat(batch_prediction)
         return predictions, unused_state
 
     @jit
-    def mapped_model_fn(params, data_state):
-        params_no_pmap = util.tree_get_single(params)
-        data_state, (predictions, _) = map_fun(partial(single_batch,
-                                                       params_no_pmap),
-                                               data_state, None)
-        return predictions, data_state
-    return mapped_model_fn, init_data_state
+    def mapped_model_fn(params):
+        predictions, _ = map_fun(partial(single_batch, params), None)
+        return predictions
+    return mapped_model_fn, data_release
 
 
 def init_val_loss_fn(model, loss_fn, val_loader, val_targets_keys=None,
@@ -149,15 +142,15 @@ def init_val_loss_fn(model, loss_fn, val_loader, val_targets_keys=None,
         target_data = {key: val_loader._reference_data[key]
                        for key in val_targets_keys}
 
-    mapped_predictions_fn, init_data_state = init_val_predictions(
+    mapped_predictions_fn, data_release_fn = init_val_predictions(
         model, val_loader, batch_size, batch_cache)
 
-    def mapped_loss_fn(params, data_state):
-        predictions, data_state = mapped_predictions_fn(params, data_state)
+    def mapped_loss_fn(params):
+        predictions = mapped_predictions_fn(params)
         val_loss = loss_fn(predictions, target_data)
-        return val_loss, data_state
+        return val_loss
 
-    return mapped_loss_fn, init_data_state
+    return mapped_loss_fn, data_release_fn
 
 
 def _masked_loss(per_element_loss, mask=None):
@@ -230,6 +223,8 @@ class MLETrainerTemplate(util.TrainerInterface):
         # if-statement based on params forces the python part to wait for the
         # completion of the batch, hence losing the advantage of asynchronous
         # dispatch, which can become the bottleneck in high-throughput learning.
+
+        self.release_fns = []
 
     def _step_optimizer(self, curr_grad):
         """Wrapper around step_optimizer that is useful whenever the
@@ -322,6 +317,11 @@ class MLETrainerTemplate(util.TrainerInterface):
 
     def move_to_device(self):
         self.state = tree_map(jnp.array, self.state)  # move on device
+
+    def _release_data_references(self):
+        for release in self.release_fns:
+            release()
+        self.release_fns = []
 
 
 class EarlyStopping:
@@ -442,9 +442,9 @@ class DataParallelTrainer(MLETrainerTemplate):
         self.model = model
         self.batched_model = vmap(model, in_axes=(None, 0))
         self._update_fn = pmap_update_fn(self.batched_model, loss_fn, optimizer)
-        self.batch_per_device = batch_per_device
         self.batch_cache = batch_cache
         self._loss_fn = loss_fn
+        self.batch_size = batch_per_device * device_count()
 
         # replicate params and optimizer states for pmap
         opt_state = optimizer.init(init_params)  # initialize optimizer state
@@ -466,10 +466,11 @@ class DataParallelTrainer(MLETrainerTemplate):
          ) = self._process_dataset(dataset_dict, train_ratio, val_ratio)
 
         if self.val_loader is not None:  # no validation dataset
-            self._val_loss_fn, self._val_data_state = init_val_loss_fn(
+            self._val_loss_fn, data_release_fn = init_val_loss_fn(
                 self.batched_model, self._loss_fn, self.val_loader,
-                self.target_keys, batch_per_device, self.batch_cache
+                self.target_keys, self.batch_size, self.batch_cache
             )
+            self.release_fns.append(data_release_fn)
 
     def update_dataset(self, train_ratio=0.7, val_ratio=0.1, **dataset_kwargs):
         """Allows changing dataset on the fly, which is particularly
@@ -483,29 +484,34 @@ class DataParallelTrainer(MLETrainerTemplate):
         """
         # reset convergence criterion as loss might not be comparable
         self._early_stop.reset_convergence_losses()
+
+        # release all references before allocating new data to avoid memory leak
+        self._release_data_references()
+
         (self._batches_per_epoch, self._get_train_batch,
          self._train_batch_state, self.train_loader, self.val_loader,
          self.test_loader, target_keys
          ) = self._process_dataset(dataset_kwargs, train_ratio, val_ratio)
 
         if self.val_loader is not None:
-            self._val_loss_fn, self._val_data_state = init_val_loss_fn(
+            self._val_loss_fn, data_release_fn = init_val_loss_fn(
                 self.batched_model, self._loss_fn, self.val_loader, target_keys,
-                self.batch_per_device, self.batch_cache
+                self.batch_size, self.batch_cache
             )
+            self.release_fns.append(data_release_fn)
 
     def _process_dataset(self, dataset_dict, train_ratio=0.7, val_ratio=0.1):
         # considers case of re-training with different number of GPUs
-        batch_size = self.batch_per_device * device_count()
         dataset, target_keys = self._build_dataset(**dataset_dict)
         train_loader, val_loader, test_loader = \
             data_processing.init_dataloaders(dataset, train_ratio, val_ratio)
-        init_train_state, get_train_batch = data.random_reference_data(
-            train_loader, self.batch_cache, batch_size)
+        init_train_state, get_train_batch, release = data.random_reference_data(
+             train_loader, self.batch_cache, self.batch_size)
+        self.release_fns.append(release)
         train_batch_state = init_train_state(shuffle=True)
 
         observation_count = train_loader.static_information['observation_count']
-        batches_per_epoch = observation_count // batch_size
+        batches_per_epoch = observation_count // self.batch_size
         return (batches_per_epoch, get_train_batch, train_batch_state,
                 train_loader, val_loader, test_loader, target_keys)
 
@@ -536,8 +542,7 @@ class DataParallelTrainer(MLETrainerTemplate):
         self.train_losses.append(mean_train_loss)
 
         if self.val_loader is not None:
-            val_loss, self._val_data_state = self._val_loss_fn(
-                self.state.params, self._val_data_state)
+            val_loss = self._val_loss_fn(self.state.params)
             self.val_losses.append(val_loss)
             self._converged = self._early_stop.early_stopping(val_loss, thresh,
                                                               self.params)

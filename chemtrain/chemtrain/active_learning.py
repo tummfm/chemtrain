@@ -91,15 +91,3 @@ def init_uq_md(energy_fn_template, simulator_template, timings, t_end,
         return state, converged
 
     return uq_md
-
-
-def clear_memory_references():
-    """Jax keeps references on data that are not necessarily cleared, causing
-    memory leaks. This function clears the references, avoiding memory leaks.
-    """
-    reload(host_callback)
-    # Clear all remaining compilation caches
-    caches = [i for i in gc.get_objects() if
-              isinstance(i, functools._lru_cache_wrapper)]
-    for c in caches:
-        c.cache_clear()
