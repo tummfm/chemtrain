@@ -617,11 +617,16 @@ class DataParallelTrainer(MLETrainerTemplate):
     @property
     def best_inference_params(self):
         """Returns best model params irrespective whether dropout is used."""
-        if dropout.dropout_is_used(self.best_params):
-            # all nodes present during inference
-            params, _ = dropout.split_dropout_params(self.best_params)
+        #  if no validation data given, best params are not defined properly
+        if self.val_loader is None:
+            best_params = self.params
         else:
-            params = self.best_params
+            best_params = self.best_params
+        if dropout.dropout_is_used(best_params):
+            # all nodes present during inference
+            params, _ = dropout.split_dropout_params(best_params)
+        else:
+            params = best_params
         return params
 
     @property
