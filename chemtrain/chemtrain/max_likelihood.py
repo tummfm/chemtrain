@@ -436,7 +436,7 @@ class DataParallelTrainer(MLETrainerTemplate):
     """
     def __init__(self, dataset_dict, loss_fn, model, init_params, optimizer,
                  checkpoint_path, batch_per_device, batch_cache,
-                 train_ratio=0.7, val_ratio=0.1,
+                 train_ratio=0.7, val_ratio=0.1, shuffle=False,
                  convergence_criterion='window_median',
                  energy_fn_template=None):
         self.model = model
@@ -463,7 +463,8 @@ class DataParallelTrainer(MLETrainerTemplate):
         (self._batches_per_epoch, self._get_train_batch,
          self._train_batch_state, self.train_loader, self.val_loader,
          self.test_loader, self.target_keys
-         ) = self._process_dataset(dataset_dict, train_ratio, val_ratio)
+         ) = self._process_dataset(dataset_dict, train_ratio, val_ratio,
+                                   shuffle=shuffle)
 
         if self.val_loader is not None:  # no validation dataset
             self._val_loss_fn, data_release_fn = init_val_loss_fn(
@@ -472,13 +473,16 @@ class DataParallelTrainer(MLETrainerTemplate):
             )
             self.release_fns.append(data_release_fn)
 
-    def update_dataset(self, train_ratio=0.7, val_ratio=0.1, **dataset_kwargs):
+    def update_dataset(self, train_ratio=0.7, val_ratio=0.1, shuffle=False,
+                       **dataset_kwargs):
         """Allows changing dataset on the fly, which is particularly
         useful for active learning applications.
 
         Args:
             train_ratio: Percentage of dataset to use for training.
             val_ratio: Percentage of dataset to use for validation.
+            shuffle: Whether to shuffle data before splitting into
+                     train-val-test.
             **dataset_kwargs: Kwargs to supply to self._build_dataset to
                       re-build the dataset
         """
@@ -491,7 +495,8 @@ class DataParallelTrainer(MLETrainerTemplate):
         (self._batches_per_epoch, self._get_train_batch,
          self._train_batch_state, self.train_loader, self.val_loader,
          self.test_loader, target_keys
-         ) = self._process_dataset(dataset_kwargs, train_ratio, val_ratio)
+         ) = self._process_dataset(dataset_kwargs, train_ratio, val_ratio,
+                                   shuffle=shuffle)
 
         if self.val_loader is not None:
             self._val_loss_fn, data_release_fn = init_val_loss_fn(
@@ -500,11 +505,13 @@ class DataParallelTrainer(MLETrainerTemplate):
             )
             self.release_fns.append(data_release_fn)
 
-    def _process_dataset(self, dataset_dict, train_ratio=0.7, val_ratio=0.1):
+    def _process_dataset(self, dataset_dict, train_ratio=0.7, val_ratio=0.1,
+                         shuffle=False):
         # considers case of re-training with different number of GPUs
         dataset, target_keys = self._build_dataset(**dataset_dict)
         train_loader, val_loader, test_loader = \
-            data_processing.init_dataloaders(dataset, train_ratio, val_ratio)
+            data_processing.init_dataloaders(dataset, train_ratio, val_ratio,
+                                             shuffle=shuffle)
         init_train_state, get_train_batch, release = data.random_reference_data(
              train_loader, self.batch_cache, self.batch_size)
         self.release_fns.append(release)

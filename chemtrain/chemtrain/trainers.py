@@ -16,7 +16,7 @@ class PropertyPrediction(max_likelihood.DataParallelTrainer):
     def __init__(self, error_fn, prediction_model, init_params, optimizer,
                  graph_dataset, targets, batch_per_device=1, batch_cache=10,
                  train_ratio=0.7, val_ratio=0.1, test_error_fn=None,
-                 convergence_criterion='window_median',
+                 shuffle=False, convergence_criterion='window_median',
                  checkpoint_folder='Checkpoints'):
 
         # TODO documentation
@@ -29,7 +29,7 @@ class PropertyPrediction(max_likelihood.DataParallelTrainer):
 
         super().__init__(dataset_dict, loss_fn, model, init_params, optimizer,
                          checkpoint_path, batch_per_device, batch_cache,
-                         train_ratio, val_ratio,
+                         train_ratio, val_ratio, shuffle=shuffle,
                          convergence_criterion=convergence_criterion)
 
         self.test_error_fn = test_error_fn
@@ -85,7 +85,8 @@ class ForceMatching(max_likelihood.DataParallelTrainer):
                  optimizer, position_data, energy_data=None, force_data=None,
                  virial_data=None, box_tensor=None, gamma_f=1., gamma_p=1.e-6,
                  batch_per_device=1, batch_cache=10, train_ratio=0.7,
-                 val_ratio=0.1, convergence_criterion='window_median',
+                 val_ratio=0.1, shuffle=False,
+                 convergence_criterion='window_median',
                  checkpoint_folder='Checkpoints'):
 
         checkpoint_path = 'output/force_matching/' + str(checkpoint_folder)
@@ -103,7 +104,7 @@ class ForceMatching(max_likelihood.DataParallelTrainer):
 
         super().__init__(dataset_dict, loss_fn, model, init_params, optimizer,
                          checkpoint_path, batch_per_device, batch_cache,
-                         train_ratio, val_ratio,
+                         train_ratio, val_ratio, shuffle=shuffle,
                          convergence_criterion=convergence_criterion,
                          energy_fn_template=energy_fn_template)
         self._virial_fn = virial_fn

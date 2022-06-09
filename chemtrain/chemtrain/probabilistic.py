@@ -108,7 +108,8 @@ def init_force_matching(
         position_data, energy_data=None, energy_scale=None, force_data=None,
         force_scale=None, virial_data=None, virial_scale=None, box_tensor=None,
         train_ratio=0.7, val_ratio=0.1,
-        likelihood_distribution=jscipy.stats.norm.logpdf, draw_std=False):
+        likelihood_distribution=jscipy.stats.norm.logpdf, draw_std=False,
+        shuffle=False):
     """Initializes a compatible set of prior, likelihood, initial MCMC samples
     as well as train and validation loaders  for learning probabilistic
     potentials via force-matching.
@@ -148,6 +149,7 @@ def init_force_matching(
         draw_std: If True, draws initial likelihood std values from the
                   exponential prior distribution. If False, sets it to the
                   mean of the prior distribution, i.e. the scale.
+        shuffle: Whether to shuffle data before splitting into train-val-test.
 
     Returns:
         A tuple (prior_fn, likelihood_fn, init_samples, train_loader,
@@ -161,7 +163,7 @@ def init_force_matching(
     dataset, _ = force_matching.build_dataset(position_data, energy_data,
                                               force_data, virial_data)
     train_loader, val_loader, test_loader = data_processing.init_dataloaders(
-        dataset, train_ratio, val_ratio)
+        dataset, train_ratio, val_ratio, shuffle=shuffle)
 
     virial_fn = force_matching.init_virial_fn(virial_data, energy_fn_template,
                                               box_tensor)

@@ -25,7 +25,8 @@ def get_dataset(data_location_str, retain=None, subsampling=1):
     return loaded_data
 
 
-def train_val_test_split(dataset, train_ratio=0.7, val_ratio=0.1):
+def train_val_test_split(dataset, train_ratio=0.7, val_ratio=0.1, shuffle=False,
+                         shuffle_seed=0):
     """Train-validation-test split for datasets. Works on arbitrary pytrees,
     including chex.dataclasses, dictionaries and single arrays.
 
@@ -36,31 +37,55 @@ def train_val_test_split(dataset, train_ratio=0.7, val_ratio=0.1):
                  axis 0.
         train_ratio: Percantage of dataset to use for training.
         val_ratio: Percantage of dataset to use for validation.
+        shuffle: If True, shuffles data before splitting into train-val-test.
+                 Shuffling copies the dataset.
+        shuffle_seed: PRNG Seed for data shuffling
 
     Returns:
         Tuple (train_data, val_data, test_data) with the same shape as the input
         pytree, but split along axis 0.
     """
-    def retreive_datasubset(start, end):
-        data_subset = util.tree_get_slice(dataset, start, end, to_device=False)
-        subset_leaves, _ = tree_flatten(data_subset)
-        subset_size = subset_leaves[0].shape[0]
-        if subset_size == 0:
-            data_subset = None
-        return data_subset
-
     assert train_ratio + val_ratio <= 1., 'Distribution of data exceeds 100%.'
     leaves, _ = tree_flatten(dataset)
     dataset_size = leaves[0].shape[0]
     train_size = int(dataset_size * train_ratio)
     val_size = int(dataset_size * val_ratio)
-    train_data = retreive_datasubset(0, train_size)
-    val_data = retreive_datasubset(train_size, train_size + val_size)
-    test_data = retreive_datasubset(train_size + val_size, None)
+
+    if shuffle:
+        dataset_idxs = onp.arange(dataset_size)
+        numpy_rng = onp.random.default_rng(shuffle_seed)
+        numpy_rng.shuffle(dataset_idxs)
+
+        def retreive_datasubset(idxs):
+            data_subset = util.tree_take(dataset, idxs, axis=0)
+            subset_leaves, _ = tree_flatten(data_subset)
+            subset_size = subset_leaves[0].shape[0]
+            if subset_size == 0:
+                data_subset = None
+            return data_subset
+
+        train_data = retreive_datasubset(dataset_idxs[:train_size])
+        val_data = retreive_datasubset(dataset_idxs[train_size:
+                                                    val_size + train_size])
+        test_data = retreive_datasubset(dataset_idxs[val_size + train_size:])
+
+    else:
+        def retreive_datasubset(start, end):
+            data_subset = util.tree_get_slice(dataset, start, end,
+                                              to_device=False)
+            subset_leaves, _ = tree_flatten(data_subset)
+            subset_size = subset_leaves[0].shape[0]
+            if subset_size == 0:
+                data_subset = None
+            return data_subset
+
+        train_data = retreive_datasubset(0, train_size)
+        val_data = retreive_datasubset(train_size, train_size + val_size)
+        test_data = retreive_datasubset(train_size + val_size, None)
     return train_data, val_data, test_data
 
 
-def init_dataloaders(dataset, train_ratio=0.7, val_ratio=0.1):
+def init_dataloaders(dataset, train_ratio=0.7, val_ratio=0.1, shuffle=False):
     """Splits dataset and initializes dataloaders.
 
     If the validation or test ratios are 0, returns None for the respective
@@ -71,6 +96,7 @@ def init_dataloaders(dataset, train_ratio=0.7, val_ratio=0.1):
                  returns batches with the same kwargs as provided in dataset.
         train_ratio: Percantage of dataset to use for training.
         val_ratio: Percantage of dataset to use for validation.
+        shuffle: Whether to shuffle data before splitting into train-val-test.
 
     Returns:
         A tuple (train_loader, val_loader, test_loader) of NumpyDataLoaders.
@@ -83,7 +109,7 @@ def init_dataloaders(dataset, train_ratio=0.7, val_ratio=0.1):
         return loader
 
     train_set, val_set, test_set = train_val_test_split(
-        dataset, train_ratio, val_ratio)
+        dataset, train_ratio, val_ratio, shuffle=shuffle)
     train_loader = init_subloader(train_set)
     val_loader = init_subloader(val_set)
     test_loader = init_subloader(test_set)
