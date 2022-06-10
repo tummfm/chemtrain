@@ -619,21 +619,21 @@ class DataParallelTrainer(MLETrainerTemplate):
 
     @property
     def best_params(self):
-        return self._early_stop.best_params
+        #  if no validation data given, _early_stop.best_params are simply
+        #  init_params
+        if self.val_loader is None:
+            return self.params
+        else:
+            return self._early_stop.best_params
 
     @property
     def best_inference_params(self):
         """Returns best model params irrespective whether dropout is used."""
-        #  if no validation data given, best params are not defined properly
-        if self.val_loader is None:
-            best_params = self.params
-        else:
-            best_params = self.best_params
-        if dropout.dropout_is_used(best_params):
+        if dropout.dropout_is_used(self.best_params):
             # all nodes present during inference
-            params, _ = dropout.split_dropout_params(best_params)
+            params, _ = dropout.split_dropout_params(self.best_params)
         else:
-            params = best_params
+            params = self.best_params
         return params
 
     @property
