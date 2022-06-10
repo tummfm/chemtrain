@@ -57,6 +57,8 @@ def init_loss_fn(error_fn):
 def per_species_results(species, per_atom_quantities, species_idxs):
     """Sorts per-atom results by species and returns a per-species mean.
 
+    Only real (non-masked) particles should be input.
+
     Args:
         species: An array storing for each atom the corresponding species.
         per_atom_quantities: An array with the same shape as species, storing
@@ -75,6 +77,32 @@ def per_species_results(species, per_atom_quantities, species_idxs):
         mean_if_species_exists = jnp.sum(screened_results) / species_members
         return jnp.where(species_members == 0, 0., mean_if_species_exists)
     return process_single_species(species_idxs)
+
+
+def per_species_box_errors(dataset, per_atom_errors):
+    """Computes for each snapshot in the provided graph dataset,
+    the per-species error.
+
+    Args:
+        dataset: Graph dataset cantaining the snapshots of interest.
+        per_atom_errors: Per-atom error for each atom in the dataset.
+         Has same shape as dataset['species'].
+
+    Returns:
+        Mean per-species error for each snapshot in the dataset.
+    """
+    mask = dataset['species_mask']
+    species = dataset['species']
+    real_species = species[mask]
+    unique_species = jnp.unique(real_species)
+    species_masked = jnp.where(mask, species, 1000)  # species 1000 nonexistant
+    per_box_and_species_fn = vmap(per_species_results, in_axes=(0, 0, None))
+    per_box_species_errors = per_box_and_species_fn(
+        species_masked, per_atom_errors, unique_species)
+    distinct_per_box_species = jnp.sum(per_box_species_errors > 0., axis=1)
+    mean_per_box_species_errors = (jnp.sum(per_box_species_errors, axis=1)
+                                   / distinct_per_box_species)
+    return mean_per_box_species_errors
 
 
 def molecular_property_predictor(model, n_per_atom=0):
