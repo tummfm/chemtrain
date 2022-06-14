@@ -560,19 +560,26 @@ class DataParallelTrainer(MLETrainerTemplate):
               f' {self.gradient_norm_history[-1]}'
               f' Elapsed time = {duration:.3f} min')
 
-    def update_with_single_sample(self, **sample):
+    def update_with_samples(self, **sample):
         """A single params update step, where a batch is taken from the training
-        set and one sample of the batch is substituted by the provided sample.
+        set and samples of the batch are substituted by the provided samples.
+
+        This function is useful in an active learning context to retrain
+        specifically on newly labeled datapoints. The number of provided samples
+        must not exceed the trainer batch size.
 
         Args:
-            **sample: Kwargs storing the sample daata to supply to
-                      self._build_dataset to build the sample in the correct
+            **sample: Kwargs storing data samples to supply to
+                      self._build_dataset to build samples in the correct
                       pytree. Analogous usage as update_dataset, but the dataset
-                      only consists of a single observation.
+                      only consists of a few observations.
         """
-        ordered_sample, _ = self._build_dataset(**sample)
+        ordered_samples, _ = self._build_dataset(**sample)
+        n_samples = util.tree_multiplicity(ordered_samples)
+        assert n_samples <= self.batch_size, ('Number of provided samples must'
+                                              ' not exceed trainer batch size.')
         batch = next(self._get_batch())
-        updated_batch = util.tree_set(batch, ordered_sample)
+        updated_batch = util.tree_set(batch, ordered_samples, n_samples)
         self._update_with_dropout(updated_batch)
 
     def set_testloader(self, testdata):
