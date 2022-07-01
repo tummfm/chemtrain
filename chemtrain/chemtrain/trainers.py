@@ -629,6 +629,7 @@ class SGMCForceMatching(probabilistic.ProbabilisticFMTrainerTemplate):
     #  with more liberal coax._jit?)
 
 
+# TODO adjust to new blackjax interface, then allow newer version
 class NUTSForceMatching(probabilistic.MCMCForceMatchingTemplate):
     """Trainer that samples from the posterior distribution of energy_params via
     the No-U-Turn Sampler (NUTS), based on a force-matching formulation.
