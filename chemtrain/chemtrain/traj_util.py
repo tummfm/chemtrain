@@ -121,7 +121,7 @@ def _run_to_next_printout_neighbors(apply_fn, timings, **kwargs):
 
         state, nbrs = cur_state
         new_state = apply_fn(state, neighbor=nbrs, **apply_kwargs)
-        nbrs = util.neighbor_update(nbrs, state)
+        nbrs = util.neighbor_update(nbrs, new_state)
         new_sim_state = (new_state, nbrs)
         return new_sim_state, t
 
