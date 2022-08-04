@@ -226,17 +226,17 @@ def init_log_posterior_fn(likelihood, prior, train_loader, batch_size,
     Returns:
         Log-posterior function
     """
+    # re-materialization of the likelihood for each batch of data allows
+    # circumventing the enormous memory requirements of backpropagating
+    # through the full potential - at the expense of additional
+    # computational cost.
     likelihood = checkpoint(likelihood)  # avoid OOM for grad over whole dataset
     full_potential_fn = potential.full_potential(prior, likelihood,
                                                  strategy='vmap')
-    init_fun, fmap_fun, release = data.full_reference_data(
-        train_loader, batch_cache, batch_size)
-    data_state = init_fun()
+    data_map, _ = data.full_data_mapper(train_loader, batch_cache, batch_size)
 
-    # TODO this is not valid with dataloader; possibly use new dataloader and
-    #  adjust full_potential
     def log_posterior_fn(sample):
-        potential_val, _ = full_potential_fn(sample, data_state, fmap_fun)
+        potential_val, _ = full_potential_fn(sample, None, data_map)
         return -potential_val  # potential is negative posterior
     return log_posterior_fn
 
@@ -280,11 +280,6 @@ class MCMCForceMatchingTemplate(ProbabilisticFMTrainerTemplate):
     def __init__(self, init_state, kernel, checkpoint_path, val_loader=None,
                  ref_energy_fn_template=None):
         super().__init__(checkpoint_path, ref_energy_fn_template, val_loader)
-        # re-materialization of the likelihood for each batch of data allows
-        # circumventing the enormous memory requirements of backpropagating
-        # through the full potential - at the expense of additional
-        # computational cost.
-
         self.kernel = jit(kernel)
         self.state = init_state
 
