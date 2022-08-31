@@ -241,6 +241,11 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
         max_triplets = jnp.int32(jnp.ceil(testgraph.n_triplets
                                           * max_triplet_multiplier))
         max_edges = jnp.int32(jnp.ceil(testgraph.n_edges * max_edge_multiplier))
+
+        # cap maximum edges and angles to avoid overflow from multiplier
+        n_particles, n_neighbors = neighbor_test.idx.shape
+        max_edges = min(max_edges, n_particles * n_neighbors)
+        max_triplets = min(max_triplets, n_particles * n_neighbors**2)
     else:
         max_triplets = None
         max_edges = None

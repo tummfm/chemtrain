@@ -8,7 +8,7 @@ import time
 import warnings
 
 from coax.utils._jit import jit
-from jax import (checkpoint, lax, random, grad, tree_multimap, tree_map,
+from jax import (checkpoint, lax, random, grad, tree_util, vmap,
                  numpy as jnp)
 from jax_md import util as jax_md_util
 
@@ -116,7 +116,7 @@ def reweight_trajectory(traj, **targets):
 def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
                                       neighbor_fn, timings, ref_kbt,
                                       ref_press=None, reweight_ratio=0.9,
-                                      npt_ensemble=False):
+                                      npt_ensemble=False, energy_batch_size=10):
     """
     Initializes all functions necessary for trajectory reweighting for
     a single state point.
@@ -146,9 +146,8 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
         """Computes weights for the reweighting approach."""
 
         # reweighting properties (U and pressure) under perturbed potential
-        reweight_properties = traj_util.quantity_traj(traj_state,
-                                                      reweighting_quantities,
-                                                      params)
+        reweight_properties = traj_util.quantity_traj(
+            traj_state, reweighting_quantities, params, energy_batch_size)
 
         # Note: Difference in pot. Energy is difference in total energy
         # as kinetic energy is the same and cancels
@@ -217,7 +216,13 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
                                    ' non-overflown state might help, but comes'
                                    ' at the cost that the reference state is '
                                    'likely not representative.')
-            enlarged_nbrs = util.neighbor_allocate(neighbor_fn, last_state)
+            if last_state.position.ndim > 2:
+                single_enlarged_nbrs = util.neighbor_allocate(
+                    neighbor_fn, util.tree_get_single(last_state))
+                enlarged_nbrs = vmap(util.neighbor_update, (None, 0))(
+                    single_enlarged_nbrs, last_state)
+            else:
+                enlarged_nbrs = util.neighbor_allocate(neighbor_fn, last_state)
             reset_traj_state = traj_state.replace(
                 sim_state=(last_state, enlarged_nbrs))
             traj_state = recompute_trajectory((params, reset_traj_state))
@@ -312,15 +317,34 @@ def init_default_loss_fn(targets):
     return loss_fn
 
 
-def init_rel_entropy_gradient(energy_fn_template, compute_weights, kbt):
-    """Initializes a function that computes the relative entropy
-    gradient given a trajectory and a batch of reference snapshots.
+def init_rel_entropy_gradient(energy_fn_template, compute_weights, kbt,
+                              vmap_batch_size=10):
+    """Initializes a function that computes the relative entropy gradient.
+
+    The computation of the gradient is batched to increase computational
+    efficiency.
+
+    Args:
+        energy_fn_template: Energy function template
+        compute_weights: compute_weights function as initialized from
+                         init_pot_reweight_propagation_fns.
+        kbt: KbT
+        vmap_batch_size: Batch size for
+
+    Returns:
+        A function rel_entropy_gradient(params, traj_state, reference_batch),
+        which returns the relative entropy gradient of 'params' given a
+        generated trajectory saved in 'traj_state' and a reference trajectory
+        'reference_batch'.
     """
     beta = 1 / kbt
 
     @jit
     def rel_entropy_gradient(params, traj_state, reference_batch):
-        nbrs_init = traj_state.sim_state[1]
+        if traj_state.sim_state[0].position.ndim > 2:
+            nbrs_init = util.tree_get_single(traj_state.sim_state[1])
+        else:
+            nbrs_init = traj_state.sim_state[1]
 
         def energy(params, position):
             energy_fn = energy_fn_template(params)
@@ -329,41 +353,40 @@ def init_rel_entropy_gradient(energy_fn_template, compute_weights, kbt):
             nbrs = nbrs_init.update(position)
             return energy_fn(position, neighbor=nbrs)
 
-        def weighted_gradient(grad_carry, scan_input):
-            dudtheta = grad(energy)  # gradient wrt. params
-            position = scan_input[0]
-            weight = scan_input[1]
-            snapshot_grad = dudtheta(params, position)
-            # sum over weights represents average
-            update_carry = lambda carry, new_grad: carry + weight * new_grad
-            updated_carry = tree_multimap(update_carry,
-                                          grad_carry,
-                                          snapshot_grad)
-            return updated_carry, 0
+        def weighted_gradient(map_input):
+            position, weight = map_input
+            snapshot_grad = grad(energy)(params, position)  # dudtheta
+            weight_gradient = lambda new_grad: weight * new_grad
+            weighted_grad_snapshot = tree_util.tree_map(weight_gradient,
+                                                        snapshot_grad)
+            return weighted_grad_snapshot
 
-        generated_traj = traj_state.trajectory.position
+        def add_gradient(map_input):
+            batch_gradient = vmap(weighted_gradient)(map_input)
+            return util.tree_sum(batch_gradient, axis=0)
+
         weights, _ = compute_weights(params, traj_state)
-        ref_batchsize = reference_batch.shape[0]
-        ref_weights = jnp.ones(ref_batchsize) / ref_batchsize  # no reweighting
 
-        # TODO implement with vmap
-        # Note:
-        # would be more efficient to partially batch here, however
-        # sequential trajectory generation dominates and batching
-        # here would therefore not result in a significant speed-up.
-        # The average via scan avoids linear memory scaling with
-        # the trajectory length, which would become prohibitive for
-        # memory consuming models such as neural network potentials.
-        initial_grad = tree_map(jnp.zeros_like, params)
-        mean_ref_grad, _ = lax.scan(weighted_gradient,
-                                    initial_grad,
-                                    (reference_batch, ref_weights))
-        mean_gen_grad, _ = lax.scan(weighted_gradient,
-                                    initial_grad,
-                                    (generated_traj, weights))
+        # reshape for batched computations
+        batch_weights = weights.reshape((-1, vmap_batch_size))
+        traj_shape = traj_state.trajectory.position.shape
+        batchwise_gen_traj = traj_state.trajectory.position.reshape(
+            (-1, vmap_batch_size, traj_shape[-2], traj_shape[-1]))
+        ref_shape = reference_batch.shape
+        reference_batches = reference_batch.reshape(
+            (-1, vmap_batch_size, ref_shape[-2], ref_shape[-1]))
+
+        # no reweighting for reference data: weights = 1 / N
+        ref_weights = jnp.ones(reference_batches.shape[:2]) / (ref_shape[0])
+
+        ref_grad = lax.map(add_gradient, (reference_batches, ref_weights))
+        mean_ref_grad = util.tree_sum(ref_grad, axis=0)
+        gen_traj_grad = lax.map(add_gradient, (batchwise_gen_traj,
+                                               batch_weights))
+        mean_gen_grad = util.tree_sum(gen_traj_grad, axis=0)
 
         combine_grads = lambda x, y: beta * (x - y)
-        dtheta = tree_multimap(combine_grads, mean_ref_grad, mean_gen_grad)
+        dtheta = tree_util.tree_map(combine_grads, mean_ref_grad, mean_gen_grad)
         return dtheta
     return rel_entropy_gradient
 
@@ -395,19 +418,24 @@ class PropagationBase(max_likelihood.MLETrainerTemplate):
 
     def _init_statepoint(self, reference_state, energy_fn_template,
                          simulator_template, neighbor_fn, timings, kbt,
-                         ref_press=None, initialize_traj=True):
+                         set_key=None, energy_batch_size=10,
+                         initialize_traj=True, ref_press=None):
         """Initializes the simulation and reweighting functions as well
         as the initial trajectory for a statepoint."""
-
-        # is there a better differentiator? kbT could be same for 2 simulations
-        key = self.n_statepoints
-        self.n_statepoints += 1
-        self.statepoints[key] = {'kbT': kbt}
-        npt_ensemble = util.is_npt_ensemble(reference_state[0])
-        if npt_ensemble: self.statepoints[key]['pressure'] = ref_press
         # TODO ref pressure only used in print and to have barostat values.
         #  Reevaluate this parameter of barostat values not used in reweighting
         # TODO document ref_press accordingly
+
+        if set_key is not None:
+            key = set_key
+            if set_key not in self.statepoints.keys():
+                self.n_statepoints += 1
+        else:
+            key = self.n_statepoints
+            self.n_statepoints += 1
+        self.statepoints[key] = {'kbT': kbt}
+        npt_ensemble = util.is_npt_ensemble(reference_state[0])
+        if npt_ensemble: self.statepoints[key]['pressure'] = ref_press
 
         gen_init_traj, compute_weights, propagate = \
             init_pot_reweight_propagation_fns(energy_fn_template,
@@ -417,7 +445,8 @@ class PropagationBase(max_likelihood.MLETrainerTemplate):
                                               kbt,
                                               ref_press,
                                               self.reweight_ratio,
-                                              npt_ensemble)
+                                              npt_ensemble,
+                                              energy_batch_size)
         if initialize_traj:
             init_traj, runtime = gen_init_traj(self.params, reference_state)
             print(f'Time for trajectory initialization {key}: {runtime} mins')

@@ -69,6 +69,42 @@ def is_npt_ensemble(state):
     return hasattr(state, 'box_position')
 
 
+def kl(p, q):
+    """Returns Kullback-Leibler divergence D(P || Q) for discrete distributions.
+
+    Args:
+        p: Discrete probability density function values (array-like, shape=n).
+        q: Discrete probability density function values (array-like, shape=n).
+    """
+    p = jnp.asarray(p, dtype=float)
+    q = jnp.asarray(q, dtype=float)
+    return -jnp.sum(jnp.where(p != 0, p * jnp.log(q / p), 0))
+
+
+def jenson_shannon(p, q, distance=False):
+    """Returns the Jensen-Shannon distance between two discrete distributions.
+
+    Args:
+        p: Discrete probability density function values (array-like, shape=n).
+        q: Discrete probability density function values (array-like, shape=n).
+        distance: Default False returns JS divergence. True returns JS distance
+                  sqrt(JS).
+    """
+    p = onp.array(p)
+    q = onp.array(q)
+    m = 0.5 * (p + q)
+    js = 0.5 * (kl(p, m) + kl(q, m))
+    if distance:
+        return onp.sqrt(js)
+    else:
+        return js
+
+
+def tree_combine(tree):
+    """Combines the first two axes of `tree`, e.g. after batching."""
+    return tree_map(lambda x: jnp.reshape(x, (-1,) + x.shape[2:]), tree)
+
+
 def tree_norm(tree):
     """Returns the Euclidean norm of a PyTree."""
     leaves, _ = tree_flatten(tree)
@@ -137,12 +173,34 @@ def tree_concat(tree):
     return tree_map(partial(jnp.concatenate, axis=0), tree)
 
 
-def tree_split(tree, n_devices):
-    """Splits the first axis of `tree` evenly across the number of devices."""
+def tree_pmap_split(tree, n_devices):
+    """Splits the first axis of `tree` evenly across the number of devices for
+     pmap batching (size of first axis is n_devices).
+     """
     assert tree_leaves(tree)[0].shape[0] % n_devices == 0, \
         'First dimension needs to be multiple of number of devices.'
     return tree_map(lambda x: jnp.reshape(x, (n_devices, x.shape[0]//n_devices,
                                               *x.shape[1:])), tree)
+
+
+def tree_vmap_split(tree, batch_size):
+    """Splits the first axis of a 'tree' with leaf sizes (N, X)`into
+    (n_batches, batch_size, X) to allow straightforward vmapping over axis0.
+    """
+    assert tree_leaves(tree)[0].shape[0] % batch_size == 0, \
+        'First dimension of tree needs to be splittable by batch_size' \
+        ' without remainder.'
+    return tree_map(lambda x: jnp.reshape(x, (x.shape[0] // batch_size,
+                                              batch_size, *x.shape[1:])),
+                    tree)
+
+
+def tree_sum(tree_list, axis=None):
+    """Computes the sum of equal-shaped leafs of a pytree."""
+    @partial(partial, tree_map)
+    def leaf_add(leafs):
+        return jnp.sum(leafs, axis=axis)
+    return leaf_add(tree_list)
 
 
 def tree_mean(tree_list):

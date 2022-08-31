@@ -25,6 +25,25 @@ def energy_wrapper(energy_fn_template):
     return energy
 
 
+def kinetic_energy_wrapper(state, **unused_kwargs):
+    """Wrapper around kinetic_energy to allow kinetic energy computation via
+    traj_util.quantity_traj.
+    """
+    return quantity.kinetic_energy(state.velocity, state.mass)
+
+
+def total_energy_wrapper(energy_fn_template):
+    """Wrapper around energy_fn to allow total energy computation via
+    traj_util.quantity_traj.
+    """
+    def energy(state, neighbor, energy_params, **kwargs):
+        energy_fn = energy_fn_template(energy_params)
+        pot_energy = energy_fn(state.position, neighbor=neighbor, **kwargs)
+        kinetic_energy = quantity.kinetic_energy(state.velocity, state.mass)
+        return pot_energy + kinetic_energy
+    return energy
+
+
 def temperature(state, **unused_kwargs):
     """Temperature function that is consistent with quantity_traj interface."""
     return quantity.temperature(state.velocity, state.mass)
@@ -144,6 +163,64 @@ def adf_discretization(nbins=200):
     return adf_bin_centers, sigma_adf
 
 
+@dataclasses.dataclass
+class TCFParams:
+    """Hyperparameters to initialize a triplet correlation function (TFC)
+    for a triplet with sides x, y, z. Implementation according to
+    https://aip.scitation.org/doi/10.1063/1.4898755 and
+    https://aip.scitation.org/doi/10.1063/5.0048450.
+
+    Attributes:
+    reference_tcf: The target tcf; initialize with None if no target available
+    sigma_TCF: Standard deviation of smoothing Gaussian
+    volume_TCF: Histogram volume element according to
+        https://journals.aps.org/pra/abstract/10.1103/PhysRevA.42.849
+    tcf_x_bin_centers: The radial positions of the centers of the tcf bins in
+                       x direction
+    tcf_x_bin_centers: The radial positions of the centers of the tcf bins in
+                       y direction
+    tcf_x_bin_centers: The radial positions of the centers of the tcf bins in
+                       z direction
+    """
+    reference: Array
+    sigma_tcf: Array
+    volume: Array
+    tcf_x_bin_centers: Array
+    tcf_y_bin_centers: Array
+    tcf_z_bin_centers: Array
+
+
+def tcf_discretization(tcf_cut, nbins=30, tcf_start=0.1):
+    """Computes dicretization parameters for initialization of TCF function.
+
+    Args:
+        tcf_cut: Cut-off length inside which pairs of particles are considered
+        nbins: Number of bins in all three radial direction
+        tcf_start: Minimal distance after which particle pairs are considered
+
+    Returns:
+        Tuple containing standard deviation of the Gaussian smoothing kernel,
+        histogram volume array and arrays with radial positions of bin centers
+        in x, y, z.
+
+    """
+    dx_bin = (tcf_cut - tcf_start) / float(nbins)
+    tcf_bin_centers = jnp.linspace(tcf_start + dx_bin / 2.,
+                                   tcf_cut - dx_bin / 2.,
+                                   nbins)
+
+    tcf_x_binx_centers, tcf_y_bin_centers, tcf_z_bin_centers = jnp.meshgrid(
+        tcf_bin_centers, tcf_bin_centers, tcf_bin_centers, sparse=True)
+
+    sigma_tcf = jnp.array(dx_bin)
+    # volume for non-linear triplets (sigma / min(x,y,z)->0)
+    volume_tcf = (8 * jnp.pi**2 * tcf_x_binx_centers * tcf_y_bin_centers
+                  * tcf_z_bin_centers * sigma_tcf**3)
+
+    return (sigma_tcf, volume_tcf, tcf_x_binx_centers, tcf_y_bin_centers,
+            tcf_z_bin_centers)
+
+
 def _ideal_gas_density(particle_density, bin_boundaries):
     """Returns bin densities that would correspond to an ideal gas."""
     r_small = bin_boundaries[:-1]
@@ -215,7 +292,7 @@ def _triplet_pairwise_displacements(position, neighbor, displacement_fn):
     non-existant triplets that only result from the overcapacity of a dense
     neighborlist, realiszing a computational speed-up.
     """
-    # TODO unification with sparse neighborlist format woud simplify this.
+    # TODO unification with sparse neighborlist format would simplify this.
     neighbor_displacement_fn = space.map_neighbor(displacement_fn)
     n_particles, max_neighbors = neighbor.idx.shape
     r_neigh = position[neighbor.idx]
@@ -272,7 +349,7 @@ def init_adf_nbrs(displacement_fn, adf_params, smoothing_dr=0.01, r_init=None,
 
     Args:
         displacement_fn: Displacement function
-        adf_params: ADFParams defining the hyperparameters of the RDF
+        adf_params: ADFParams defining the hyperparameters of the ADF
         smoothing_dr: Standard deviation of Gaussian smoothing in radial
                       direction
         r_init: Initial position to estimate maximum number of triplets
@@ -361,6 +438,105 @@ def init_adf_nbrs(displacement_fn, adf_params, smoothing_dr=0.01, r_init=None,
         adf = weighted_adf(angles, weights)
         return adf
     return adf_fn
+
+
+def init_tcf_nbrs(displacement_fn, tcf_params,  reference_box=None,
+                  nbrs_init=None, batch_size=1000, max_weight_multiplier=1.2):
+    """Initializes a function that computes the triplet correlation function
+    (TCF) for a single state.
+
+    This function assumes that the neighbor list curoff matches the tcf_cutoff.
+
+    Args:
+        displacement_fn: Displacement function
+        tcf_params: TCFParams defining the hyperparameters of the TCF
+        nbrs_init: Initial neighborlist to estimate maximum number of triplets
+        max_weight_multiplier: Multiplier for estimate of number of triplets
+        batch_size: Batch size for more efficient binning of triplets
+        reference_box: Simulation box. Can be provided here for constant boxes
+                       or on-the-fly as kwarg 'box', e.g. for NPT ensemble
+
+    Returns:
+        A function that takes a simulation state with neighborlist and returns
+        the instantaneous tcf.
+    """
+    (_, sigma, volume, x_bin_centers, y_bin_centers,
+     z_bin_centers) = dataclasses.astuple(tcf_params)
+    nbins = x_bin_centers.shape[1]
+
+    # we use initial configuration to estimate the maximum number of non-zero
+    # weights for speedup and reduced memory cost
+    if nbrs_init is None:
+        raise NotImplementedError('nbrs_init currently needs to be provided.')
+    mask = _angle_neighbor_mask(nbrs_init)
+
+    max_triplets = int(jnp.count_nonzero(mask > 1.e-6) * max_weight_multiplier)
+
+    # ensure triplets can be batched
+    rem = jnp.remainder(max_triplets, batch_size)
+    max_triplets = max_triplets + (batch_size - rem)
+
+    def gaussian_3d_bins(exp, inputs):
+        triplet_distances, triplet_mask = inputs
+        batch_exp = jnp.exp(util.f32(-0.5) * (
+                (triplet_distances[:, 0, jnp.newaxis, jnp.newaxis, jnp.newaxis]
+                 - x_bin_centers)**2 / sigma**2
+                + (triplet_distances[:, 1, jnp.newaxis, jnp.newaxis,
+                   jnp.newaxis] - y_bin_centers)**2 / sigma**2
+                + (triplet_distances[:, 2, jnp.newaxis, jnp.newaxis,
+                   jnp.newaxis] - z_bin_centers)**2 / sigma**2
+        ))
+        batch_exp *= triplet_mask[:, jnp.newaxis, jnp.newaxis, jnp.newaxis]
+        batch_exp = jnp.sum(batch_exp, axis=0)
+        exp += batch_exp
+        return exp, 0
+
+    def triplet_corr_fun(r_kj, r_ij, r_ki, triplet_mask):
+        """Returns instantaneous triplet correlation function while ensuring
+        each particle pair contributes exactly 1.
+        """
+        dist_kj = space.distance(r_kj)
+        dist_ij = space.distance(r_ij)
+        dist_ki = space.distance(r_ki)
+
+        histogram = jnp.zeros((nbins, nbins, nbins))
+        distances = jnp.stack((dist_kj, dist_ij, dist_ki), axis=1)
+        distances = jnp.reshape(distances, (-1, batch_size, 3))
+        triplet_mask = jnp.reshape(triplet_mask, (-1, batch_size))
+
+        # scan over per-batch computations for computational efficiency
+        histogram = lax.scan(gaussian_3d_bins, histogram,
+                             (distances, triplet_mask))[0]
+        return histogram / volume / jnp.sqrt((2 * jnp.pi)**3)
+
+    def tcf_fn(state, neighbor, **kwargs):
+        """Returns TCF for a single snapshot. Allows changing the box
+        on-the-fly via the 'box' kwarg.
+        """
+        dyn_displacement = partial(displacement_fn, **kwargs)  # box kwarg
+        triplet_mask = _angle_neighbor_mask(neighbor)
+
+        r_kj, r_ij = _triplet_pairwise_displacements(
+            state.position, neighbor, dyn_displacement)
+
+        box, _ = _dyn_box(reference_box, **kwargs)
+        n_particles, spatial_dim = state.position.shape
+        total_vol = quantity.volume(spatial_dim, box)
+        particle_density = n_particles / total_vol
+
+        # cap at max weights
+        non_zero_weights = triplet_mask > 1.e-6
+        _, sorting_idxs = lax.top_k(non_zero_weights[:, 0], max_triplets)
+        triplet_mask = triplet_mask[sorting_idxs]
+        r_ij = r_ij[sorting_idxs]
+        r_kj = r_kj[sorting_idxs]
+        num_non_zero = jnp.sum(non_zero_weights)
+        del num_non_zero
+
+        r_ki = r_kj - r_ij
+        tcf = triplet_corr_fun(r_kj, r_ij, r_ki, triplet_mask)
+        return tcf / n_particles / particle_density**2
+    return tcf_fn
 
 
 def _nearest_tetrahedral_nbrs(displacement_fn, position, nbrs):
@@ -493,6 +669,95 @@ def init_bond_length(displacement_fn, bonds, average=False):
         else:
             return distances
     return bond_length
+
+
+def _bond_length(bonds, positions, displacement_fn):
+    """Computes bond lengths for given atom position vector and bonds."""
+
+    def pairwise_bond_length(bond, pos):
+        bond_displacement = displacement_fn(pos[bond[0]], pos[bond[1]])
+        bond_distance = space.distance(bond_displacement)
+        return bond_distance
+
+    batched_pair_boond_length = vmap(pairwise_bond_length, (0, None))
+
+    if positions.ndim == 3:
+        distances = vmap(batched_pair_boond_length, (None, 0))(bonds, positions)
+        return distances
+    elif positions.ndim == 2:
+        distances = vmap(pairwise_bond_length, (0, None))(bonds, positions)
+        return distances
+    else:
+        raise ValueError('Positions must be either of shape Ntimestep x Natoms'
+                         ' x spatial_dim or N_atoms x spatial_dim')
+
+
+def estimate_bond_constants(positions, bonds, displacement_fn):
+    """Calculates the equlibrium harmonic bond constants from given positions.
+
+    Can be used to estimate the bond constants from an atomistic
+    simulation to be used as a coarse-grained prior.
+
+    Args:
+        positions: Position vector of size [Ntimestep x Natoms x spatial_dim]
+                   or [N_atoms x spatial_dim]
+        bonds: (n_bonds, 2) array defining IDs of bonded particles
+        displacement_fn: Displacement function
+
+    Returns:
+        Tuple (eq_distances, eq_variances) of harmonic bond coefficients.
+    """
+    distances = _bond_length(bonds, positions, displacement_fn)
+    eq_distances = jnp.mean(distances, axis=0)
+    eq_variances = jnp.var(distances, axis=0)
+    return eq_distances, eq_variances
+
+
+def dihedral_displacement(positions, displacement_fn, dihedral_idxs,
+                          degrees=True):
+    """Computes the dihedral angle for all quadruple of atoms given in idxs.
+
+    Args:
+        positions: Positions of atoms in box
+        displacement_fn: Displacement function
+        dihedral_idxs: (n, 4) array defining IDs of quadruple particles
+        degrees: If False, returns angles in rads.
+                 If True, returns angles in degrees.
+
+    Returns:
+        An array (n,) of the dihedral angles.
+    """
+    p0 = positions[dihedral_idxs[:, 0]]
+    p1 = positions[dihedral_idxs[:, 1]]
+    p2 = positions[dihedral_idxs[:, 2]]
+    p3 = positions[dihedral_idxs[:, 3]]
+
+    b0 = -1. * vmap(displacement_fn)(p1, p0)
+    b1 = vmap(displacement_fn)(p2, p1)
+    b2 = vmap(displacement_fn)(p3, p2)
+
+    # normalize b1 so that it does not influence magnitude of vector
+    # rejections that come next
+    b1 /= jnp.linalg.norm(b1, axis=1)[:, None]
+
+    # vector rejections
+    # v = projection of b0 onto plane perpendicular to b1
+    #   = b0 minus component that aligns with b1
+    # w = projection of b2 onto plane perpendicular to b1
+    #   = b2 minus component that aligns with b1
+    v = b0 - jnp.sum(b0 * b1, axis=1)[:, None] * b1
+    w = b2 - jnp.sum(b2 * b1, axis=1)[:, None] * b1
+
+    # angle between v and w in a plane is the torsion angle
+    # v and w may not be normalized but that's fine since tan is y/x
+    x = jnp.sum(v * w, axis=1)
+    cross = vmap(jnp.cross)(b1, v)
+    y = jnp.sum(cross * w, axis=1)
+
+    if degrees:
+        return jnp.degrees(jnp.arctan2(y, x))
+    else:
+        return jnp.arctan2(y, x)
 
 
 def kinetic_energy_tensor(state):

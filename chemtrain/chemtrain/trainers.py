@@ -200,7 +200,8 @@ class Difftre(reweighting.PropagationBase):
     def add_statepoint(self, energy_fn_template, simulator_template,
                        neighbor_fn, timings, kbt, quantities,
                        reference_state, targets=None, ref_press=None,
-                       loss_fn=None, initialize_traj=True):
+                       loss_fn=None, vmap_batch=10, initialize_traj=True,
+                       set_key=None):
         """
         Adds a state point to the pool of simulations with respective targets.
 
@@ -232,14 +233,14 @@ class Difftre(reweighting.PropagationBase):
 
         Args:
             energy_fn_template: Function that takes energy parameters and
-                                initializes an new energy function.
+                                initializes a new energy function.
             simulator_template: Function that takes an energy function and
                                 returns a simulator function.
             neighbor_fn: Neighbor function
             timings: Instance of TimingClass containing information
                      about the trajectory length and which states to retain
             kbt: Temperature in kbT
-            quantities: Dict containing for each observables specified by the
+            quantities: Dict containing for each observable specified by the
                         key a corresponding function to compute it for each
                         snapshot using traj_util.quantity_traj.
             reference_state: Tuple of initial simulation state and neighbor list
@@ -252,9 +253,16 @@ class Difftre(reweighting.PropagationBase):
                      Default None initializes an independent MSE loss, which
                      computes reweighting averages from snapshot-based
                      observables.
+            vmap_batch: Batch size of vmapping of per-snapshot energy for weight
+                        computation.
             initialize_traj: True, if an initial trajectory should be generated.
                              Should only be set to False if a checkpoint is
                              loaded before starting any training.
+            set_key: Specify a key in order to restart from same statepoint.
+                     By default, uses the index of the sequance statepoints are
+                     added, i.e. self.trajectory_states[0] for the first added
+                     statepoint. Can be used for changing the timings of the
+                     simulation during training.
         """
 
         # init simulation, reweighting functions and initial trajectory
@@ -264,8 +272,10 @@ class Difftre(reweighting.PropagationBase):
                                                            neighbor_fn,
                                                            timings,
                                                            kbt,
-                                                           ref_press,
-                                                           initialize_traj)
+                                                           set_key,
+                                                           vmap_batch,
+                                                           initialize_traj,
+                                                           ref_press)
 
         # build loss function for current state point
         if loss_fn is None:
@@ -484,22 +494,25 @@ class RelativeEntropy(reweighting.PropagationBase):
         """Set dataset and loader corresponding to current state point."""
         reference_loader = numpy_loader.NumpyDataLoader(R=reference_data,
                                                         copy=False)
-        init_reference_batch, get_reference_batch = data.random_reference_data(
+        init_reference_batch, get_ref_batch, _ = data.random_reference_data(
             reference_loader, batch_cache, reference_batch_size)
         init_reference_batch_state = init_reference_batch(shuffle=True)
         self.data_states[key] = init_reference_batch_state
-        return get_reference_batch
+        return get_ref_batch
 
     def add_statepoint(self, reference_data, energy_fn_template,
                        simulator_template, neighbor_fn, timings, kbt,
                        reference_state, reference_batch_size=None,
-                       batch_cache=1, initialize_traj=True):
+                       batch_cache=1, initialize_traj=True, set_key=None,
+                       vmap_batch=10):
         """
         Adds a state point to the pool of simulations.
 
         As each reference dataset / trajectory corresponds to a single
         state point, we initialize the dataloader together with the
         simulation.
+
+        Currently only supports NVT simulations.
 
         Args:
             reference_data: De-correlated reference trajectory
@@ -521,11 +534,23 @@ class RelativeEntropy(reweighting.PropagationBase):
             initialize_traj: True, if an initial trajectory should be generated.
                              Should only be set to False if a checkpoint is
                              loaded before starting any training.
+            set_key: Specify a key in order to restart from same statepoint.
+                     By default, uses the index of the sequance statepoints are
+                     added, i.e. self.trajectory_states[0] for the first added
+                     statepoint. Can be used for changing the timings of the
+                     simulation during training.
+            vmap_batch: Batch size of vmapping of per-snapshot energy and
+                        gradient calculation.
         """
-
         if reference_batch_size is None:
-            # use same amount of snapshots as generated in trajectory by default
-            reference_batch_size = jnp.size(timings.t_production_start)
+            print('No reference batch size provided. Using number of generated'
+                  ' CG snapshots by default.')
+            states_per_traj = jnp.size(timings.t_production_start)
+            if reference_state[0].position.ndim > 2:
+                n_trajctories = reference_state[0].position.shape[0]
+                reference_batch_size = n_trajctories * states_per_traj
+            else:
+                reference_batch_size = states_per_traj
 
         key, weights_fn, propagate = self._init_statepoint(reference_state,
                                                            energy_fn_template,
@@ -533,6 +558,8 @@ class RelativeEntropy(reweighting.PropagationBase):
                                                            neighbor_fn,
                                                            timings,
                                                            kbt,
+                                                           set_key,
+                                                           vmap_batch,
                                                            initialize_traj)
 
         reference_dataloader = self._set_dataset(key,
@@ -541,7 +568,7 @@ class RelativeEntropy(reweighting.PropagationBase):
                                                  batch_cache)
 
         grad_fn = reweighting.init_rel_entropy_gradient(
-            energy_fn_template, weights_fn, kbt)
+            energy_fn_template, weights_fn, kbt, vmap_batch)
 
         def propagation_and_grad(params, traj_state, batch_state):
             """Propagates the trajectory, if necessary, and computes the

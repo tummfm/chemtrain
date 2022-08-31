@@ -162,10 +162,17 @@ def _canonicalize_dynamic_state_kwargs(state_kwargs, t_snapshots, *keys):
     return state_kwargs, tuple(state_point_vals)
 
 
+def _traj_replicate_if_not_none(thermostat_values, n_traj):
+    """Replicates thermostat targets to multiple trajectories, if not None."""
+    if thermostat_values is not None:
+        thermostat_values = jnp.tile(thermostat_values, n_traj)
+    return thermostat_values
+
+
 def trajectory_generator_init(simulator_template, energy_fn_template,
-                              ref_timings=None, quantities=None):
+                              ref_timings=None, quantities=None, vmap_batch=10):
     """Initializes a trajectory_generator function that computes a new
-    trajectory stating at the last state.
+    trajectory stating at the last traj_state.
 
     Args:
         simulator_template: Function returning new simulator given
@@ -176,14 +183,18 @@ def trajectory_generator_init(simulator_template, energy_fn_template,
         quantities: Quantities dict to compute and store auxilary quantities
                     alongside trajectory. This is particularly helpful for
                     storing energy and pressure in a reweighting context.
+        vmap_batch: Batch size for computation of auxillary quantities.
 
     Returns:
-        A function taking energy params and the current state (including
+        A function taking energy params and the current traj_state (including
         neighbor list) that runs the simulation forward generating the
         next TrajectoryState.
     """
     if quantities is None:
         quantities = {}
+
+    # temperature is inexpensive and generally useful: compute it by default
+    quantities['kbT'] = custom_quantity.temperature
 
     def generate_reference_trajectory(params, sim_state, **kwargs):
         """
@@ -191,7 +202,8 @@ def trajectory_generator_init(simulator_template, energy_fn_template,
 
         Args:
             params: Energy function parameters
-            sim_state: Initial simulation state (state)
+            sim_state: Initial simulation state(s). Mulriple states can be
+                       provided to run multiple trajectories in parallel.
             **kwargs: Kwargs to supply 'kT' and/or 'pressure' to change these
                       thermostat/barostat values on the fly. Can be constant
                       or function of t.
@@ -210,29 +222,51 @@ def trajectory_generator_init(simulator_template, energy_fn_template,
         _, apply_fn = simulator_template(energy_fn)
         run_to_printout = _run_to_next_printout_neighbors(apply_fn, timings,
                                                           **kwargs)
-        # TODO possibly need to skip if t_equilib is 0
-        sim_state, _ = lax.scan(run_to_printout,  # equilibrate
-                                sim_state,
-                                xs=timings.t_equilib_start)
-        new_sim_state, traj = lax.scan(run_to_printout,  # production
-                                       sim_state,
-                                       xs=timings.t_production_start)
 
-        state = TrajectoryState(sim_state=new_sim_state,
-                                trajectory=traj,
-                                overflow=new_sim_state[1].did_buffer_overflow,
-                                thermostat_kbt=kbt,
-                                barostat_press=barostat_press)
+        if sim_state[0].position.ndim > 2:
+            def run_trajectory(state, starting_time):
+                state, trajectory = lax.scan(
+                    run_to_printout, state, xs=starting_time)
+                return state, trajectory
 
-        # temperature is inexpensive and generally useful: compute it by default
-        quantities['kbT'] = custom_quantity.temperature
-        aux_trajectory = quantity_traj(state, quantities, params)
-        return state.replace(aux=aux_trajectory)
+            if timings.t_equilib_start.size > 0:
+                sim_state, _ = vmap(run_trajectory, (0, None))(  # equilibration
+                    sim_state, timings.t_equilib_start)
+
+            new_sim_state, traj = vmap(run_trajectory, (0, None))(  # production
+                sim_state, timings.t_production_start)
+
+            # combine parallel trajectories to single large one for streamlined
+            # postprocessing via traj_quantity, DiffTRe, relative entropy, etc.
+            traj = util.tree_combine(traj)
+            overflow = jnp.any(new_sim_state[1].did_buffer_overflow)
+            n_traj = sim_state[0].position.shape[0]
+            kbt = _traj_replicate_if_not_none(kbt, n_traj)
+            barostat_press = _traj_replicate_if_not_none(barostat_press, n_traj)
+
+        else:
+            if timings.t_equilib_start.size > 0:
+                sim_state, _ = lax.scan(  # equilibration
+                    run_to_printout, sim_state, xs=timings.t_equilib_start)
+
+            new_sim_state, traj = lax.scan(  # production
+                run_to_printout, sim_state, xs=timings.t_production_start)
+            overflow = new_sim_state[1].did_buffer_overflow
+
+        traj_state = TrajectoryState(sim_state=new_sim_state,
+                                     trajectory=traj,
+                                     overflow=overflow,
+                                     thermostat_kbt=kbt,
+                                     barostat_press=barostat_press)
+
+        aux_trajectory = quantity_traj(traj_state, quantities, params,
+                                       vmap_batch)
+        return traj_state.replace(aux=aux_trajectory)
 
     return generate_reference_trajectory
 
 
-def quantity_traj(traj_state, quantities, energy_params=None):
+def quantity_traj(traj_state, quantities, energy_params=None, batch_size=1):
     """Computes quantities of interest for all states in a trajectory.
 
     Arbitrary quantity functions can be provided via the quantities dict.
@@ -247,17 +281,21 @@ def quantity_traj(traj_state, quantities, energy_params=None):
                     the snapshot compute function
         energy_params: Energy params for energy_fn_template to initialize
                        the current energy_fn
+        batch_size: Number of batches for vmap
 
     Returns:
         A dict of quantity trajectories saved under the same key as the
         input quantity function.
     """
-
-    last_state, fixed_reference_nbrs = traj_state.sim_state
+    if traj_state.sim_state[0].position.ndim > 2:
+        last_state, fixed_reference_nbrs = util.tree_get_single(
+            traj_state.sim_state)
+    else:
+        last_state, fixed_reference_nbrs = traj_state.sim_state
     npt_ensemble = util.is_npt_ensemble(last_state)
 
     @jit
-    def single_state_quantities(_, single_snapshot):
+    def single_state_quantities(single_snapshot):
         state, kbt = single_snapshot
         nbrs = util.neighbor_update(fixed_reference_nbrs, state)
         kwargs = {'neighbor': nbrs, 'energy_params': energy_params, 'kT': kbt}
@@ -269,15 +307,18 @@ def quantity_traj(traj_state, quantities, energy_params=None):
             quantity_fn_key: quantities[quantity_fn_key](state, **kwargs)
             for quantity_fn_key in quantities
         }
-        return _, computed_quantities
+        return computed_quantities
 
-    # TODO vectorization of might provide some computational gains at the
-    #  expense of providing an additional parameter for batch-size, which
-    #  can lead to OOM errors if not chosen properly.
-    _, quantity_trajs = lax.scan(
-        single_state_quantities, 0., (traj_state.trajectory,
-                                      traj_state.thermostat_kbt)
+    batched_traj = util.tree_vmap_split(traj_state.trajectory, batch_size)
+    if traj_state.thermostat_kbt is not None:
+        thermo_kbt = traj_state.thermostat_kbt.reshape((-1, batch_size))
+    else:
+        thermo_kbt = traj_state.thermostat_kbt
+
+    bachted_quantity_trajs = lax.map(
+        vmap(single_state_quantities), (batched_traj, thermo_kbt)
     )
+    quantity_trajs = util.tree_combine(bachted_quantity_trajs)
     return quantity_trajs
 
 

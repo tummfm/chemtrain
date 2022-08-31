@@ -1,7 +1,7 @@
 """Implementation of Iterative Boltzmann Inversion (IBI) update step and
 estimate of potential of mean force (PMF).
 """
-from jax import numpy as np
+from jax import numpy as jnp
 import numpy as onp
 
 
@@ -32,7 +32,7 @@ def update_potential(cur_rdf, target_rdf, u_vals, kbt):
     Zeros are handles by casting them to a small number, avioding inf/nan.
     """
     epsilon = 1.e-7
-    target_safe = np.where(target_rdf < epsilon, epsilon, target_rdf)
-    cur_safe = np.where(cur_rdf < epsilon, epsilon, cur_rdf)
-    delta_u = kbt * np.log(cur_safe / target_safe)
+    target_safe = jnp.where(target_rdf < epsilon, epsilon, target_rdf)
+    cur_safe = jnp.where(cur_rdf < epsilon, epsilon, cur_rdf)
+    delta_u = kbt * jnp.log(cur_safe / target_safe)
     return u_vals + delta_u

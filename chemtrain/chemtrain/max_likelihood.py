@@ -56,7 +56,7 @@ def pmap_update_fn(batched_model, loss_fn, optimizer):
 
     @jit
     def batch_update(params, opt_state, batch):
-        batch = util.tree_split(batch, device_count())
+        batch = util.tree_pmap_split(batch, device_count())
         new_params, opt_state, loss, grad = pmap_batch_update(params, opt_state,
                                                               batch)
         return new_params, opt_state, loss[0], util.tree_get_single(grad)
@@ -93,7 +93,7 @@ def init_val_predictions(batched_model, val_loader, batch_size=1,
     pmap_model = pmap(batched_model)
 
     def single_batch(params, batch, unused_state):
-        batch = util.tree_split(batch, device_count())
+        batch = util.tree_pmap_split(batch, device_count())
         batch_prediction = pmap_model(params, batch)
         predictions = util.tree_concat(batch_prediction)
         return predictions, unused_state

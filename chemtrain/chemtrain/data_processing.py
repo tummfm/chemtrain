@@ -14,7 +14,7 @@ def get_dataset(data_location_str, retain=None, subsampling=1):
 
     Args:
         data_location_str: String of .npy data location
-        retain: Number of samples to keep in the dataset
+        retain: Number of samples to keep in the dataset. All by default.
         subsampling: Only keep every subsampled sample of the data, e.g. 2.
 
     Returns:

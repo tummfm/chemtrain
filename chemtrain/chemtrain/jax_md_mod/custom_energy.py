@@ -1,12 +1,13 @@
+"""Custom definition of some potential energy functions."""
 from functools import partial
-from typing import Callable, Tuple, Any
+from typing import Callable, Any
 
 from jax import vmap
 import jax.numpy as jnp
 from jax_md import space, partition, util, energy, smap
-from jax_md.energy import multiplicative_isotropic_cutoff, _sw_radial_interaction, _sw_angle_interaction
 
-from chemtrain.jax_md_mod import custom_interpolate
+from chemtrain.jax_md_mod import custom_interpolate, custom_quantity
+from chemtrain import sparse_graph
 
 # Types
 f32 = util.f32
@@ -23,10 +24,10 @@ NeighborList = partition.NeighborList
 
 
 def stillinger_weber_energy(dr,
-                            dR,
+                            d_vect,
                             mask=None,
-                            A=7.049556277,
-                            B=0.6022245584,
+                            a=7.049556277,
+                            b=0.6022245584,
                             p=4,
                             lam=21.0,
                             epsilon=2.16826,
@@ -56,9 +57,9 @@ def stillinger_weber_energy(dr,
 
     Args:
         dr: A ndarray of pairwise distances between particles
-        dR: An ndarray of pairwise displacements between particles
-        A: A scalar that determines the scale of two-body term
-        B: Factor for radial power term
+        d_vect: An ndarray of pairwise displacements between particles
+        a: A scalar that determines the scale of two-body term
+        b: Factor for radial power term
         p: Power in radial interaction
         lam: A scalar that determines the scale of the three-body term
         epsilon: A scalar that sets the energy scale
@@ -67,36 +68,40 @@ def stillinger_weber_energy(dr,
         cutoff: Cut-off value defined as sigma * a
         three_body_strength: A scalar that determines the relative strength
                              of the angular interaction
-        mask: ndarray of size dr masking non-existing neighbors in neighborlist (if applicable)
+        mask: ndarray of size dr masking non-existing neighbors in neighborlist
+              (if applicable)
     Returns:
         The Stilinger-Weber energy for a snapshot.
     """
 
     # initialize
     if mask is None:
-        N = dr.shape[0]
-        mask = jnp.ones([N, N])
-        angle_mask = jnp.ones([N, N, N])
+        n_particels = dr.shape[0]
+        mask = jnp.ones([n_particels, n_particels])
+        angle_mask = jnp.ones([n_particels, n_particels, n_particels])
     else:  # for neighborlist input
         max_neighbors = mask.shape[-1]
-        angle_mask1 = jnp.tile(jnp.expand_dims(mask, 1), [1, max_neighbors, 1])  # first pair
-        angle_mask2 = jnp.tile(jnp.expand_dims(mask, -1), [1, 1, max_neighbors])  # second pair
+        angle_mask1 = jnp.tile(jnp.expand_dims(mask, 1), [1, max_neighbors, 1])
+        angle_mask2 = jnp.tile(jnp.expand_dims(mask, -1), [1, 1, max_neighbors])
         angle_mask = angle_mask1 * angle_mask2
-    sw_radial_interaction = partial(_sw_radial_interaction, sigma=sigma, p=p, B=B, cutoff=cutoff)
-    sw_angle_interaction = partial(_sw_angle_interaction, gamma=gamma, sigma=sigma, cutoff=cutoff)
-    sw_three_body_term = vmap(vmap(vmap(sw_angle_interaction, (0, None)), (None, 0)), 0)
+    sw_radial_interaction = partial(energy._sw_radial_interaction, sigma=sigma,
+                                    p=p, b=b, cutoff=cutoff)
+    sw_angle_interaction = partial(energy._sw_angle_interaction, gamma=gamma,
+                                   sigma=sigma, cutoff=cutoff)
+    sw_three_body_term = vmap(vmap(vmap(sw_angle_interaction, (0, None)),
+                                   (None, 0)), 0)
 
     # compute SW energy
     radial_interactions = sw_radial_interaction(dr) * mask
-    angular_interactions = sw_three_body_term(dR, dR) * angle_mask
-    first_term = A * jnp.sum(radial_interactions) / 2.0
+    angular_interactions = sw_three_body_term(d_vect, d_vect) * angle_mask
+    first_term = a * jnp.sum(radial_interactions) / 2.0
     second_term = lam * jnp.sum(angular_interactions) / 2.0
     return epsilon * (first_term + three_body_strength * second_term)
 
 
 def stillinger_weber_pair(displacement,
-                          A=7.049556277,
-                          B=0.6022245584,
+                          a=7.049556277,
+                          b=0.6022245584,
                           p=4,
                           lam=21.0,
                           epsilon=2.16826,
@@ -104,21 +109,24 @@ def stillinger_weber_pair(displacement,
                           sigma=2.0951,
                           cutoff=1.8*2.0951,
                           three_body_strength=1.0):
-    """Convenience wrapper to compute stilinger-weber energy over a system with variable parameters."""
+    """Convenience wrapper to compute stilinger-weber energy over a system with
+    variable parameters.
+    """
 
-    def compute_fn(R, **dynamic_kwargs):
+    def compute_fn(pos, **dynamic_kwargs):
         d = partial(displacement, **dynamic_kwargs)
-        dR = space.map_product(d)(R, R)  # N x N x3 displacement matrix
-        dr = space.distance(dR)  # N x N distances
-        return stillinger_weber_energy(dr, dR, None, A, B, p, lam, epsilon, gamma, sigma, cutoff, three_body_strength)
-
+        dvect = space.map_product(d)(pos, pos)  # N x N x3 displacement matrix
+        dr = space.distance(dvect)  # N x N distances
+        return stillinger_weber_energy(dr, dvect, None, a, b, p, lam, epsilon,
+                                       gamma, sigma, cutoff,
+                                       three_body_strength)
     return compute_fn
 
 
 def stillinger_weber_neighborlist(displacement,
                                   box_size=None,
-                                  A=7.049556277,
-                                  B=0.6022245584,
+                                  a=7.049556277,
+                                  b=0.6022245584,
                                   p=4,
                                   lam=21.0,
                                   epsilon=2.16826,
@@ -129,33 +137,119 @@ def stillinger_weber_neighborlist(displacement,
                                   dr_threshold=0.1,
                                   capacity_multiplier=1.25,
                                   initialize_neighbor_list=True):
-    """Convenience wrapper to compute stilinger-weber energy using a neighbor list."""
+    """Convenience wrapper to compute stilinger-weber energy using a neighbor
+    list.
+    """
 
-    def energy_fn(R, neighbor, **dynamic_kwargs):
+    def energy_fn(pos, neighbor, **dynamic_kwargs):
         d = partial(displacement, **dynamic_kwargs)
-        N = R.shape[0]
-        mask = neighbor.idx != N
-        R_neigh = R[neighbor.idx]
-        dR = space.map_neighbor(d)(R, R_neigh)
-        dr = space.distance(dR)
-        return stillinger_weber_energy(dr, dR, mask, A, B, p, lam, epsilon, gamma, sigma, cutoff, three_body_strength)
+        n_particles = pos.shape[0]
+        mask = neighbor.idx != n_particles
+        r_neigh = pos[neighbor.idx]
+        dvect = space.map_neighbor(d)(pos, r_neigh)
+        dr = space.distance(dvect)
+        return stillinger_weber_energy(dr, dvect, mask, a, b, p, lam, epsilon,
+                                       gamma, sigma, cutoff,
+                                       three_body_strength)
 
     if initialize_neighbor_list:
         assert box_size is not None
-        neighbor_fn = partition.neighbor_list(displacement, box_size, cutoff, dr_threshold,
-                                              capacity_multiplier=capacity_multiplier)
+        neighbor_fn = partition.neighbor_list(
+            displacement, box_size, cutoff, dr_threshold,
+            capacity_multiplier=capacity_multiplier)
         return neighbor_fn, energy_fn
 
     return energy_fn
 
 
-def generic_repulsion(dr: Array,
-                      sigma: Array=1.,
-                      epsilon: Array=1.,
-                      exp: Array=12.,
-                      **dynamic_kwargs) -> Array:
+def harmonic_angle(displacement_or_metric: DisplacementOrMetricFn,
+                   angle_idxs: Array,
+                   eq_mean: Array,
+                   eq_variance: Array,
+                   kbt: [float, Array]):
+    """Harmonic Angle interaction.
+
+    The variance of the angle is used to determine the force constant.
+    https://manual.gromacs.org/documentation/2019/reference-manual/functions/bonded-interactions.html
+
+    Args:
+        displacement_or_metric: Displacement function
+        angle_idxs: Indices of particles (i, j, k)
+        eq_mean: Equilibrium angle in degrees
+        eq_variance: Angle Variance
+        kbt: kbT
+
+    Returns:
+        Harmonic angle potential energy function.
     """
-    Repulsive interaction between soft sphere particles: U = epsilon * (sigma / r)**exp.
+
+    kbt = jnp.array(kbt, dtype=f32)
+    angle_mask = jnp.ones([angle_idxs.shape[0], 1])
+    harmonic_fn = partial(energy.simple_spring, length=eq_mean,
+                          epsilon=kbt / eq_variance)
+
+    def energy_fn(pos, **unused_kwargs):
+        angles = sparse_graph.angle_triplets(pos, displacement_or_metric,
+                                             angle_idxs, angle_mask)
+        return jnp.sum(harmonic_fn(jnp.rad2deg(angles)))
+
+    return energy_fn
+
+
+def dihedral_energy(angle,
+                    phase_angle: Array,
+                    force_constant: Array,
+                    n: [int, Array]):
+    """Energy of dihedral angles.
+
+    https://manual.gromacs.org/documentation/2019/reference-manual/functions/bonded-interactions.html
+    """
+    cos_angle = jnp.cos(n * angle - phase_angle)
+    energies = force_constant * (1 + cos_angle)
+    return jnp.sum(energies)
+
+
+def periodic_dihedral(displacement_or_metric: DisplacementOrMetricFn,
+                      dihedral_idxs: Array,
+                      phase_angle: Array,
+                      force_constant: Array,
+                      multiplicity: [float, Array]):
+    """Peridoc dihedral angle interaction.
+
+    https://manual.gromacs.org/documentation/2019/reference-manual/functions/bonded-interactions.html
+
+    Args:
+        displacement_or_metric: Displacement function
+        dihedral_idxs: Indices of particles (i, j, k, l) building the dihedrals
+        phase_angle: Dihedral phase angle in degrees.
+        force_constant: Force constant
+        multiplicity: Dihedral multiplicity
+
+    Returns:
+        Peridoc dihedral potential energy function.
+    """
+
+    multiplicity = jnp.array(multiplicity, dtype=f32)
+    phase_angle = jnp.deg2rad(phase_angle)
+
+    def energy_fn(pos, **unused_kwargs):
+        dihedral_angles = custom_quantity.dihedral_displacement(
+            pos, displacement_or_metric, dihedral_idxs, degrees=False)
+        per_angle_u = vmap(dihedral_energy)(dihedral_angles, phase_angle,
+                                            force_constant, multiplicity)
+        return jnp.sum(per_angle_u)
+
+    return energy_fn
+
+
+def generic_repulsion(dr: Array,
+                      sigma: Array = 1.,
+                      epsilon: Array = 1.,
+                      exp: Array = 12.,
+                      **unused_dynamic_kwargs) -> Array:
+    """
+    Repulsive interaction between soft sphere particles:
+    U = epsilon * (sigma / r)**exp.
 
     Args:
       dr: An ndarray of pairwise distances between particles.
@@ -166,21 +260,22 @@ def generic_repulsion(dr: Array,
     Returns:
       Array of energies
     """
-
+    del unused_dynamic_kwargs
     dr = jnp.where(dr > 1.e-7, dr, 1.e7)  # save masks dividing by 0
     idr = (sigma / dr)
-    U = epsilon * idr ** exp
-    return U
+    pot_energy = epsilon * idr ** exp
+    return pot_energy
 
 
-def generic_repulsion_pair(displacement_or_metric: DisplacementOrMetricFn,
-                     species: Array=None,
-                     sigma: Array=1.0,
-                     epsilon: Array=1.0,
-                     exp: Array=12.,
-                     r_onset: Array = 2.0,
-                     r_cutoff: Array = 2.5,
-                     per_particle: bool=False):
+def generic_repulsion_pair(
+        displacement_or_metric: DisplacementOrMetricFn,
+        species: Array = None,
+        sigma: Array = 1.0,
+        epsilon: Array = 1.0,
+        exp: Array = 12.,
+        r_onset: Array = 2.0,
+        r_cutoff: Array = 2.5,
+        per_particle: bool = False):
     """Convenience wrapper to compute generic repulsion energy over a system."""
     sigma = jnp.array(sigma, dtype=f32)
     epsilon = jnp.array(epsilon, dtype=f32)
@@ -189,7 +284,8 @@ def generic_repulsion_pair(displacement_or_metric: DisplacementOrMetricFn,
     r_cutoff = jnp.array(r_cutoff, dtype=f32)
 
     return smap.pair(
-        multiplicative_isotropic_cutoff(generic_repulsion, r_onset, r_cutoff),
+        energy.multiplicative_isotropic_cutoff(generic_repulsion, r_onset,
+                                               r_cutoff),
         space.canonicalize_displacement_or_metric(displacement_or_metric),
         species=species,
         sigma=sigma,
@@ -198,25 +294,25 @@ def generic_repulsion_pair(displacement_or_metric: DisplacementOrMetricFn,
         reduce_axis=(1,) if per_particle else None)
 
 
-def generic_repulsion_neighborlist(displacement_or_metric: DisplacementOrMetricFn,
-                     box_size: Box=None,
-                     species: Array=None,
-                     sigma: Array=1.0,
-                     epsilon: Array=1.0,
-                     exp: Array=12.,
-                     r_onset: Array = 0.9,
-                     r_cutoff: Array = 1.,
-                     dr_threshold: float=0.2,
-                     per_particle: bool=False,
-                     capacity_multiplier: float=1.25,
-                     initialize_neighbor_list: bool=True):
-    """
-    Convenience wrapper to compute generic repulsion energy over a system with neighborlist.
+def generic_repulsion_neighborlist(
+        displacement_or_metric: DisplacementOrMetricFn,
+        box_size: Box = None,
+        species: Array = None,
+        sigma: Array = 1.0,
+        epsilon: Array = 1.0,
+        exp: [int, Array] = 12.,
+        r_onset: Array = 0.9,
+        r_cutoff: Array = 1.,
+        dr_threshold: float = 0.2,
+        per_particle: bool = False,
+        capacity_multiplier: float = 1.25,
+        initialize_neighbor_list: bool = True):
+    """Convenience wrapper to compute generic repulsion energy over a system
+    with neighborlist.
 
-    Provides option not to initialize neighborlist. This is useful if energy function needs
-    to be initialized within a jitted function.
+    Provides option not to initialize neighborlist. This is useful if energy
+    function needs to be initialized within a jitted function.
     """
-
     sigma = jnp.array(sigma, dtype=f32)
     epsilon = jnp.array(epsilon, dtype=f32)
     exp = jnp.array(exp, dtype=f32)
@@ -224,7 +320,8 @@ def generic_repulsion_neighborlist(displacement_or_metric: DisplacementOrMetricF
     r_cutoff = jnp.array(r_cutoff, dtype=f32)
 
     energy_fn = smap.pair_neighbor_list(
-      multiplicative_isotropic_cutoff(generic_repulsion, r_onset, r_cutoff),
+      energy.multiplicative_isotropic_cutoff(generic_repulsion, r_onset,
+                                             r_cutoff),
       space.canonicalize_displacement_or_metric(displacement_or_metric),
       species=species,
       sigma=sigma,
@@ -234,61 +331,144 @@ def generic_repulsion_neighborlist(displacement_or_metric: DisplacementOrMetricF
 
     if initialize_neighbor_list:
         assert box_size is not None
-        neighbor_fn = partition.neighbor_list(displacement_or_metric, box_size, r_cutoff, dr_threshold,
-                                              capacity_multiplier=capacity_multiplier)
+        neighbor_fn = partition.neighbor_list(
+            displacement_or_metric, box_size, r_cutoff, dr_threshold,
+            capacity_multiplier=capacity_multiplier
+        )
         return neighbor_fn, energy_fn
 
     return energy_fn
 
 
-def customn_lennard_jones_neighbor_list(displacement_or_metric: DisplacementOrMetricFn,
-                                box_size: Box,
-                                species: Array=None,
-                                sigma: Array=1.0,
-                                epsilon: Array=1.0,
-                                r_onset: float=2.0,
-                                r_cutoff: float=2.5,
-                                dr_threshold: float=0.5,
-                                per_particle: bool=False,
-                                capacity_multiplier: float=1.25,
-                                initialize_neighbor_list: bool=True,
-                                fractional=True,
-                                disable_cell_list=False,
-                                ) -> Tuple[NeighborFn,
-                                           Callable[[Array, NeighborList],
-                                                    Array]]:
-  """Convenience wrapper to compute lennard-jones using a neighbor list.
+def generic_repulsion_nonbond(displacement_or_metric: DisplacementOrMetricFn,
+                              pair_idxs: Array,
+                              sigma: Array = 1.,
+                              epsilon: Array = 1.,
+                              exp: Array = 12.) -> Callable[[Array], Array]:
+    """Convenience wrapper to compute repulsive part of Lennard Jones energy of
+    particles via connection idxs.
+
+    Args:
+        displacement_or_metric: Displacement_fn
+        pair_idxs: Set of pair indices (i, j) defining repulsion pairs
+        sigma: sigma
+        epsilon: epsilon
+        exp: LJ exponent
+
+    Returns:
+        Pairwise nonbonded repulsion potential energy function.
+    """
+    sigma = jnp.array(sigma, f32)
+    epsilon = jnp.array(epsilon, f32)
+    exp = jnp.array(exp, dtype=f32)
+
+    return smap.bond(
+            generic_repulsion,
+            space.canonicalize_displacement_or_metric(displacement_or_metric),
+            pair_idxs,
+            ignore_unused_parameters=True,
+            sigma=sigma,
+            epsilon=epsilon,
+            exp=exp)
+
+
+def lorentz_berthelot(idxs, species, sigma_dict, epsilon_dict):
+    """Applys the lorenz-berthelot rule to the idx and species array.
+    Calculates the sigma and epsilon values from the given dictonary.
+    sigma_ij = (sigma_ii + sigma_jj) / 2
+    epsilon_ij = (epsilon_ii * epsilon_jj)^1/2
+    https://en.wikipedia.org/wiki/Combining_rules
+    """
+    pairs = species[idxs]
+    u, inv = jnp.unique(pairs, return_inverse=True)
+
+    sigma = jnp.array([sigma_dict[x] for x in u])[inv].reshape(pairs.shape)
+    sigma = jnp.sum(sigma, axis=1) * 0.5
+
+    epsilon = jnp.array([epsilon_dict[x] for x in u])[inv].reshape(pairs.shape)
+    epsilon = jnp.sqrt(jnp.prod(epsilon, axis=1))
+    return sigma, epsilon
+
+
+def lennard_jones_nonbond(displacement_or_metric: DisplacementOrMetricFn,
+                          pair_idxs: Array,
+                          sigma: Array = 1.,
+                          epsilon: Array = 1.) -> Callable[[Array], Array]:
+    """Convenience wrapper to compute lennard jones energy of nonbonded
+    particles.
+
+    Args:
+        displacement_or_metric: Displacement_fn
+        pair_idxs: Set of pair indices (i, j) defining repulsion pairs
+        sigma: sigma
+        epsilon: epsilon
+
+    Returns:
+        Pairwise nonbonded repulsion potential energy function.
+    """
+    sigma = jnp.array(sigma, f32)
+    epsilon = jnp.array(epsilon, f32)
+    return smap.bond(
+            energy.lennard_jones,
+            space.canonicalize_displacement_or_metric(displacement_or_metric),
+            pair_idxs,
+            ignore_unused_parameters=True,
+            sigma=sigma,
+            epsilon=epsilon)
+
+
+def customn_lennard_jones_neighbor_list(
+        displacement_or_metric: DisplacementOrMetricFn,
+        box_size: Box,
+        species: Array = None,
+        sigma: Array = 1.0,
+        epsilon: Array = 1.0,
+        r_onset: float = 2.0,
+        r_cutoff: float = 2.5,
+        dr_threshold: float = 0.5,
+        per_particle: bool = False,
+        capacity_multiplier: float = 1.25,
+        initialize_neighbor_list: bool = True,
+        fractional: bool = True,
+        disable_cell_list: bool = False):
+    """Convenience wrapper to compute lennard-jones using a neighbor list.
      Different implementation of the cutoff to disentable with energy_params.
      Option not to initialize neighbor list to allow jitable building of
      energy function for varying sigma and epsilon."""
-  sigma = jnp.array(sigma, f32)
-  epsilon = jnp.array(epsilon, f32)
-  r_onset = jnp.array(r_onset, f32)
-  r_cutoff = jnp.array(r_cutoff, f32)
-  dr_threshold = jnp.array(dr_threshold, f32)
+    sigma = jnp.array(sigma, f32)
+    epsilon = jnp.array(epsilon, f32)
+    r_onset = jnp.array(r_onset, f32)
+    r_cutoff = jnp.array(r_cutoff, f32)
+    dr_threshold = jnp.array(dr_threshold, f32)
 
-  energy_fn = smap.pair_neighbor_list(
-    multiplicative_isotropic_cutoff(energy.lennard_jones, r_onset, r_cutoff),
-    space.canonicalize_displacement_or_metric(displacement_or_metric),
-    species=species,
-    sigma=sigma,
-    epsilon=epsilon,
-    reduce_axis=(1,) if per_particle else None)
+    energy_fn = smap.pair_neighbor_list(
+        energy.multiplicative_isotropic_cutoff(energy.lennard_jones, r_onset,
+                                               r_cutoff),
+        space.canonicalize_displacement_or_metric(displacement_or_metric),
+        species=species,
+        sigma=sigma,
+        epsilon=epsilon,
+        reduce_axis=(1,) if per_particle else None)
 
-  if initialize_neighbor_list:
-    neighbor_fn = partition.neighbor_list(displacement_or_metric, box_size, r_cutoff, dr_threshold,
-                                          capacity_multiplier=capacity_multiplier, fractional_coordinates=fractional, disable_cell_list=disable_cell_list)
-    return neighbor_fn, energy_fn
-  return energy_fn
+    if initialize_neighbor_list:
+        neighbor_fn = partition.neighbor_list(
+            displacement_or_metric, box_size, r_cutoff, dr_threshold,
+            capacity_multiplier=capacity_multiplier,
+            fractional_coordinates=fractional,
+            disable_cell_list=disable_cell_list)
+        return neighbor_fn, energy_fn
+    return energy_fn
 
 
-def tabulated(dr: Array, spline: Callable[[Array], Array], **unused_kwargs) -> Array:
+def tabulated(dr: Array, spline: Callable[[Array], Array], **unused_kwargs
+              ) -> Array:
     """
     Tabulated radial potential between particles given a spline function.
 
     Args:
         dr: An ndarray of pairwise distances between particles
-        spline: A function computing the spline values at a given pairwise distance
+        spline: A function computing the spline values at a given pairwise
+                distance.
 
     Returns:
         Array of energies
@@ -300,12 +480,12 @@ def tabulated(dr: Array, spline: Callable[[Array], Array], **unused_kwargs) -> A
 def tabulated_pair(displacement_or_metric: DisplacementOrMetricFn,
                    x_vals: Array,
                    y_vals: Array,
-                   degree: int=3,
-                   monotonic: bool=True,
-                   r_onset: Array=0.9,
-                   r_cutoff: Array=1.,
+                   degree: int = 3,
+                   monotonic: bool = True,
+                   r_onset: Array = 0.9,
+                   r_cutoff: Array = 1.,
                    species: Array = None,
-                   per_particle: bool=False) -> Callable[[Array], Array]:
+                   per_particle: bool = False) -> Callable[[Array], Array]:
     """Convenience wrapper to compute tabulated energy over a system."""
     x_vals = jnp.array(x_vals, f32)
     y_vals = jnp.array(y_vals, f32)
@@ -315,11 +495,13 @@ def tabulated_pair(displacement_or_metric: DisplacementOrMetricFn,
     if monotonic:
         spline = custom_interpolate.MonotonicInterpolate(x_vals, y_vals)
     else:
-        spline = custom_interpolate.InterpolatedUnivariateSpline(x_vals, y_vals, k=degree)
+        spline = custom_interpolate.InterpolatedUnivariateSpline(x_vals, y_vals,
+                                                                 k=degree)
     tabulated_partial = partial(tabulated, spline=spline)
 
     return smap.pair(
-      multiplicative_isotropic_cutoff(tabulated_partial, r_onset, r_cutoff),
+      energy.multiplicative_isotropic_cutoff(tabulated_partial, r_onset,
+                                             r_cutoff),
       space.canonicalize_displacement_or_metric(displacement_or_metric),
       species=species,
       reduce_axis=(1,) if per_particle else None)
@@ -329,21 +511,21 @@ def tabulated_neighbor_list(displacement_or_metric: DisplacementOrMetricFn,
                             x_vals: Array,
                             y_vals: Array,
                             box_size: Box,
-                            degree: int=3,
-                            monotonic: bool=True,
-                            r_onset: Array=0.9,
-                            r_cutoff: Array=1.,
-                            dr_threshold: Array=0.2,
+                            degree: int = 3,
+                            monotonic: bool = True,
+                            r_onset: Array = 0.9,
+                            r_cutoff: Array = 1.,
+                            dr_threshold: Array = 0.2,
                             species: Array = None,
-                            capacity_multiplier: float=1.25,
-                            initialize_neighbor_list: bool=True,
-                            per_particle: bool=False,
-                            fractional=True) -> Callable[[Array], Array]:
+                            capacity_multiplier: float = 1.25,
+                            initialize_neighbor_list: bool = True,
+                            per_particle: bool = False,
+                            fractional=True):
     """
     Convenience wrapper to compute tabulated energy using a neighbor list.
 
-    Provides option not to initialize neighborlist. This is useful if energy function needs
-    to be initialized within a jitted function.
+    Provides option not to initialize neighborlist. This is useful if energy
+    function needs to be initialized within a jitted function.
     """
 
     x_vals = jnp.array(x_vals, f32)
@@ -353,21 +535,26 @@ def tabulated_neighbor_list(displacement_or_metric: DisplacementOrMetricFn,
     r_cutoff = jnp.array(r_cutoff, f32)
     dr_threshold = jnp.array(dr_threshold, f32)
 
-    # Note: cannot provide the spline parameters via kwargs because only per-perticle parameters are supported
+    # Note: cannot provide the spline parameters via kwargs because only
+    #       per-particle parameters are supported
     if monotonic:
         spline = custom_interpolate.MonotonicInterpolate(x_vals, y_vals)
     else:
-        spline = custom_interpolate.InterpolatedUnivariateSpline(x_vals, y_vals, k=degree)
+        spline = custom_interpolate.InterpolatedUnivariateSpline(x_vals, y_vals,
+                                                                 k=degree)
     tabulated_partial = partial(tabulated, spline=spline)
 
     energy_fn = smap.pair_neighbor_list(
-      multiplicative_isotropic_cutoff(tabulated_partial, r_onset, r_cutoff),
+      energy.multiplicative_isotropic_cutoff(tabulated_partial, r_onset,
+                                             r_cutoff),
       space.canonicalize_displacement_or_metric(displacement_or_metric),
       species=species,
       reduce_axis=(1,) if per_particle else None)
 
     if initialize_neighbor_list:
-        neighbor_fn = partition.neighbor_list(displacement_or_metric, box_size, r_cutoff, dr_threshold,
-                                              capacity_multiplier=capacity_multiplier, fractional_coordinates=fractional)
+        neighbor_fn = partition.neighbor_list(
+            displacement_or_metric, box_size, r_cutoff, dr_threshold,
+            capacity_multiplier=capacity_multiplier,
+            fractional_coordinates=fractional)
         return neighbor_fn, energy_fn
     return energy_fn
