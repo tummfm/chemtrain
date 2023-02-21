@@ -6,7 +6,6 @@ import copy
 from functools import partial
 import time
 
-from coax.utils._jit import jit
 from jax import (lax, vmap, pmap, value_and_grad, tree_map, device_count,
                  numpy as jnp)
 from jax_sgmc import data
@@ -14,6 +13,7 @@ import numpy as onp
 import optax
 
 from chemtrain import util, data_processing, dropout
+from chemtrain.pickle_jit import jit
 
 
 def pmap_update_fn(batched_model, loss_fn, optimizer):

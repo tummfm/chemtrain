@@ -4,7 +4,6 @@ import abc
 from functools import partial
 import time
 
-from coax.utils._jit import jit
 from jax import (lax, vmap, pmap, checkpoint, random, device_count,
                  scipy as jscipy, numpy as jnp, tree_map)
 from jax_md import quantity
@@ -13,6 +12,7 @@ from scipy import stats
 import tree_math
 
 from chemtrain import force_matching, util, traj_util, dropout, data_processing
+from chemtrain.pickle_jit import jit
 
 
 # Modeling

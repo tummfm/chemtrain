@@ -5,12 +5,12 @@ from functools import partial
 from typing import Any, Dict
 
 import chex
-from coax.utils._jit import jit
 from jax import lax, vmap, numpy as jnp
 from jax_md import simulate, util as jax_md_util
 
 from chemtrain import util
 from chemtrain.jax_md_mod import custom_quantity
+from chemtrain.pickle_jit import jit
 
 Array = jax_md_util.Array
 

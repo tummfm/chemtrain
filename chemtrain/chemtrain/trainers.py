@@ -2,13 +2,13 @@
 import warnings
 
 from blackjax import nuts, stan_warmup
-from coax.utils._jit import jit
 from jax import value_and_grad, random, numpy as jnp
 from jax_sgmc import data
 from jax_sgmc.data import numpy_loader
 
 from chemtrain import (util, force_matching, traj_util, reweighting,
                        probabilistic, max_likelihood, property_prediction)
+from chemtrain.pickle_jit import jit
 
 
 class PropertyPrediction(max_likelihood.DataParallelTrainer):

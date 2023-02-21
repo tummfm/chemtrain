@@ -7,13 +7,13 @@ from abc import abstractmethod
 import time
 import warnings
 
-from coax.utils._jit import jit
 from jax import (checkpoint, lax, random, grad, tree_util, vmap,
                  numpy as jnp)
 from jax_md import util as jax_md_util
 
 from chemtrain import util, traj_util, traj_quantity, max_likelihood
 from chemtrain.jax_md_mod import custom_quantity
+from chemtrain.pickle_jit import jit
 
 
 def checkpoint_quantities(compute_fns):
