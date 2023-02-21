@@ -46,7 +46,7 @@ def total_energy_wrapper(energy_fn_template):
 
 def temperature(state, **unused_kwargs):
     """Temperature function that is consistent with quantity_traj interface."""
-    return quantity.temperature(state.velocity, state.mass)
+    return quantity.temperature(velocity=state.velocity, mass=state.mass)
 
 
 def _dyn_box(reference_box, **kwargs):
