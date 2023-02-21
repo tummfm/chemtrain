@@ -7,7 +7,7 @@ from typing import Any
 import chex
 import cloudpickle as pickle
 # import h5py
-from jax import tree_map, tree_leaves, tree_flatten, device_count, numpy as jnp
+from jax import tree_map, tree_util, device_count, numpy as jnp
 from jax_md import simulate
 import numpy as onp
 
@@ -107,7 +107,7 @@ def tree_combine(tree):
 
 def tree_norm(tree):
     """Returns the Euclidean norm of a PyTree."""
-    leaves, _ = tree_flatten(tree)
+    leaves, _ = tree_util.tree_flatten(tree)
     return sum(jnp.vdot(x, x) for x in leaves)
 
 
@@ -177,7 +177,7 @@ def tree_pmap_split(tree, n_devices):
     """Splits the first axis of `tree` evenly across the number of devices for
      pmap batching (size of first axis is n_devices).
      """
-    assert tree_leaves(tree)[0].shape[0] % n_devices == 0, \
+    assert tree_util.tree_leaves(tree)[0].shape[0] % n_devices == 0, \
         'First dimension needs to be multiple of number of devices.'
     return tree_map(lambda x: jnp.reshape(x, (n_devices, x.shape[0]//n_devices,
                                               *x.shape[1:])), tree)
@@ -187,7 +187,7 @@ def tree_vmap_split(tree, batch_size):
     """Splits the first axis of a 'tree' with leaf sizes (N, X)`into
     (n_batches, batch_size, X) to allow straightforward vmapping over axis0.
     """
-    assert tree_leaves(tree)[0].shape[0] % batch_size == 0, \
+    assert tree_util.tree_leaves(tree)[0].shape[0] % batch_size == 0, \
         'First dimension of tree needs to be splittable by batch_size' \
         ' without remainder.'
     return tree_map(lambda x: jnp.reshape(x, (x.shape[0] // batch_size,
@@ -225,7 +225,7 @@ def tree_stack(trees):
     leaves_list = []
     treedef_list = []
     for tree in trees:
-        leaves, treedef = tree_flatten(tree)
+        leaves, treedef = tree_util.tree_flatten(tree)
         leaves_list.append(leaves)
         treedef_list.append(treedef)
 
@@ -244,7 +244,7 @@ def tree_unstack(tree):
 
     From: https://gist.github.com/willwhitney/dd89cac6a5b771ccff18b06b33372c75
     """
-    leaves, treedef = tree_flatten(tree)
+    leaves, treedef = tree_util.tree_flatten(tree)
     n_trees = leaves[0].shape[0]
     new_leaves = [[] for _ in range(n_trees)]
     for leaf in leaves:
@@ -256,7 +256,7 @@ def tree_unstack(tree):
 
 def tree_multiplicity(tree):
     """Returns the number of stacked trees along axis 0."""
-    leaves, _ = tree_flatten(tree)
+    leaves, _ = tree_util.tree_flatten(tree)
     return leaves[0].shape[0]
 
 

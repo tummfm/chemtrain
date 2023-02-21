@@ -2,7 +2,7 @@
 learning.
 """
 import numpy as onp
-from jax import tree_flatten, lax
+from jax import lax, tree_util
 from jax_sgmc.data import numpy_loader
 
 from chemtrain.jax_md_mod import custom_space
@@ -46,7 +46,7 @@ def train_val_test_split(dataset, train_ratio=0.7, val_ratio=0.1, shuffle=False,
         pytree, but split along axis 0.
     """
     assert train_ratio + val_ratio <= 1., 'Distribution of data exceeds 100%.'
-    leaves, _ = tree_flatten(dataset)
+    leaves, _ = tree_util.tree_flatten(dataset)
     dataset_size = leaves[0].shape[0]
     train_size = int(dataset_size * train_ratio)
     val_size = int(dataset_size * val_ratio)
@@ -58,7 +58,7 @@ def train_val_test_split(dataset, train_ratio=0.7, val_ratio=0.1, shuffle=False,
 
         def retreive_datasubset(idxs):
             data_subset = util.tree_take(dataset, idxs, axis=0)
-            subset_leaves, _ = tree_flatten(data_subset)
+            subset_leaves, _ = tree_util.tree_flatten(data_subset)
             subset_size = subset_leaves[0].shape[0]
             if subset_size == 0:
                 data_subset = None
@@ -73,7 +73,7 @@ def train_val_test_split(dataset, train_ratio=0.7, val_ratio=0.1, shuffle=False,
         def retreive_datasubset(start, end):
             data_subset = util.tree_get_slice(dataset, start, end,
                                               to_device=False)
-            subset_leaves, _ = tree_flatten(data_subset)
+            subset_leaves, _ = tree_util.tree_flatten(data_subset)
             subset_size = subset_leaves[0].shape[0]
             if subset_size == 0:
                 data_subset = None
