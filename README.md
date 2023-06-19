@@ -1,4 +1,7 @@
 # Training Molecular Dynamics Potentials in JAX
+[![Documentation Status](https://readthedocs.org/projects/chemtrain/badge/?version=latest)](https://chemtrain.readthedocs.io/en/latest/?badge=latest)
+[![PyPI version](https://badge.fury.io/py/chemtrain.svg)](https://badge.fury.io/py/chemtrain)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 *chemtrain* is a library for training MD potentials and integrates with
 [JAX, M.D.](https://github.com/jax-md/jax-md) as its differentiable MD engine.
