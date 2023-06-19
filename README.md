@@ -44,7 +44,7 @@ trainers to implement custom training pipelines.
 ## Installation
 *chemtrain* can be installed via pip:
 ```
-pip install jax-dimenet
+pip install chemtrain
 ```
 
 ## Requirements
