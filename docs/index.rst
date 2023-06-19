@@ -5,12 +5,6 @@ Chemtrain is a collection of training algorithms to parametrize MD potentials.
 It builds on MD functionality provided by JAX MD and occasionally extends them.
 These extensions are gathered in the jax_md_mod module.
 
-Subheadings
-----------------------------
-
-Subsubheading
-+++++++++++++++++++++++++++++
-
 This *documentation* ist still in its **infancey**!
 In the next weeks and months, the documentation will be fully built.
 
