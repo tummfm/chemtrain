@@ -125,7 +125,7 @@ def _run_to_next_printout_neighbors(apply_fn, timings, **kwargs):
         new_sim_state = (new_state, nbrs)
         return new_sim_state, t
 
-    @jit
+    # @jit  # this triggers bug in JAX
     def run_small_simulation(start_state, t_start=0.):
         simulation_time_points = jnp.arange(timings.timesteps_per_printout) \
                                  * timings.time_step + t_start
