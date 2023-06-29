@@ -348,6 +348,8 @@ class PairwiseNN(hk.Module):
                 'b_init': hk.initializers.Constant(0.),
             }
 
+        assert num_rbf > 0, 'The number of RBF embeddings but be at least 1.'
+        self.cutoff = r_cutoff
         self.embedding = layers.RadialBesselLayer(r_cutoff, num_radial=num_rbf,
                                                   envelope_p=envelope_p)
         self.pair_nn = hk.nets.MLP(hidden_layers, activation=activation,
@@ -361,8 +363,8 @@ class PairwiseNN(hk.Module):
         predicted_energies = self.pair_nn(rbf)
 
         # rbf_transform has no bias: masked pairs remain 0 and counteract
-        # possible non-zero contribution from biases in MPL (in a continuously
-        # differentiable manner)
+        # possible non-zero contribution from biases in MPL (in a
+        # continuously differentiable manner)
         per_pair_energy = predicted_energies * self.rbf_transform(rbf)
         return per_pair_energy
 

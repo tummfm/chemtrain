@@ -9,19 +9,23 @@ from chemtrain.jax_md_mod import custom_space
 from chemtrain import util
 
 
-def get_dataset(data_location_str, retain=None, subsampling=1):
+def get_dataset(data_location_str, retain=0, subsampling=1, offset=0):
     """Loads .pyy numpy dataset.
 
     Args:
         data_location_str: String of .npy data location
         retain: Number of samples to keep in the dataset. All by default.
         subsampling: Only keep every subsampled sample of the data, e.g. 2.
+        offset: Select which part of data to be used. By default last part.
 
     Returns:
         Subsampled data array
     """
     loaded_data = onp.load(data_location_str)
-    loaded_data = loaded_data[:retain:subsampling]
+    if offset == 0:
+        loaded_data = loaded_data[-retain::subsampling]
+    else:
+        loaded_data = loaded_data[-retain-offset:-offset:subsampling]
     return loaded_data
 
 

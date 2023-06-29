@@ -28,7 +28,7 @@ position: atomic positions
 
 
 def build_dataset(position_data, energy_data=None, force_data=None,
-                  virial_data=None):
+                  virial_data=None, kt_data=None):
     """Builds the force-matching dataset depending on available data.
 
     Interface of force-loss functions depends on dict keys set here.
@@ -40,6 +40,8 @@ def build_dataset(position_data, energy_data=None, force_data=None,
         dataset['F'] = force_data
     if virial_data is not None:
         dataset['p'] = virial_data
+    if kt_data is not None:
+        dataset['kT'] = kt_data
     return dataset, _dataset_target_keys(dataset)
 
 
@@ -49,6 +51,8 @@ def _dataset_target_keys(dataset):
     """
     target_key_list = list(dataset)
     target_key_list.remove('R')
+    if 'kT' in target_key_list:
+        target_key_list.remove('kT')
     assert target_key_list, 'At least one target quantity needs to be supplied.'
     return target_key_list
 
@@ -66,6 +70,9 @@ def init_virial_fn(virial_data, energy_fn_template, box_tensor):
                 pressure_tensor=True
             )
         elif virial_data.ndim in [1, 2]:
+            if virial_data.ndim == 2:
+                assert virial_data.shape[-1] == 1, (
+                    'Scalar pressure is required. Otherwise [3,3] tensor.')
             virial_fn = custom_quantity.init_pressure(
                 energy_fn_template, box_tensor, include_kinetic=False)
         else:
@@ -95,15 +102,21 @@ def init_model(nbrs_init, energy_fn_template, virial_fn=None):
         positions under 'R'.
     """
     def fm_model(params, single_observation):
+        if 'kT' in single_observation:
+            aux_kwargs = {'kT': single_observation['kT']}
+        else:
+            aux_kwargs = {}
         positions = single_observation['R']
         energy_fn = energy_fn_template(params)
         # TODO check for neighborlist overflow and hand through
         nbrs = nbrs_init.update(positions)
         energy, negative_forces = value_and_grad(energy_fn)(positions,
-                                                            neighbor=nbrs)
+                                                            neighbor=nbrs,
+                                                            **aux_kwargs)
         predictions = {'U': energy, 'F': -negative_forces}
         if virial_fn is not None:
-            predictions['p'] = - virial_fn(State(positions), nbrs, params)
+            predictions['p'] = virial_fn(State(positions), nbrs, params,
+                                         **aux_kwargs)
         return predictions
     return fm_model
 

@@ -83,9 +83,9 @@ class ForceMatching(max_likelihood.DataParallelTrainer):
     """
     def __init__(self, init_params, energy_fn_template, nbrs_init,
                  optimizer, position_data, energy_data=None, force_data=None,
-                 virial_data=None, box_tensor=None, gamma_f=1., gamma_p=1.e-6,
-                 batch_per_device=1, batch_cache=10, train_ratio=0.7,
-                 val_ratio=0.1, shuffle=False,
+                 virial_data=None, kt_data=None, box_tensor=None, gamma_f=1.,
+                 gamma_p=1.e-6, batch_per_device=1, batch_cache=10,
+                 train_ratio=0.7, val_ratio=0.1, shuffle=False,
                  convergence_criterion='window_median',
                  checkpoint_folder='Checkpoints'):
 
@@ -93,7 +93,8 @@ class ForceMatching(max_likelihood.DataParallelTrainer):
         dataset_dict = {'position_data': position_data,
                         'energy_data': energy_data,
                         'force_data': force_data,
-                        'virial_data': virial_data
+                        'virial_data': virial_data,
+                        'kt_data': kt_data
                         }
 
         virial_fn = force_matching.init_virial_fn(
@@ -113,9 +114,9 @@ class ForceMatching(max_likelihood.DataParallelTrainer):
 
     @staticmethod
     def _build_dataset(position_data, energy_data=None, force_data=None,
-                       virial_data=None):
+                       virial_data=None, kt_data=None):
         return force_matching.build_dataset(position_data, energy_data,
-                                            force_data, virial_data)
+                                            force_data, virial_data, kt_data)
 
     def evaluate_mae_testset(self):
         assert self.test_loader is not None, ('No test set available. Check'
@@ -636,12 +637,14 @@ class SGMCForceMatching(probabilistic.ProbabilisticFMTrainerTemplate):
 
     @property
     def params(self):
-        assert len(self.results) == 1, 'Not implemented for multiple chains'
-        # TODO: Need to edit this for multiple chains!
-        params = []
-        for chain in self.results:
-            params = chain['samples']['variables']['params']
-        return params
+        if len(self.results) == 1:  # single chain
+            return self.results[0]['samples']['variables']['params']
+        else:
+            params = []
+            for chain in self.results:
+                params.append(chain['samples']['variables']['params'])
+            stacked_params = util.tree_stack(params)
+            return util.tree_combine(stacked_params)
 
     @params.setter
     def params(self, loaded_params):
@@ -651,9 +654,10 @@ class SGMCForceMatching(probabilistic.ProbabilisticFMTrainerTemplate):
     @property
     def list_of_params(self):
         return util.tree_unstack(self.params)
-    # TODO override save functions such that only saving parameters is allowed
-    #  - or whatever checkpointing jax-sgmc supports (or does checkpointing work
-    #  with more liberal coax._jit?)
+
+    def save_trainer(self, save_path):
+        raise NotImplementedError('Saving the trainer currently does not work'
+                                  ' for SGMCMC.')
 
 
 # TODO adjust to new blackjax interface, then allow newer version
