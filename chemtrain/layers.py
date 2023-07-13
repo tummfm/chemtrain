@@ -75,8 +75,9 @@ class OrthogonalVarianceScalingInit(hk.initializers.Initializer):
         fan_in, fan_out = shape
         # uniformly distributed orthogonal weight matrix
         w_init = self._orth_init(shape, dtype)
-        w_init *= jnp.sqrt(self.scale / (max(1., (fan_in + fan_out))
-                                         * jnp.var(w_init)))
+        w_var = jnp.var(w_init)
+        w_var = jnp.where(w_var < 1.e-7, 1., w_var)  # if var = 0, fix 0 divide
+        w_init *= jnp.sqrt(self.scale / (max(1., (fan_in + fan_out)) * w_var))
         return w_init
 
 
@@ -297,8 +298,10 @@ class EmbeddingBlock(hk.Module):
             'Embedding_vect', [n_species, type_embed_size], init=embed_init)
         self._kbt_dependent = kbt_dependent
         if kbt_dependent:
-            self._kbt_embedding = hk.get_parameter(
-                'Embedding_kbt', [1, type_embed_size], init=embed_init)
+            self._kbt_embedding_div = hk.get_parameter(
+                'Embedding_kbt_div', [1, type_embed_size], init=embed_init)
+            self._kbt_embedding_mul = hk.get_parameter(
+                'Embedding_kbt_mul', [1, type_embed_size], init=embed_init)
 
         # unlike the original DimeNet implementation, there is no activation
         # and bias in RBF_Dense as shown in the network sketch. This is
@@ -324,10 +327,12 @@ class EmbeddingBlock(hk.Module):
         if self._kbt_dependent:
             assert 'kT' in kwargs, ('If potential should be kbt-dependent. '
                                     '"kT" needs to be provided as kwarg.')
-            kbt_embeds = jnp.tile(self._kbt_embedding, (h_j.shape[0], 1))
-            kbt_embeds /= kwargs['kT']
-            edge_embedding = jnp.concatenate([edge_embedding, kbt_embeds],
-                                             axis=-1)
+            kbt_embeds_div = jnp.tile(self._kbt_embedding_div,
+                                      (h_j.shape[0], 1)) / kwargs['kT']
+            kbt_embeds_mul = jnp.tile(self._kbt_embedding_mul,
+                                      (h_j.shape[0], 1)) * kwargs['kT']
+            edge_embedding = jnp.concatenate([edge_embedding, kbt_embeds_div,
+                                              kbt_embeds_mul], axis=-1)
         embedded_messages = self._dense_after_concat(edge_embedding,
                                                      dropout_dict)
         return embedded_messages
