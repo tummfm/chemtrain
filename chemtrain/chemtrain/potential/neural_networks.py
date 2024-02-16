@@ -1,3 +1,17 @@
+# Copyright 2023 Multiscale Modeling of Fluid Materials, TU Munich
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Neural network models for potential energy and molecular property
 prediction.
  """
@@ -8,7 +22,8 @@ import haiku as hk
 from jax import numpy as jnp, nn as jax_nn
 from jax_md import smap, space, partition, nn, util
 
-from chemtrain import layers, sparse_graph, dropout
+from chemtrain import sparse_graph
+from chemtrain.potential import layers, dropout
 
 
 class DimeNetPP(hk.Module):
@@ -45,7 +60,8 @@ class DimeNetPP(hk.Module):
                  envelope_p: int = 6,
                  init_kwargs: Dict[str, Any] = None,
                  dropout_mode: Dict[str, Any] = None,
-                 name: str = 'DimeNetPP'):
+                 name: str = 'DimeNetPP',
+                 outscale: bool = False):
         """Initializes the DimeNet++ model
 
         The default values correspond to the orinal values of DimeNet++.
@@ -87,6 +103,7 @@ class DimeNetPP(hk.Module):
                           (see dropout.dimenetpp_setup). If None, no Dropout is
                           applied.
             name: Name of DimeNet++ model
+            outscale: Scale the output initially return zero energy
         """
         super().__init__(name=name)
         self.dropout_setup = dropout.dimenetpp_setup(dropout_mode,
@@ -116,7 +133,7 @@ class DimeNetPP(hk.Module):
             kbt_dependent)
         self._output_blocks.append(layers.OutputBlock(
             embed_size, out_embed_size, num_dense_out, num_targets, activation,
-            init_kwargs)
+            init_kwargs, outscale=outscale)
         )
 
         for _ in range(n_interaction_blocks):
@@ -127,7 +144,7 @@ class DimeNetPP(hk.Module):
             )
             self._output_blocks.append(layers.OutputBlock(
                 embed_size, out_embed_size, num_dense_out, num_targets,
-                activation, init_kwargs)
+                activation, init_kwargs, outscale=outscale)
             )
 
     def __call__(self,

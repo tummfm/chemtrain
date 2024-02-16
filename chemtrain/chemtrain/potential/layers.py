@@ -23,8 +23,8 @@ from jax import nn, ops, numpy as jnp, scipy as jsp
 from jax_md import util
 from sympy import symbols, utilities
 
-from chemtrain import dimenet_basis_util
-from chemtrain.dropout import Linear
+from chemtrain.potential import dimenet_basis_util
+from chemtrain.potential.dropout import Linear
 
 
 # util
@@ -345,7 +345,7 @@ class OutputBlock(hk.Module):
     """
     def __init__(self, embed_size, out_embed_size=None, num_dense=3,
                  num_targets=1, activation=nn.swish, init_kwargs=None,
-                 name='Output'):
+                 name='Output', outscale=False):
         """Initializes an Output block.
 
         Args:
@@ -356,6 +356,7 @@ class OutputBlock(hk.Module):
             activation: Activation function
             init_kwargs: Dict of initialization kwargs for Linear layers
             name: Name of Output block
+            outscale: Scale the output to initially have zero energy
         """
         super().__init__(name=name)
         if out_embed_size is None:
@@ -368,6 +369,9 @@ class OutputBlock(hk.Module):
 
         # transform summed messages via multiple dense layers before predicting
         # target quantities
+
+        self._outscale = outscale
+
         self._dense_layers = []
         for _ in range(num_dense):
             self._dense_layers.append(hk.Sequential([
@@ -394,6 +398,11 @@ class OutputBlock(hk.Module):
             upsampled_messages = dense_layer(upsampled_messages, dropout_dict)
 
         per_atom_targets = self._dense_final(upsampled_messages)
+
+        if self._outscale:
+            out_scale = hk.get_parameter("output_scale", [], init=jnp.zeros)
+            per_atom_targets *= out_scale
+
         return per_atom_targets
 
 

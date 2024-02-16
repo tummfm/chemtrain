@@ -1,3 +1,17 @@
+# Copyright 2023 Multiscale Modeling of Fluid Materials, TU Munich
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Functions for learning via direct matching of per-snapshot quantities,
 such as energy, forces and virial pressure.
 """
@@ -32,6 +46,17 @@ def build_dataset(position_data, energy_data=None, force_data=None,
     """Builds the force-matching dataset depending on available data.
 
     Interface of force-loss functions depends on dict keys set here.
+
+    Args:
+        energy_data: Reference potentials
+        force_data: Reference forces
+        virial_data: Reference virials
+        kt_data: Reference temperatures
+
+    Returns:
+        Returns the canonicalized dataset and a list of keys specifying the
+        trainable targets.
+
     """
     dataset = {'R': position_data}
     if energy_data is not None:
@@ -60,6 +85,12 @@ def _dataset_target_keys(dataset):
 def init_virial_fn(virial_data, energy_fn_template, box_tensor):
     """Initializes the correct virial function depending on the target data
     type.
+
+    Args:
+        virial_data: Data determining the form of virial prediction
+        energy_fn_template: Energy_fn_template to get energy_fn from params
+        box_tensor: Box to initialize virial prediction
+
     """
     if virial_data is not None:
         assert box_tensor is not None, ('If the virial is to be matched, '
@@ -93,7 +124,7 @@ def init_model(nbrs_init, energy_fn_template, virial_fn=None):
         nbrs_init: Initial neighbor list.
         energy_fn_template: Energy_fn_template to get energy_fn from params.
         virial_fn: Function to compute virial pressure. If None, no virial
-                   pressure is predicted.
+            pressure is predicted.
 
     Returns:
         A function(params, single_observation) returning a dict of predictions
@@ -130,15 +161,15 @@ def init_loss_fn(gamma_u=1., gamma_f=1., gamma_p=1.e-6,
         gamma_f: Weight for force loss component
         gamma_p: Weight for virial loss component
         error_fn: Function quantifying the deviation of the model and the
-                  targets. By default, a mean-squared error.
+            targets. By default, a mean-squared error.
         individual: Default False initializes a loss function that returns
-                    scalar loss weighted by gammas. If True, returns all
-                    individual components, e.g. for testing purposes. In this
-                    case, gamma values are unused.
+            scalar loss weighted by gammas. If True, returns all individual
+            components, e.g. for testing purposes.
+            In this case, gamma values are unused.
 
     Returns:
-        loss_fn(predictions, targets), which returns a scalar loss value for a
-        batch of predictions and targets.
+        Returns a function ``loss_fn(predictions, targets)``, which returns a
+        scalar loss value for a batch of predictions and targets.
     """
     def loss_fn(predictions, targets, mask=None):
         errors = {}
@@ -165,10 +196,24 @@ def init_loss_fn(gamma_u=1., gamma_f=1., gamma_p=1.e-6,
 
 def init_mae_fn(val_loader, nbrs_init, energy_fn_template, batch_size=1,
                 batch_cache=1, virial_fn=None):
-    """Returns a function that computes for each observable - energy, forces and
-    virial (if applicable) - the individual mean absolute error on the
-    validation set. These metrics are usually better interpretable than a
+    """Computed the Mean Absolute Error for each observable.
+
+    The MAE for each observable are usually better interpretable than a
     (combined) MSE loss value.
+
+    Args:
+        val_loader: DataLoader with validation data
+        nbrs_init: State of the neighbor list
+        energy_fn_template: Energy_fn_template to get energy_fn from params
+        batch_size: Batch site for batched loss computation
+        batch_cache: Numbers of batches stored on device
+        virial_fn: Function to compute virial pressure. If None, no virial
+            pressure is predicted.
+
+    Returns:
+        Returns a function that computes for each observable - energy, forces,
+        and virial (if applicable) - the individual mean absolute error on the
+        validation set.
     """
     model = init_model(nbrs_init, energy_fn_template, virial_fn)
     batched_model = vmap(model, in_axes=(None, 0))

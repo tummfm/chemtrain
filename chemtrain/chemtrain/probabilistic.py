@@ -1,19 +1,32 @@
+# Copyright 2023 Multiscale Modeling of Fluid Materials, TU Munich
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """This module provides utilities for setting up probabilistic trainers,
  such as trainers.SGMC"""
 import abc
 from functools import partial
 import time
 
-import tree
 from jax import (lax, vmap, pmap, checkpoint, random, device_count,
-                 scipy as jscipy, numpy as jnp, tree_map, tree_util)
+                 scipy as jscipy, numpy as jnp, tree_map)
 from jax_md import quantity
 from jax_sgmc import data, potential
 from scipy import stats
 import tree_math
 
-from chemtrain import (force_matching, util, traj_util, dropout,
-                       data_processing, max_likelihood)
+from chemtrain import (force_matching, util, traj_util, data_processing, max_likelihood)
+from chemtrain.potential import dropout
 from chemtrain.pickle_jit import jit
 
 # Modeling
@@ -510,7 +523,6 @@ def init_force_uq(energy_fn_template, n_splits=16, vmap_batch_size=1):
 def infer_output_uncertainty(param_sets, init_state, trajectory_generator,
                              quantities, total_samples, kt_schedule=None,
                              vmap_simulations_per_device=1):
-
     # Check whether dropout was used or not
     dropout_active = dropout.dropout_is_used(param_sets)
     # TODO add vmap
