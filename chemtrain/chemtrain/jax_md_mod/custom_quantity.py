@@ -1,3 +1,17 @@
+# Copyright 2023 Multiscale Modeling of Fluid Materials, TU Munich
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """A collection of functions evaluating quantiities of trajectories.
 For easiest integration into chemtain, functions should be compatible with
 traj_util.quantity_traj. Functions provided to quantity_traj need to take the
@@ -5,6 +19,9 @@ state and additional kwargs.
 """
 from functools import partial
 
+import numpy as onp
+
+import jax
 from jax import grad, vmap, lax, jacrev, jacfwd, numpy as jnp
 from jax.scipy.stats import norm
 from jax_md import space, util, dataclasses, quantity, simulate
@@ -15,12 +32,23 @@ from chemtrain.pickle_jit import jit
 Array = util.Array
 
 
-def energy_wrapper(energy_fn_template):
+def energy_wrapper(energy_fn_template, fixed_energy_params=None):
     """Wrapper around energy_fn to allow energy computation via
     traj_util.quantity_traj.
+
+    Args:
+        energy_fn_template: Function creating an energy function when called
+            with energy parameters.
+        fixed_energy_params: Always use the energy function obtained when
+            using the fixed energy params. If not given, the function uses
+            dynamially specified parameters.
+
     """
     def energy(state, neighbor, energy_params, **kwargs):
-        energy_fn = energy_fn_template(energy_params)
+        if fixed_energy_params is None:
+            energy_fn = energy_fn_template(energy_params)
+        else:
+            energy_fn = energy_fn_template(fixed_energy_params)
         return energy_fn(state.position, neighbor=neighbor, **kwargs)
     return energy
 
@@ -29,7 +57,7 @@ def kinetic_energy_wrapper(state, **unused_kwargs):
     """Wrapper around kinetic_energy to allow kinetic energy computation via
     traj_util.quantity_traj.
     """
-    return quantity.kinetic_energy(state.velocity, state.mass)
+    return quantity.kinetic_energy(velocity=state.velocity, mass=state.mass)
 
 
 def total_energy_wrapper(energy_fn_template):
@@ -163,6 +191,13 @@ def adf_discretization(nbins=200):
     return adf_bin_centers, sigma_adf
 
 
+def dihedral_discretization(nbins=150):
+    dbin = 2 * jnp.pi / float(nbins)
+    bin_centers = dbin * (jnp.arange(nbins) + 0.5) - jnp.pi
+    sigma = util.f32(dbin)
+    return bin_centers, sigma
+
+
 @dataclasses.dataclass
 class TCFParams:
     """Hyperparameters to initialize a triplet correlation function (TFC)
@@ -219,6 +254,100 @@ def tcf_discretization(tcf_cut, nbins=30, tcf_start=0.1):
 
     return (sigma_tcf, volume_tcf, tcf_x_binx_centers, tcf_y_bin_centers,
             tcf_z_bin_centers)
+
+
+@dataclasses.dataclass
+class BondAngleParams:
+    reference: Array
+    sigma: Array
+    bonds: Array
+    bin_centers: Array
+    bin_boundaries: Array
+
+
+def init_bond_angle_distribution(displacement_fn, bond_angle_params: BondAngleParams, reference_box=None):
+
+    _, sigma, bonds, bin_centers, bin_boundaries = dataclasses.astuple(bond_angle_params)
+    bin_size = jnp.diff(bin_boundaries)
+
+    def angle_fn(state, neighbor, **kwargs):
+
+        angles = angular_displacement(
+            state.position, displacement_fn, bonds, degrees=True)
+
+        #  Gaussian ensures that discrete integral over distribution is 1
+        exp = jnp.exp(
+            util.f32(-0.5) * (angles[:, jnp.newaxis] - bin_centers)**2 / sigma)
+        gaussian_distances = exp * bin_size / jnp.sqrt(2 * jnp.pi * sigma**2)
+        per_bond = util.high_precision_sum(gaussian_distances,
+                                                         axis=1)  # sum nbrs
+        mean_angle_dist = util.high_precision_sum(per_bond,
+                                                 axis=0) / bonds.shape[0]
+
+        return mean_angle_dist
+
+    return angle_fn
+
+
+@dataclasses.dataclass
+class BondDihedralParams:
+    reference: Array
+    sigma: Array
+    bonds: Array
+    bin_centers: Array
+    bin_boundaries: Array
+
+
+def init_bond_dihedral_distribution(displacement_fn,
+                                    bond_dihedral_params: BondDihedralParams,
+                                    smoothing = 'gaussian'):
+    """Initializes a function computing a dihedral distribution.
+
+    Args:
+        displacement_fn: Displacement to compute dihedral angles
+        bond_dihedral_params: Struct describing the dihedral angles and expected
+            format of the computed distribution
+        reference_box: Unused
+
+    Returns:
+        Returns a function that computes a distribution of dihedral angles
+        given a simulation state.
+
+    """
+
+    _, sigma, bonds, bin_centers, bin_boundaries = dataclasses.astuple(bond_dihedral_params)
+    bin_size = jnp.diff(bin_boundaries)
+
+    print(f"Initialize distribution with smoothing {sigma}")
+
+    def dihedral_fn(state, neighbor, **kwargs):
+
+        dihedrals = dihedral_displacement(
+            state.position, displacement_fn, bonds, degrees=False)
+
+        distances = dihedrals[None, :] - bin_centers[:, None]
+        if smoothing == 'gaussian':
+            # Smooth the bins
+            exponent = -0.5 * jnp.square(distances)
+            exponent /= sigma ** 2
+            kernel = jnp.exp(exponent)
+        elif smoothing == 'epanechnikov':
+            distances /= bin_size
+            kernel = 0.75 * (1 - distances ** 2)
+            kernel = jnp.where(kernel >= 0, kernel, 0.0)
+        else:
+            raise ValueError(f"Smoothing {smoothing} unknown.")
+
+        # Sum over all contributing bonds
+        dihedral_distribution = util.high_precision_sum(kernel, axis=1)
+
+        # Normalize the distribution
+        dihedral_distribution /= util.high_precision_sum(
+            dihedral_distribution * bin_size, axis=0)
+
+        return dihedral_distribution
+
+    return dihedral_fn
 
 
 def _ideal_gas_density(particle_density, bin_boundaries):
@@ -407,7 +536,8 @@ def init_adf_nbrs(displacement_fn, adf_params, smoothing_dr=0.01, r_init=None,
                                                      displacement_fn)
         weights = cut_off_weights(r_kj, r_ij)
         weights *= mask  # combine radial cut-off with neighborlist mask
-        max_weights = jnp.count_nonzero(weights > 1.e-6) * max_weight_multiplier
+        max_weights = int(
+            jnp.count_nonzero(weights > 1.e-6) * max_weight_multiplier)
 
     def adf_fn(state, neighbor, **kwargs):
         """Returns ADF for a single snapshot. Allows changing the box
@@ -569,35 +699,210 @@ def init_tetrahedral_order_parameter(displacement):
         A function that takes a simulation state with neighborlist and returns
          the instantaneous q value.
     """
+    @partial(vmap, in_axes=(None, 0, 0))
+    def _masked_inner(nn_disp, j, k):
+        mask = k > j
+
+        r_ij = nn_disp[:, j]
+        r_ik = nn_disp[:, k]
+
+        psi_ijk = vmap(quantity.cosine_angle_between_two_vectors)(r_ij, r_ik)
+        summand = jnp.square(psi_ijk + (1. / 3.))
+
+        return mask * summand
+
+
     def q_fn(state, neighbor, **kwargs):
         dyn_displacement = partial(displacement, **kwargs)
-        nearest_dispacements = _nearest_tetrahedral_nbrs(dyn_displacement,
-                                                         state.position,
-                                                         neighbor)
-        # Note: for loop will be unrolled by jit.
-        #   Is there a more elegant vectorization over nearest neighbors?
-        summed_angles = jnp.zeros(state.position.shape[0])
-        for j in range(3):
-            r_ij = nearest_dispacements[:, j]
-            for k in range(j + 1, 4):
-                r_ik = nearest_dispacements[:, k]
-                # cosine of angle for all central particles in box
-                psi_ijk = vmap(quantity.cosine_angle_between_two_vectors)(
-                    r_ij, r_ik)
-                summand = jnp.square(psi_ijk + (1. / 3.))
-                summed_angles += summand
+        nearest_dispacements = _nearest_tetrahedral_nbrs(
+            dyn_displacement, state.position, neighbor)
 
-        average_angle = jnp.mean(summed_angles)
-        q = 1 - (3. / 8.) * average_angle
+        all_j, all_k = jnp.meshgrid(jnp.arange(3), jnp.arange(4))
+        masked_angles = _masked_inner(
+            nearest_dispacements, all_j.ravel(), all_k.ravel())
+        summed_angles = jnp.sum(masked_angles, axis=0)
+
+        q = 1 - (3. / 8.) * jnp.mean(summed_angles)
         return q
     return q_fn
 
 
-def velocity_autocorrelation(traj_state, num_lags):
+def init_local_structure_index(displacement_fn,
+                               r_cut: float = 0.37,
+                               reference_box = None,
+                               r_init = None,
+                               max_pairs_multiplier: float = 3.0):
+    """Initializes function to compute the local structure index (LSI).
+
+    The LSI measures the gap between the first and second solvation shell
+    [#dobouedijon2015]_.
+
+    Args:
+        displacement_fn: Function to compute the particle distances
+        r_cut: Cutoff of second solvation shell
+        reference_box: Reference box to compute particle distances. Necessary
+            if no dynamic box is provided.
+        r_init: Initial coordinates to estimate the number of particles in the
+            shell.
+        max_pairs_multiplier: Multiplies the estimated maximum number of
+           particles in a shell.
+
+
+    References:
+        .. [#dobouedijon2015] E. Duboué-Dijon und D. Laage, „Characterization of the Local Structure in Liquid Water by Various Order Parameters“, J. Phys. Chem. B, Bd. 119, Nr. 26, S. 8406–8418, Juli 2015, doi: 10.1021/acs.jpcb.5b02936.
+
+    """
+
+    # Estimate the number of pairs inside the first two solvation shells to
+    # speed up the computation
+    distance_metric = space.canonicalize_displacement_or_metric(
+        displacement_fn)
+
+    def _estimate_max_pairs():
+        num_atoms = r_init.shape[0]
+        if r_init is not None:
+            metric = space.map_product(distance_metric)
+            distances = metric(r_init, r_init)
+            mp = jnp.max(jnp.sum(distances < r_cut, axis=1))
+            mp = int(mp * max_pairs_multiplier)
+        else:
+            mp = num_atoms
+
+        print(f"[LSI] Consider {mp} number of pairs.")
+        return mp
+
+    max_pairs = _estimate_max_pairs()
+
+    @vmap
+    def _single_lsi(dist):
+        # Speed up the computation by only considering a subset of all
+        # particles.
+        # We seek to include the closest particles, so we have to select k
+        # maxima of the negative distance.
+        # Additionally, the calculation of the lsi requires sorting
+        # these closest particles.
+        _, selected = lax.top_k(-dist, max_pairs)
+        dr = lax.sort(dist[selected])[1:]
+        mask = (dr < util.f32(r_cut))[:-1]
+
+        # Mask out particles that are not close to any other particles
+        count = jnp.sum(mask)
+        mask /= jnp.where(count > 0, count, 1)
+
+        # Compute variance between the particle distance increments
+        delta = jnp.diff(dr)
+        lsi = jnp.sum(mask * jnp.square(delta - jnp.sum(mask * delta)))
+
+        # Set the LSI to zero for isolated particles
+        return (count > 0) * lsi
+
+    def lsi_fn(state, **kwargs):
+        box, _ = _dyn_box(reference_box, **kwargs)
+        # Incorporate the dynamic box and compute the distance between all
+        # pairs of the particles
+
+        dyn_metric = partial(distance_metric, box=box)
+        distance_fn = space.map_product(dyn_metric)
+        distances = distance_fn(state.position, state.position)
+
+        single_lsi = _single_lsi(distances)
+
+        return jnp.mean(single_lsi)
+    return lsi_fn
+
+
+
+def init_rmsd(reference_positions,
+              displacement_fn,
+              reference_box,
+              idx=None,
+              weights=None):
+    """Initializes the root mean squared distance from a reference structure.
+
+    The RMSD is a common measure in the analysis of
+    macrostructures [#sargsyan2017]_.
+    The weighted RMSD between a current positions $p$ and reference positions
+    $q$ is defined as
+
+    .. math ::
+
+        \\mathrm{RMSD} = \\sqrt{\\frac{\\sum_{i=1}^n w_i || (Rp + t )- q||^2}{\\sum_{i=1}^n w_i}},
+
+    where $R$ and $t$ define a rigid body motion that minimizes the
+    RMSD [#hornung2017]_.
+
+
+    Args:
+        reference_positions: Reference positions including all atoms.
+        displacement_fn: Function to compute displacement between particles.
+        reference_box: Reference box of the reference structure.
+        idx: Indices selecting only the structure of interest, e.g. for
+            a protein in a solvent.
+        weights: Weight the rmsd, e.g., with masses of the particles.
+
+    References:
+        .. [#sargsyan2017] K. Sargsyan, C. Grauffel, und C. Lim, „How Molecular Size Impacts RMSD Applications in Molecular Dynamics Simulations“, J. Chem. Theory Comput., Bd. 13, Nr. 4, S. 1518–1524, Apr. 2017, doi: 10.1021/acs.jctc.7b00028.
+        .. [#hornung2017] O. Sorkine-Hornung und M. Rabinovich, „Least-Squares Rigid Motion Using SVD“. https://igl.ethz.ch/projects/ARAP/svd_rot.pdf
+
+    """
+    if idx is None:
+        idx = onp.arange(reference_positions.shape[0])
+
+    if weights is None:
+        weights = jnp.ones_like(idx)
+    weights /= jnp.sum(weights)
+
+    # The center of the positions does not matter as the structure is
+    # fit later by a rigid body motion
+    ref_q = reference_positions[idx[0]]
+    q = vmap(partial(displacement_fn, box=reference_box),
+             in_axes=(None, 0))(ref_q, reference_positions)
+    qbar = jnp.sum(weights[:, jnp.newaxis] * q, axis=0)
+    Y = q - qbar
+
+    def rmsd_fn(state, **kwargs):
+        box, _ = _dyn_box(reference_box, **kwargs)
+        dyn_displacement = partial(displacement_fn, box=box)
+
+        ref_p = state.position[idx[0]]
+        # Compute the displacements with respect to the first atoms to deal with
+        # different kinds of boundary conditions
+        p = vmap(dyn_displacement, in_axes=(None, 0))(ref_p, state.position)
+        pbar = jnp.sum(weights[:, jnp.newaxis] * p, axis=0)
+        X = p - pbar
+
+        # Compute the [d, d] covariance matrix for p.shape = (N, d) and perform
+        # a singular value decomposition to obtain the optimal rotation and
+        # translation that minimizes the weighted squared distance
+        cov = jnp.einsum('ji,j,jk->ik', X, weights, Y)
+
+        print(f"Covariance has shape {cov.shape}")
+
+        U, _, Vh = jnp.linalg.svd(cov, full_matrices=True, compute_uv=True)
+
+        print(f"Shapes are V: {Vh.shape}, U: {U.shape}")
+
+        det = jnp.linalg.det(jnp.dot(U, Vh.T).T)
+        sig = jnp.append(jnp.ones(p.shape[1] - 1), det)
+        rotation = jnp.einsum('ji,j,kj->ik', Vh, sig, U)
+        translation = qbar - jnp.dot(rotation, pbar)
+
+        # With the rigid body motion we can now compute the rmsd
+        p_opt = jnp.einsum('ij,nj->ni', rotation, p)
+        p_opt += translation[jnp.newaxis, :]
+        msd = jnp.sum(weights[:, jnp.newaxis] * jnp.square(p_opt -q))
+        rmsd = jnp.sqrt(msd)
+
+        return rmsd
+
+    return rmsd_fn
+
+
+
+def init_velocity_autocorrelation(num_lags):
     """Returns the velocity autocorrelation function (VACF).
 
     Args:
-        traj_state: TrajectoryState object containing the simulation trajectory
         num_lags: Number of time lags to compute VACF values for. The time lag
         is implicitly defined by the dime difference between two adjacent
         states in the trajectory.
@@ -605,20 +910,34 @@ def velocity_autocorrelation(traj_state, num_lags):
     Returns:
         An array containing the value of the VACF for each considered time lag.
     """
+
     # TODO this quadratic-scaling implementation of autocorrelation is not
     #  optimal. Long-term this should be using FFT if efficiency is critical
-    @jit
-    def vel_correlation(arr, laged_array):
-        # assuming spatial dimension is in last axis
-        scalar_product = jnp.sum(arr * laged_array, axis=-1)
-        average = jnp.mean(scalar_product)  # over particles and time
-        return average
+    @partial(vmap, in_axes=(None, 0))
+    def _vel_correlation(vel, lag):
+        # Assume that array is of shape (Frames, Particles, Dimension).
+        # We roll around the frame axis to create a lag and average over all particles
+        lagged_vel = jnp.roll(vel, axis=0, shift=lag)
+        corr = jnp.mean(jnp.sum(vel * lagged_vel, axis=-1), axis=-1)
+        # Since the first elementwise products are now (v_(n-lag) * v_0), etc. we have to mask them out
+        mask = jnp.arange(vel.shape[0]) >= lag
+        avg_corr = jnp.sum(mask * corr) / jnp.sum(mask)
+        return avg_corr
 
-    velocity_traj = traj_state.trajectory.velocity
-    vacf = [vel_correlation(velocity_traj, velocity_traj)]
-    vacf += [vel_correlation(velocity_traj[i:], velocity_traj[:-i])
-             for i in range(1, num_lags)]
-    return jnp.array(vacf)
+    @jit
+    def vac_fn(state, **kwargs):
+        del kwargs
+        # Due to a broadcasting error, it is necessary to compute the velocity from momentum
+        if state.mass.ndim == 1:
+            velocity = state.momentum / state.mass[:, None, None]
+        else:
+            velocity = state.velocity
+        lag_array = jnp.arange(num_lags)
+
+        vacf = lax.map(partial(_vel_correlation, velocity), lag_array)
+        return vacf
+
+    return vac_fn
 
 
 def self_diffusion_green_kubo(traj_state, time_step, t_cut):
@@ -711,6 +1030,34 @@ def estimate_bond_constants(positions, bonds, displacement_fn):
     eq_distances = jnp.mean(distances, axis=0)
     eq_variances = jnp.var(distances, axis=0)
     return eq_distances, eq_variances
+
+
+def angular_displacement(positions, displacement_fn, angle_idxs, degrees=True):
+    """Computes the dihedral angle for all quadruple of atoms given in idxs.
+
+    Args:
+        positions: Positions of atoms in box
+        displacement_fn: Displacement function
+        dihedral_idxs: (n, 4) array defining IDs of quadruple particles
+        degrees: If False, returns angles in rads.
+                 If True, returns angles in degrees.
+
+    Returns:
+        An array (n,) of the dihedral angles.
+    """
+    p0 = positions[angle_idxs[:, 0]]
+    p1 = positions[angle_idxs[:, 1]]
+    p2 = positions[angle_idxs[:, 2]]
+
+    b0 = -1. * vmap(displacement_fn)(p1, p0)
+    b1 = vmap(displacement_fn)(p2, p1)
+
+    cos = vmap(quantity.cosine_angle_between_two_vectors)(b0, b1)
+
+    if degrees:
+        return jnp.degrees(jnp.arccos(cos))
+    else:
+        return jnp.arccos(cos)
 
 
 def dihedral_displacement(positions, displacement_fn, dihedral_idxs,

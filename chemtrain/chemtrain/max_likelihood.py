@@ -1,3 +1,17 @@
+# Copyright 2023 Multiscale Modeling of Fluid Materials, TU Munich
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """A collection of functions to facilitate learning maximum likelihood /
  single point estimate models.
  """
@@ -12,15 +26,22 @@ from jax_sgmc import data
 import numpy as onp
 import optax
 
-from chemtrain import util, data_processing, dropout
+from os import PathLike
+
+from chemtrain import util, data_processing
+from chemtrain.potential import dropout
 from chemtrain.pickle_jit import jit
+
+from chemtrain.typing import EnergyFnTemplate
 
 
 def pmap_update_fn(batched_model, loss_fn, optimizer):
     """Initializes a pmapped function for updating parameters.
 
     Usage:
-    params, opt_state, loss, grad = update_fn(params, opt_state, batch)
+        .. code-block :: python
+
+            params, opt_state, loss, grad = update_fn(params, opt_state, batch)
 
     Loss and grad are only a single instance, no n_device replica.
     Params and opt_state need to be N_devices times duplicated along axis 0.
@@ -68,7 +89,9 @@ def init_val_predictions(batched_model, val_loader, batch_size=1,
     """Model predictions for whole validation/test dataset.
 
     Usage:
-    predictions, data_state = mapped_model_fn(params, data_state)
+        .. code-block :: python
+
+            predictions, data_state = mapped_model_fn(params, data_state)
 
     Params needs to be N_devices times duplicated along axis 0.
 
@@ -110,7 +133,9 @@ def init_val_loss_fn(model, loss_fn, val_loader, val_targets_keys=None,
     """Initializes a pmapped loss function that computes the validation loss.
 
     Usage:
-    val_loss, data_state = batched_loss_fn(params, data_state)
+        .. code-block :: python
+
+            val_loss, data_state = batched_loss_fn(params, data_state)
 
     Params needs to be N_devices times duplicated along axis 0.
 
@@ -207,11 +232,30 @@ def step_optimizer(params, opt_state, grad, optimizer):
 class MLETrainerTemplate(util.TrainerInterface):
     """Abstract class implementing common properties and methods of single
     point estimate Trainers using optax optimizers.
+
+    Args:
+        optimizer: Optax optimizer
+        init_state: Initial state of optimizer and model
+        checkpoint_path: Path to folder where checkpoints are saved
+        full_checkpoint: Whether to save the full trainer with pickle or only
+            a subset of attributes.
+        reference_energy_fn_template: Function returning a concrete energy
+            function for the current parameters
+
+    Attributes:
+        update_times: Computation time of each update
+        gradient_norm_history: Norms of the gradient for each update
+
     """
 
-    def __init__(self, optimizer, init_state, checkpoint_path,
-                 reference_energy_fn_template=None):
-        super().__init__(checkpoint_path, reference_energy_fn_template)
+    def __init__(self,
+                 optimizer,
+                 init_state: util.TrainerState,
+                 checkpoint_path: PathLike,
+                 full_checkpoint: bool = True,
+                 reference_energy_fn_template: EnergyFnTemplate = None):
+        super().__init__(
+            checkpoint_path, reference_energy_fn_template, full_checkpoint)
         self.state = init_state
         self.optimizer = optimizer
         self.update_times = []
@@ -226,7 +270,19 @@ class MLETrainerTemplate(util.TrainerInterface):
 
         self.release_fns = []
 
-    def _step_optimizer(self, curr_grad):
+    def _optimizer_step(self, curr_grad):
+        """Wrapper around step_optimizer that is useful whenever the
+        update of the optimizer can be done outside of jit-compiled functions.
+
+        Returns:
+            Returns the parameters after an update of the optimizer, but
+            without updating the internal states.
+        """
+        new_params, _ = step_optimizer(
+            self.params, self.state.opt_state, curr_grad, self.optimizer)
+        return new_params
+
+    def _step_optimizer(self, curr_grad, alpha=1.0):
         """Wrapper around step_optimizer that is useful whenever the
         update of the optimizer can be done outside of jit-compiled functions.
         """
@@ -234,6 +290,12 @@ class MLETrainerTemplate(util.TrainerInterface):
                                                    self.state.opt_state,
                                                    curr_grad,
                                                    self.optimizer)
+
+        # Do an optimized update
+        new_params = tree_map(
+            lambda old, new: old * (1 - alpha) + new * alpha,
+            self.params, new_params
+        )
         self.state = self.state.replace(params=new_params,
                                         opt_state=new_opt_state)
 
@@ -267,15 +329,29 @@ class MLETrainerTemplate(util.TrainerInterface):
         end_epoch = start_epoch + max_epochs
         for _ in range(start_epoch, end_epoch):
             start_time = time.time()
-            for batch in self._get_batch():
-                self._update_with_dropout(batch)
-            duration = (time.time() - start_time) / 60.
-            self.update_times.append(duration)
-            self._evaluate_convergence(duration, thresh)
-            self._epoch += 1
-            self._dump_checkpoint_occasionally(frequency=checkpoint_freq)
+            try:
+                for batch in self._get_batch():
+                    self._update_with_dropout(batch)
+                self._dump_checkpoint_occasionally(frequency=checkpoint_freq)
+                duration = (time.time() - start_time) / 60.
+                self.update_times.append(duration)
+                self._evaluate_convergence(duration, thresh)
+                self._epoch += 1
+            except RuntimeError as err:
+                # In case the simulation diverges, break the optimization
+                # and checkpoint the last state such that an analysis can
+                # be performed.
+                self._diverged = True
+                if self.checkpoint_path is not None:
+                    path = (self.checkpoint_path
+                            + f'/epoch{self._epoch - 1}_error_state.pkl')
+                    self.save_trainer(save_path=path)
+                print(f'Training has been unsuccessful due to the following'
+                      f' error: {err}')
+                break
 
-            if self._converged or self._diverged:
+
+            if self._converged:
                 break
         else:
             if thresh is not None:
@@ -330,21 +406,26 @@ class EarlyStopping:
     on some stopping criterion.
 
     The following criteria are implemented:
-    * 'window_median': 2 windows are placed at the end of the loss history.
-                       Stops when the median of the latter window of size
-                       "thresh" exceeds the median of the prior window of the
-                       same size.
-    * 'PQ': Stops when the PQ criterion exceeds thresh
-    * 'max_loss': Stops when the loss decreased below the maximum allowed loss
-                  specified cia thresh.
+
+        - ``'window_median'``: 2 windows are placed at the end of the loss
+          history. Stops when the median of the latter window of size "thresh"
+          exceeds the median of the prior window of the same size.
+
+        - ``'PQ'``: Stops when the PQ criterion exceeds thresh
+
+        - ``'max_loss'``: Stops when the loss decreased below the maximum allowed
+          loss specified via thresh.
+
+    Args:
+        criterion: Convergence criterion to employ
+        pq_window_size: Window size for PQ method
+
+    Attributes:
+        best_loss: Loss of the best performing parameters
+        best_params: Parameters with best performance
+
     """
     def __init__(self, params, criterion, pq_window_size=5):
-        """Initialize EarlyStopping.
-
-        Args:
-            criterion: Convergence criterion to employ
-            pq_window_size: Window size for PQ method
-        """
         self.criterion = criterion
 
         # own loss history that can be reset on the fly if needed.
@@ -387,8 +468,8 @@ class EarlyStopping:
 
     def early_stopping(self, curr_epoch_loss, thresh, params=None,
                        save_best_params=True):
-        """Estimates whether convergence criterion was met and keeps track of
-        best parameters obtained so far.
+        """Estimates whether the convergence criterion was met and keeps track
+        of the best parameters obtained so far.
 
         Args:
             curr_epoch_loss: Validation loss of the most recent epoch
@@ -415,9 +496,9 @@ class EarlyStopping:
         return self._is_converged(thresh)
 
     def reset_convergence_losses(self):
-        """Resets loss history used for convergence estimation, e.g. to avoid
+        """Resets loss history used for convergence estimation, e.g., to avoid
         early stopping when loss increases due to on-the-fly changes in the
-        dataset or the loss fucntion.
+        dataset or the loss function.
         """
         self._epoch_losses = []
         self.best_loss = 1.e16
@@ -429,7 +510,9 @@ class EarlyStopping:
 
 
 class DataParallelTrainer(MLETrainerTemplate):
-    """Trainer functionalities for MLE training based on a dataset, where
+    """Trainer for parallelized MLE training based on a dataset.
+
+    This trainer implements methods for MLE training on a dataset, where
     parallelization can simply be accomplished by pmapping over batched data.
     As pmap requires constant batch dimensions, data with unequal number of
     atoms needs to be padded and to be compatible with this trainer.
@@ -437,6 +520,7 @@ class DataParallelTrainer(MLETrainerTemplate):
     def __init__(self, dataset_dict, loss_fn, model, init_params, optimizer,
                  checkpoint_path, batch_per_device, batch_cache,
                  train_ratio=0.7, val_ratio=0.1, shuffle=False,
+                 full_checkpoint=True,
                  convergence_criterion='window_median',
                  energy_fn_template=None):
         self.model = model
@@ -455,9 +539,13 @@ class DataParallelTrainer(MLETrainerTemplate):
         super().__init__(
             optimizer=optimizer, init_state=init_state,
             checkpoint_path=checkpoint_path,
+            full_checkpoint=full_checkpoint,
             reference_energy_fn_template=energy_fn_template)
 
-        self.train_batch_losses, self.train_losses, self.val_losses = [], [], []
+        self.train_batch_losses = self.checkpoint('train_batch_losses', [])
+        self.train_losses = self.checkpoint('train_losses', [])
+        self.val_losses = self.checkpoint('val_losses', [])
+
         self._early_stop = EarlyStopping(self.params, convergence_criterion)
 
         (self._batches_per_epoch, self._get_train_batch,
@@ -482,9 +570,9 @@ class DataParallelTrainer(MLETrainerTemplate):
             train_ratio: Percentage of dataset to use for training.
             val_ratio: Percentage of dataset to use for validation.
             shuffle: Whether to shuffle data before splitting into
-                     train-val-test.
-            **dataset_kwargs: Kwargs to supply to self._build_dataset to
-                      re-build the dataset
+                train-val-test.
+            dataset_kwargs: Kwargs to supply to ``self._build_dataset`` to
+                re-build the dataset
         """
         # reset convergence criterion as loss might not be comparable
         self._early_stop.reset_convergence_losses()
@@ -569,10 +657,10 @@ class DataParallelTrainer(MLETrainerTemplate):
         must not exceed the trainer batch size.
 
         Args:
-            **sample: Kwargs storing data samples to supply to
-                      self._build_dataset to build samples in the correct
-                      pytree. Analogous usage as update_dataset, but the dataset
-                      only consists of a few observations.
+            sample: Kwargs storing data samples to supply to
+                ``self._build_dataset`` to build samples in the correct
+                pytree. Analogous usage as update_dataset, but the dataset
+                only consists of a few observations.
         """
         ordered_samples, _ = self._build_dataset(**sample)
         n_samples = util.tree_multiplicity(ordered_samples)
@@ -586,10 +674,10 @@ class DataParallelTrainer(MLETrainerTemplate):
         """Set testloader to use provided test data.
 
         Args:
-            **testdata: Kwargs storing the sample daata to supply to
-                        self._build_dataset to build the sample in the correct
-                        pytree. Analogous usage as update_dataset, but the
-                        dataset only consists of a single observation.
+            testdata: Kwargs storing the sample daata to supply to
+                ``self._build_dataset`` to build the sample in the correct
+                pytree. Analogous usage as update_dataset, but the
+                dataset only consists of a single observation.
         """
         dataset, _ = self._build_dataset(**testdata)
         _, _, test_loader = data_processing.init_dataloaders(dataset, 0., 0.)

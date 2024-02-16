@@ -1,3 +1,17 @@
+# Copyright 2023 Multiscale Modeling of Fluid Materials, TU Munich
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Custom definition of some potential energy functions."""
 from functools import partial
 from typing import Callable, Any
@@ -372,6 +386,45 @@ def generic_repulsion_nonbond(displacement_or_metric: DisplacementOrMetricFn,
             exp=exp)
 
 
+def soft_sphere_neighbor_list(displacement_or_metric: DisplacementOrMetricFn,
+                              box_size: Box=None,
+                              species: Array=None,
+                              sigma: Array=1.0,
+                              epsilon: Array=1.0,
+                              alpha: Array=2.0,
+                              r_cutoff: Array = 1.,
+                              dr_threshold: float=0.2,
+                              per_particle: bool=False,
+                              capacity_multiplier: float = 1.25,
+                              initialize_neighbor_list: bool = True):
+    """Convenience wrapper to compute :ref:`soft spheres <soft-sphere>` using a neighbor list."""
+    sigma =  jnp.array(sigma, dtype=f32)
+    epsilon =  jnp.array(epsilon, dtype=f32)
+    alpha =  jnp.array(alpha, dtype=f32)
+    list_cutoff = jnp.max(sigma)
+    r_cutoff = jnp.array(r_cutoff, dtype=f32)
+    dr_threshold = jnp.array(dr_threshold, dtype=f32)
+
+    energy_fn = smap.pair_neighbor_list(
+      energy.soft_sphere,
+      space.canonicalize_displacement_or_metric(displacement_or_metric),
+      ignore_unused_parameters=True,
+      species=species,
+      sigma=sigma,
+      epsilon=epsilon,
+      alpha=alpha,
+      reduce_axis=(1,) if per_particle else None)
+
+    if initialize_neighbor_list:
+      assert box_size is not None
+      neighbor_fn = partition.neighbor_list(
+        displacement_or_metric, box_size, list_cutoff, dr_threshold,
+        capacity_multiplier=capacity_multiplier
+      )
+      return neighbor_fn, energy_fn
+
+    return energy_fn
+
 def lorentz_berthelot(idxs, species, sigma_dict, epsilon_dict):
     """Applys the lorenz-berthelot rule to the idx and species array.
     Calculates the sigma and epsilon values from the given dictonary.
@@ -512,7 +565,7 @@ def tabulated_neighbor_list(displacement_or_metric: DisplacementOrMetricFn,
                             y_vals: Array,
                             box_size: Box,
                             degree: int = 3,
-                            monotonic: bool = True,
+                            monotonic: bool = False,
                             r_onset: Array = 0.9,
                             r_cutoff: Array = 1.,
                             dr_threshold: Array = 0.2,

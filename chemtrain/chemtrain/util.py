@@ -1,3 +1,17 @@
+# Copyright 2023 Multiscale Modeling of Fluid Materials, TU Munich
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Utility functions helpful in designing new trainers."""
 import abc
 from functools import partial
@@ -284,17 +298,22 @@ def format_not_recognized_error(file_format):
                      f'Expected ".hdf5" or ".pkl".')
 
 
-class TrainerInterface(abc.ABC):
+class TrainerInterface(metaclass=abc.ABCMeta):
     """Abstract class defining the user interface of trainers as well as
     checkpointing functionality.
     """
     # TODO write protocol classes for better documentation of initialized
     #  functions
-    def __init__(self, checkpoint_path, reference_energy_fn_template=None):
+    def __init__(self,
+                 checkpoint_path,
+                 reference_energy_fn_template=None,
+                 full_checkpoint=True):
         """A reference energy_fn_template can be provided, but is not mandatory
         due to the dependence of the template on the box via the displacement
         function.
         """
+        self._statistics = {}
+        self._full_checkpoint = full_checkpoint
         self.checkpoint_path = checkpoint_path
         self._epoch = 0
         self.reference_energy_fn_template = reference_energy_fn_template
@@ -316,14 +335,27 @@ class TrainerInterface(abc.ABC):
             pathlib.Path(self.checkpoint_path).mkdir(parents=True,
                                                      exist_ok=True)
             if self._epoch % frequency == 0:  # checkpoint model
-                file_path = (self.checkpoint_path +
-                             f'/epoch{self._epoch - 1}.pkl')
+                epoch = str(self._epoch).rjust(5, '0')
+                file_path = (
+                    pathlib.Path(self.checkpoint_path) / f'epoch{epoch}.pkl')
                 self.save_trainer(file_path)
 
-    def save_trainer(self, save_path):
+    def save_trainer(self, save_path, format='.pkl'):
         """Saves whole trainer, e.g. for production after training."""
-        with open(save_path, 'wb') as pickle_file:
-            pickle.dump(self, pickle_file)
+        if self._full_checkpoint:
+            data = self
+        else:
+            data = self._statistics
+            try:
+                self._statistics["trainer_state"] = self.state
+            except AttributeError:
+                print(f"Skipping trainer state")
+
+        if format == '.pkl':
+            with open(save_path, 'wb') as pickle_file:
+                pickle.dump(data, pickle_file)
+        elif format == 'none':
+            return data
 
     def save_energy_params(self, file_path, save_format='.hdf5'):
         if save_format == '.hdf5':
@@ -370,3 +402,20 @@ class TrainerInterface(abc.ABC):
          avoid TracerExceptions after loading trainers from disk, i.e.
          loading numpy rather than device arrays.
          """
+
+    def checkpoint(self, name, object):
+        """Marks attribute to be saved in a partial checkpoint.
+
+        This requires that the object to be saved is only mutated but not
+        replaced during training.
+
+        Args:
+            name: Name of the statistic in the saved dictionary
+            object: Mutable object to be saved via pickle
+
+        Returns:
+            Returns the original object unchanged.
+
+        """
+        self._statistics.update({name: object})
+        return object
