@@ -2,11 +2,15 @@ import functools
 import itertools
 from io import StringIO
 
-from jax import tree_util
+import numpy as np
+from jax import tree_util, debug
 from jax.typing import ArrayLike
 import jax.numpy as jnp
 
 from jax_md import energy
+
+from chemtrain.jax_md_mod import custom_energy, io
+from chemtrain import sparse_graph
 
 import numpy as onp
 
@@ -14,9 +18,6 @@ import tomli
 
 import importlib
 
-
-
-_periodic_system = ["H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne", "Na", "Mg", "Al", "Si", "P", "S", "Cl", "Ar"]
 
 @tree_util.register_pytree_node_class
 class ForceField:
@@ -140,36 +141,76 @@ class ForceField:
 
         return cls(data, lookup, mapping)
 
+    def write_ff(self, fname):
+        reverse_mapping = {
+            value: key for key, value in self._mapping.items()
+        }
+
+        # TODO: Read out the data more efficiently
+        bond_data = [
+            (i, j, self._lookup["bonded"]["bonds"][i, j])
+            for i, j in itertools.product(range(self.max_species), range(self.max_species))
+            if self._lookup["bonded"]["bonds"][i, j] >= 0
+            and i < j
+        ]
+
+        print(bond_data)
+
+        bondtypes = "#    i,    j,    b0,    kb\n"
+        bondtypes += "\n".join(
+            ",".join([
+                f"{reverse_mapping[i]}".rjust(5, " "),
+                f"{reverse_mapping[j]}".rjust(5, " "),
+                f"{self._data['bonded']['bonds'][idx][0] :.5f}".rjust(7, " "),
+                f"{self._data['bonded']['bonds'][idx][0] :.1f}".rjust(7, " "),
+            ])
+            for i, j, idx in bond_data
+        )
+
+        return bondtypes
+
+    @property
+    def get_data(self):
+        return self._data
+
     @property
     def max_species(self):
         return max(self._mapping.values()) + 1
 
-    @property
-    def mapping(self):
-        def mapping_fn(symbol: int, is_water: bool, **kwargs):
+    def mapping(self, by_name=False):
+        def mapping_fn(symbol: int, is_water: bool, name: str = "", **kwargs):
+            if by_name:
+                return self._mapping[name]
+
             if is_water:
                 return self._mapping[symbol + "W"]
             else:
                 return self._mapping[symbol]
         return mapping_fn
 
+    def get_nonbonded_params(self, s):
+        idx = self._lookup["nonbonded"][s]
+        data = self._data["nonbonded"][idx]
+        valid = idx >= 0
+        return data, valid
+
     def get_bond_params(self, s1, s2):
         idx = self._lookup["bonded"]["bonds"][s1, s2]
         data = self._data["bonded"]["bonds"][idx]
-        valid = idx > 0
+        valid = idx >= 0
         return data, valid
 
     def get_angle_params(self, s1, s2, s3):
         idx = self._lookup["bonded"]["angles"][s1, s2, s3]
         data = self._data["bonded"]["angles"][idx]
-        valid = idx > 0
+        valid = idx >= 0
         return data, valid
 
     def get_dihedral_params(self, s1, s2, s3, s4):
         idx = self._lookup["bonded"]["dihedrals"][s1, s2, s3, s4]
         print(f"Idx is {idx}")
         data = self._data["bonded"]["dihedrals"][idx]
-        valid = idx > 0
+        valid = idx >= 0
         return data, valid
 
     @classmethod
@@ -227,7 +268,7 @@ class Topology:
         raise NotImplementedError("Padding not yet implemented")
 
 
-    def get_atom_species(self, idx):
+    def get_atom_species(self, idx=None):
         if self._species is None:
             return None
 
@@ -343,7 +384,7 @@ class Topology:
 
         species = [
             mapping(
-                number=n.element.number, name=n.element.name,
+                number=n.element.number, name=n.name,
                 symbol=n.element.symbol, code=n.residue.code,
                 is_water=n.residue.is_water, is_protein=n.residue.is_protein
             )
@@ -387,22 +428,89 @@ class Topology:
         )
 
 
-def init_prior_potential(displacement_fn):
+def init_bond_potential(displacement_fn, topology, force_field):
+    bond_idx, bond_species, bond_mask = topology.get_bonds()
+    bond_params, mask = force_field.get_bond_params(
+        bond_species[:, 0], bond_species[:, 1])
+    # Mask out bonds by setting their energy to zero
+    b0 = bond_params[:, 0]
+    kb = jnp.where(
+        jnp.logical_and(mask, bond_mask), bond_params[:, 1], 0.0
+    )
+    bond_potential = energy.simple_spring_bond(
+        displacement_fn, bond_idx, length=b0, epsilon=kb)
+    return bond_potential
+
+
+def init_angle_potential(displacement_fn, topology, force_field):
+    angle_idx, angle_species, angle_mask = topology.get_angles()
+    angle_params, mask = force_field.get_angle_params(
+        angle_species[:, 0], angle_species[:, 1], angle_species[:, 2])
+    # Mask out bonds by setting their energy to zero
+    th0 = angle_params[:, 0]
+    kth = jnp.where(
+        jnp.logical_and(mask, angle_mask), angle_params[:, 1], 0.0
+    )
+    angle_potential = custom_energy.harmonic_angle(
+        displacement_fn, angle_idx, th0=th0, kth=kth)
+    return angle_potential
+
+
+def init_nonbonded_potentia(displacement_fn, topology, force_field: ForceField):
+    species = topology.get_atom_species()
+    nonbonded_params, mask = force_field.get_nonbonded_params(species)
+
+    lennard_jones_fn = custom_energy.generic_repulsion_neighborlist(
+        displacement_fn, initialize_neighbor_list=False, box_size=0.0,
+        sigma=0.3156, epsilon=1.0,
+        # sigma=nonbonded_params[:, 1], epsilon=nonbonded_params[:, 2]
+        # sigma=(lambda s1, s2: 0.5 * (s1 + s2), nonbonded_params[:, 1]),
+        # epsilon=(lambda e1, e2: jnp.sqrt(e1 * e2), nonbonded_params[:, 2])
+    )
+    return lennard_jones_fn
+
+
+def init_prior_potential(displacement_fn, mask_bonded: bool = True):
+    """Initializes the prior template.
+
+    Args:
+        displacement_fn:
+        mask_bonded: Excluded non-bonded interactions between bonded atoms via
+            masking them in the neighbor list. This might be ineffective if the
+            number of bonds is very large. Otherwise, the non-bonded interaction
+            is simply substracted from the ...
+
+    """
     def prior_potential_template(topology: Topology, force_field: ForceField):
 
-        bond_idx, bond_species, bond_mask = topology.get_bonds()
-        bond_params, mask = force_field.get_bond_params(
-            bond_species[:, 0], bond_species[:, 1])
-        b0 = bond_params[:, 0]
-        kb =  bond_params[:, 1]
-        bond_potential = energy.simple_spring_bond(
-            displacement_fn, bond_idx, length=b0, epsilon=kb)
+        # Bonded
+        bond_potential = init_bond_potential(displacement_fn, topology, force_field)
+        angle_potential = init_angle_potential(displacement_fn, topology, force_field)
+
+        # Angles
+        # angle_potential = ini
+
+        # Dihedrals
+
+        # Nonbonded
+        nonbonded_potential_fn = init_nonbonded_potentia(displacement_fn, topology, force_field)
 
         def potential_fn(position, neighbor=None, **kwargs):
-            bond_energy = jnp.where(mask * bond_mask, bond_potential(position, **kwargs), 0.0)
-
             pot = 0.0
-            pot += jnp.sum(bond_energy)
+            pot += bond_potential(position)
+            pot += angle_potential(position)
+
+            if mask_bonded:
+                # Exclude pairs connected via bonds and angles from the
+                # neighbor list to exclude them also from beeing considered
+                # in the nonbonded potential computation
+                neighbor = sparse_graph.subtract_topology_from_neighbor_list(
+                    neighbor, topology)
+                pot += nonbonded_potential_fn(position, neighbor)
+            else:
+                #
+                pass
+
             return pot
 
         return potential_fn
@@ -412,34 +520,71 @@ def init_prior_potential(displacement_fn):
 
 if __name__ == "__main__":
 
+    # TODO: Taks still open
+    #       - Implement the dihedral potentials
+    #       - Check pruning
+    #       - Check bon removal
+    #       - Write way to save trained parameters to ff
+    #       - Correct nonbonded interactions in cg prior force field
+    #       - Add better documentation and final example
+
     import jax
     from jax import tree_util
-    from jax_md import space
+    from jax_md import space, partition
 
 
     import mdtraj
-    top = mdtraj.load("../../examples/alanine_dipeptide/data/confs/atomistic.pdb")
+    top = mdtraj.load("../../examples/alanine_dipeptide/data/confs/heavy_2_7nm.gro")
+    # top = mdtraj.load("../../examples/alanine_dipeptide/data/confs/atomistic.pdb")
     # print(top)
-    print(top.topology.to_bondgraph().edges)
+    names = [a.element.symbol for a in top.topology.atoms]
 
-    force_field = ForceField.load_ff("../../data/atomistic_ff.toml")
-    topology = Topology.from_mdtraj(top.topology, mapping=force_field.mapping)
+    # force_field = ForceField.load_ff("../../data/atomistic_ff.toml")
+    force_field = ForceField.load_ff("../../examples/alanine_dipeptide/data/force_fields/heavy.toml")
+    print(force_field._mapping)
+    topology = Topology.from_mdtraj(top.topology, mapping=force_field.mapping(by_name=True))
 
     topology = topology.prune_topology(force_field)
 
-    displacement = space.periodic_general(5.0, fractional_coordinates=False)[0]
-    position = jnp.asarray(top[0].xyz[0, ...])
+    displacement = space.periodic_general(20.0, fractional_coordinates=False)[0]
+    position = jnp.asarray(top[0].xyz[0, ...]) * 0.1 # Convert from A to nm
 
     print(position)
     print(position.shape)
 
-    energy_fn_template = init_prior_potential(displacement)
+    neighbor_list = partition.neighbor_list(displacement, 5.0, r_cutoff=0.5, disable_cell_list=True)
+    nbrs = neighbor_list.allocate(position)
+    #
+    # print(jax.jit(sparse_graph.subtract_topology_from_neighbor_list)(nbrs, topology).idx)
 
+    energy_fn_template = init_prior_potential(displacement)
 
     @jax.jit
     @jax.value_and_grad
-    def test_fn(force_field):
+    def trial_fn(position):
         energy_fn = energy_fn_template(topology, force_field)
-        return energy_fn(position)
+        return energy_fn(position, neighbor=nbrs)
 
-    print(tree_util.tree_leaves(test_fn(force_field)))
+    lr = 0.1
+
+    for idx in range(1000):
+        value, grad = trial_fn(position)
+        grad = jnp.clip(grad, -1e1, 1e1)
+        lr *= 0.975
+        position -= lr * grad
+        print(f"Energy {value}")
+
+    io.save_gro(position, 5.0, filename="../../examples/alanine_dipeptide/data/confs/atomistic.gro", group="ALA", species=names)
+
+    print(topology.get_bonds()[1])
+    print(topology.get_atom_species())
+
+    @jax.jit
+    @jax.value_and_grad
+    def trial_fn(force_field):
+        energy_fn = energy_fn_template(topology, force_field)
+        return energy_fn(position, neighbor=nbrs)
+
+    print(trial_fn(force_field)[1]._data)
+
+    print(force_field.write_ff("test"))

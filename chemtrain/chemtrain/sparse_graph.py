@@ -18,15 +18,17 @@ molecular state.
 The :class:`SparseDirectionalGraph` is the input to
 :class:`~chemtrain.neural_networks.DimeNetPP`.
 """
+import functools
 import inspect
 from typing import Optional, Callable, Tuple
 
 import chex
 import numpy as onp
-from jax import numpy as jnp, vmap, lax
+from jax import numpy as jnp, vmap, lax, debug
 from jax_md import space, partition, smap
 
 from chemtrain.jax_md_mod import custom_space
+from chemtrain.potential.prior import Topology
 
 
 @chex.dataclass
@@ -534,3 +536,68 @@ def _canonicalize_species(species, n_particles):
     else:
         smap._check_species_dtype(species)  # assert species are int
     return species
+
+
+def subtract_topology_from_neighbor_list(nbrs: partition.NeighborList, topology: Topology):
+        """Removes all neighbors connected via bonds and angles from the neighbor list. """
+
+        # TODO: Deal also with masked angles
+        bond_idx, _, bond_mask = topology.get_bonds()
+        angle_idx, _, angle_mask = topology.get_angles()
+
+        # TODO: This vectorized implementation might require much memory
+        #       E.g. for N particles with B bonds and d max neighbors, the
+        #       matrix has the shape N * d * B
+        #       -> E.g. for 900 water particles with 2/3 bonds per particle and
+        #          10 neighbors this results in 20 / 3 * (900) ** 2 = 5,4 mio
+        #          entries (However, not much more inefficient than neighbor list
+        #          generation)
+
+        @functools.partial(vmap, in_axes=(0, 0, None))
+        def _find_bonds(particle_nbrs, idx, invalid):
+            # Check for all neighbors whether they are already part of the bond
+            # list.
+            is_bond = vmap(
+                # Map over all pairs i, j that are part of the neighbor list
+                lambda i: jnp.any(
+                    # Check whether these pairs appear in the bond list
+                    jnp.logical_and(
+                        bond_mask,
+                        jnp.logical_or(
+                            jnp.logical_and(i == bond_idx[:, 0], idx == bond_idx[:, 1]),
+                            jnp.logical_and(i == bond_idx[:, 1], idx == bond_idx[:, 0])
+                        )
+                    )
+                )
+            )(particle_nbrs)
+            return jnp.where(is_bond, invalid, particle_nbrs)
+
+        @functools.partial(vmap, in_axes=(0, 0, None))
+        def _find_angles(particle_nbrs, idx, invalid):
+            is_angle = vmap(
+                # Map over all pairs i, j that are part of the neighbor list
+                lambda i: jnp.any(
+                    # Check whether these pairs appear in the angle list
+                    jnp.logical_and(
+                        angle_mask,
+                        jnp.logical_or(
+                            jnp.logical_and(i == angle_idx[:, 0], idx == angle_idx[:, 2]),
+                            jnp.logical_and(i == angle_idx[:, 2], idx == angle_idx[:, 0])
+                        )
+                    )
+                )
+            )(particle_nbrs)
+            return jnp.where(is_angle, invalid, particle_nbrs)
+
+        if nbrs.format == partition.NeighborListFormat.Dense:
+            idx = nbrs.idx
+            invalid_idx = idx.shape[0]
+            idx = _find_bonds(idx, jnp.arange(invalid_idx), invalid_idx)
+            idx = _find_angles(idx, jnp.arange(invalid_idx), invalid_idx)
+        else:
+            raise NotImplementedError(
+                "Subtracting the toplogy from the neighbor list only suported "
+                "for dense neighbor lists.")
+
+        return nbrs.set(idx=idx)
+

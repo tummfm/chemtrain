@@ -178,9 +178,12 @@ def stillinger_weber_neighborlist(displacement,
 
 def harmonic_angle(displacement_or_metric: DisplacementOrMetricFn,
                    angle_idxs: Array,
-                   eq_mean: Array,
-                   eq_variance: Array,
-                   kbt: [float, Array]):
+                   eq_mean: Array = None,
+                   eq_variance: Array = None,
+                   kbt: [float, Array] = None,
+                   th0: Array = None,
+                   kth: Array = None,
+                   ):
     """Harmonic Angle interaction.
 
     The variance of the angle is used to determine the force constant.
@@ -199,8 +202,13 @@ def harmonic_angle(displacement_or_metric: DisplacementOrMetricFn,
 
     kbt = jnp.array(kbt, dtype=f32)
     angle_mask = jnp.ones([angle_idxs.shape[0], 1])
-    harmonic_fn = partial(energy.simple_spring, length=eq_mean,
-                          epsilon=kbt / eq_variance)
+
+    if th0 is None:
+        th0 = eq_mean
+    if kth is None:
+        kth = kbt / eq_variance
+
+    harmonic_fn = partial(energy.simple_spring, length=th0, epsilon=kth)
 
     def energy_fn(pos, **unused_kwargs):
         angles = sparse_graph.angle_triplets(pos, displacement_or_metric,
@@ -254,6 +262,74 @@ def periodic_dihedral(displacement_or_metric: DisplacementOrMetricFn,
         return jnp.sum(per_angle_u)
 
     return energy_fn
+
+
+def truncated_lennard_jones(dr: Array,
+                            sigma: Array = 1.,
+                            epsilon: Array = 1.,
+                            exp: Array = 12.,
+                            **unused_dynamic_kwargs) -> Array:
+    """Lennard Jones interaction truncated and shifted at the minimum.
+
+    Args:
+      dr: An ndarray of pairwise distances between particles.
+      sigma: Repulsion length scale
+      epsilon: Interaction energy scale
+      exp: Exponent specifying interaction stiffness
+
+    Returns:
+      Array of energies
+    """
+    del unused_dynamic_kwargs
+    dr = jnp.where(dr > 1.e-7, dr, 1.e7)  # save masks dividing by 0
+    r_min = 2.0 ** (2. / exp) * sigma
+    dr = jnp.where(dr > r_min, r_min, dr) # truncate at the minimum
+    idr = (sigma / dr)
+    pot_energy = 4 * epsilon * (idr ** exp - idr ** (exp / 2.))
+    pot_energy += epsilon # shift
+    return pot_energy
+
+
+def truncated_lennard_jones_neighborlist(
+        displacement_or_metric: DisplacementOrMetricFn,
+        box_size: Box = None,
+        species: Array = None,
+        sigma: Array = 1.0,
+        epsilon: Array = 1.0,
+        exp: [int, Array] = 12.,
+        dr_threshold: float = 0.2,
+        per_particle: bool = False,
+        capacity_multiplier: float = 1.25,
+        initialize_neighbor_list: bool = True):
+    """Convenience wrapper to compute generic repulsion energy over a system
+    with neighborlist.
+
+    Provides option not to initialize neighborlist. This is useful if energy
+    function needs to be initialized within a jitted function.
+    """
+    sigma = jnp.array(sigma, dtype=f32)
+    epsilon = jnp.array(epsilon, dtype=f32)
+    exp = jnp.array(exp, dtype=f32)
+
+    energy_fn = smap.pair_neighbor_list(
+      truncated_lennard_jones,
+      space.canonicalize_displacement_or_metric(displacement_or_metric),
+      species=species,
+      sigma=sigma,
+      epsilon=epsilon,
+      exp=exp,
+      reduce_axis=(1,) if per_particle else None)
+
+    if initialize_neighbor_list:
+        assert box_size is not None
+        neighbor_fn = partition.neighbor_list(
+            displacement_or_metric, box_size, r_cutoff, dr_threshold,
+            capacity_multiplier=capacity_multiplier
+        )
+        return neighbor_fn, energy_fn
+
+    return energy_fn
+
 
 
 def generic_repulsion(dr: Array,
@@ -488,8 +564,10 @@ def customn_lennard_jones_neighbor_list(
      Different implementation of the cutoff to disentable with energy_params.
      Option not to initialize neighbor list to allow jitable building of
      energy function for varying sigma and epsilon."""
-    sigma = jnp.array(sigma, f32)
-    epsilon = jnp.array(epsilon, f32)
+    if isinstance(sigma, tuple):
+        sigma = (sigma[0], jnp.array(sigma[1], f32))
+    if isinstance(epsilon, tuple):
+        epsilon = (epsilon[0], jnp.array(epsilon[1], f32))
     r_onset = jnp.array(r_onset, f32)
     r_cutoff = jnp.array(r_cutoff, f32)
     dr_threshold = jnp.array(dr_threshold, f32)
