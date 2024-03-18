@@ -20,7 +20,7 @@ The :class:`SparseDirectionalGraph` is the input to
 """
 import functools
 import inspect
-from typing import Optional, Callable, Tuple
+from typing import Optional, Callable, Tuple, TYPE_CHECKING
 
 import chex
 import numpy as onp
@@ -28,7 +28,9 @@ from jax import numpy as jnp, vmap, lax, debug
 from jax_md import space, partition, smap
 
 from chemtrain.jax_md_mod import custom_space
-from chemtrain.potential.prior import Topology
+
+if TYPE_CHECKING:
+    from chemtrain.potential.prior import Topology
 
 
 @chex.dataclass
@@ -538,7 +540,7 @@ def _canonicalize_species(species, n_particles):
     return species
 
 
-def subtract_topology_from_neighbor_list(nbrs: partition.NeighborList, topology: Topology):
+def subtract_topology_from_neighbor_list(nbrs: partition.NeighborList, topology: "Topology"):
         """Removes all neighbors connected via bonds and angles from the neighbor list. """
 
         # TODO: Deal also with masked angles

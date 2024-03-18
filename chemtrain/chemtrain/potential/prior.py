@@ -1,4 +1,6 @@
+import functools
 import importlib
+import re
 import itertools
 from io import StringIO
 from typing import Tuple, Union
@@ -817,3 +819,32 @@ def unconstrain_ff_params(constrained_data):
         raise NotImplementedError(
             "Constraining nonbonded data not yet supported.")
     return unconstrained_params
+
+
+# Helper function to rename e.g. from PDB atom names to AMBER atom names
+
+
+PDB_TO_AMBER = [
+    ("H+", "HC"), ("H", "H"), ("CH3", "CT"), ("CA", "CT"), ("C", "C"),
+    ("N", "N"), ("O", "O")
+]
+
+
+def lookup_fn(name, lookup_table):
+    """Searches for a matching pattern and return the alternative atom name. """
+    for pattern, alt_name in lookup_table:
+        if re.match(pattern, name) is not None:
+            return alt_name
+    return f"UNDEFINED({name})"
+
+
+def rename_atoms(lookup_table):
+    """Renames the atoms before passing them to the mapping."""
+    def decorator(fun):
+        @functools.wraps(fun)
+        def wrapper(**kwargs):
+            name = kwargs.pop("name")
+            alt_name = lookup_fn(name, lookup_table)
+            return fun(name=alt_name, **kwargs)
+        return wrapper
+    return decorator
