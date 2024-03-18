@@ -829,7 +829,7 @@ def unconstrain_ff_params(constrained_data):
 
 
 PDB_TO_AMBER = [
-    ("H+", "HC"), ("H", "H"), ("CH3", "CT"), ("CA", "CT"), ("C", "C"),
+    ("H.+", "HC"), ("H", "H"), ("CH3", "CT"), ("C[A-B]+", "CT"), ("C", "C"),
     ("N", "N"), ("O", "O")
 ]
 
@@ -837,7 +837,7 @@ PDB_TO_AMBER = [
 def lookup_fn(name, lookup_table):
     """Searches for a matching pattern and return the alternative atom name. """
     for pattern, alt_name in lookup_table:
-        if re.match(pattern, name) is not None:
+        if re.fullmatch(pattern, name) is not None:
             return alt_name
     return f"UNDEFINED({name})"
 
