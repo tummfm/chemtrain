@@ -3,7 +3,7 @@ import importlib
 import re
 import itertools
 from io import StringIO
-from typing import Tuple, Union
+from typing import List, Tuple, Union
 
 import jax.numpy as jnp
 import numpy as onp
@@ -327,19 +327,22 @@ class ForceField:
         """Maximum number of species."""
         return max(self._mapping.values()) + 1
 
-    def mapping(self, by_name=False):
+    def mapping(self, by_name=False, renaming_pattern: List[Tuple[str, str]] = None):
         """Returns a function that maps atom data into a species number.
 
         Args:
             by_name: If true, then the atom name (e. g. `"CA"`) is used as an
                 identifier. Otherwise, the element symbol (e. g. `"C"`) is
                 used to look up the species number.
+            renaming_pattern: Translate the atom names between different naming
+                conventions, e.g. from PDB to AMBER.
 
         Returns:
             Returns a mapping function that maps atom data into a species
             number.
 
         """
+        @rename_atoms(lookup_table=renaming_pattern)
         def mapping_fn(symbol: int, is_water: bool, name: str = "", **kwargs):
             if by_name:
                 return self._mapping[name]
@@ -348,6 +351,7 @@ class ForceField:
                 return self._mapping[symbol + "W"]
             else:
                 return self._mapping[symbol]
+
         return mapping_fn
 
     def get_nonbonded_params(self, s):
@@ -838,9 +842,12 @@ def lookup_fn(name, lookup_table):
     return f"UNDEFINED({name})"
 
 
-def rename_atoms(lookup_table):
+def rename_atoms(lookup_table=None):
     """Renames the atoms before passing them to the mapping."""
     def decorator(fun):
+        if lookup_table is None:
+            return fun
+
         @functools.wraps(fun)
         def wrapper(**kwargs):
             name = kwargs.pop("name")
