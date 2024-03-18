@@ -44,6 +44,8 @@ class ForceField:
             Returns a force field instance with parameters read from the file.
 
         """
+        tomli = importlib.import_module("tomli")
+
         data = {
             "nonbonded": None,
             "bonded": {}
@@ -156,6 +158,7 @@ class ForceField:
             fname: Path, where the force field should be stored.
 
         """
+        tomli_w = importlib.import_module("tomli_w")
 
         reverse_mapping = {
             value: key for key, value in self._mapping.items()
