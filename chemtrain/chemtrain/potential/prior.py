@@ -807,7 +807,7 @@ def unconstrain_ff_params(constrained_data):
     unconstrained_params = {}
     if "bonded" in constrained_data.keys():
         unconstrained_params["bonded"] = {}
-        if "bonds" in unconstrained_params["bonded"].keys():
+        if "bonds" in constrained_data["bonded"].keys():
             unconstrained_params["bonded"]["bonds"] = jnp.exp(
                 constrained_data["bonded"]["bonds"]
             )
