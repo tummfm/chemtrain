@@ -5,6 +5,7 @@ import itertools
 from io import StringIO
 from typing import List, Tuple, Union
 
+import jax
 import jax.numpy as jnp
 import numpy as onp
 import tomli
@@ -127,23 +128,25 @@ class ForceField:
         data["bonded"]["angles"] = jnp.asarray(angle_data)
         lookup["bonded"]["angles"] = jnp.asarray(angle_lookup)
 
+        # Maximum number of dihedral terms
+        max_terms = 4
         dihedrals = onp.genfromtxt(
             StringIO(ff["bonded"]["dihedraltypes"]),
             dtype=None, delimiter=","
         )
 
         dihedrals_lookup = onp.full(
-            (num_species, num_species, num_species, num_species), -1, dtype=int)
-        dihedral_data = onp.zeros((max([len(dihedrals), 1]), 3))
+            (num_species, num_species, num_species, num_species, max_terms), -1, dtype=int)
+        dihedral_data = onp.zeros((max([len(dihedrals), 1]), 2))
         for idx, dihedral in enumerate(dihedrals):
-            i, j, k, l, *params = dihedral
+            i, j, k, l, *params, nd = dihedral
             s1 = mapping[i.decode('UTF-8').strip()]
             s2 = mapping[j.decode('UTF-8').strip()]
             s3 = mapping[k.decode('UTF-8').strip()]
             s4 = mapping[l.decode('UTF-8').strip()]
 
-            dihedrals_lookup[s1, s2, s3, s4] = idx
-            dihedrals_lookup[s4, s3, s2, s1] = idx
+            dihedrals_lookup[s1, s2, s3, s4, nd - 1] = idx
+            dihedrals_lookup[s4, s3, s2, s1, nd - 1] = idx
             dihedral_data[idx, :] = onp.asarray(params)
 
         data["bonded"]["dihedrals"] = jnp.asarray(dihedral_data)
@@ -378,13 +381,22 @@ class ForceField:
         valid = idx >= 0
         return data, valid
 
-    def get_dihedral_params(self, s1, s2, s3, s4):
+    def get_dihedral_params(self, s1, s2, s3, s4, multiplicity=None):
         """Get the parameters of an angle between four species."""
-        idx = self._lookup["bonded"]["dihedrals"][s1, s2, s3, s4]
-        print(f"Idx is {idx}")
+        # Automatically set the maximum multiplicity
+        if multiplicity is None:
+            max_terms = self._lookup["bonded"]["dihedrals"].shape[-1]
+            multiplicity = jnp.arange(max_terms)
+            params = jax.vmap(
+                self.get_dihedral_params,
+                in_axes=(None, None, None, None, 0),
+                out_axes=-1)(s1, s2, s3, s4, multiplicity)
+            return params
+
+        idx = self._lookup["bonded"]["dihedrals"][s1, s2, s3, s4, multiplicity]
         data = self._data["bonded"]["dihedrals"][idx]
         valid = idx >= 0
-        return data, valid
+        return data, valid, jnp.full_like(s1, multiplicity + 1)
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
@@ -595,8 +607,6 @@ class Topology:
             )
             for n in graph.nodes
         ]
-        for node in graph.nodes:
-            print(node)
 
         # Retrieve topology from graph
         bonds = []
@@ -670,19 +680,18 @@ def init_angle_potential(displacement_fn, topology, force_field):
 def init_dihedral_potential(displacement_fn, topology, force_field):
     """Initializes all dihedral-potentials for the given topology. """
     dihedral_idx, dihedral_species, dihedral_mask = topology.get_dihedrals()
-    dihedral_params, mask = force_field.get_dihedral_params(
+    data, mask, mult = force_field.get_dihedral_params(
         dihedral_species[:, 0], dihedral_species[:, 1], dihedral_species[:, 2],
         dihedral_species[:, 3]
     )
+    kd, phase = data[:, 0], data[:, 1]
+
     # Mask out bonds by setting their energy to zero
-    phase = dihedral_params[:, 0]
-    kd = jnp.where(
-        jnp.logical_and(mask, dihedral_mask), dihedral_params[:, 1], 0.0
-    )
-    multiplicity = dihedral_params[:, 2]
+    kd = jnp.where(jnp.logical_and(mask, dihedral_mask[:, None]), kd, 0.0)
+
     dihedral_potential = custom_energy.periodic_dihedral(
         displacement_fn, dihedral_idx, phase_angle=phase, force_constant=kd,
-        multiplicity=multiplicity
+        multiplicity=mult
     )
     return dihedral_potential
 
@@ -786,7 +795,6 @@ def constrain_ff_params(unconstrained_data):
             constrained_params["bonded"]["dihedrals"] = jnp.stack((
                 jnp.arctanh(unconstrained_data["bonded"]["dihedrals"][:, 0] / 90. - 1.),
                 jnp.log(unconstrained_data["bonded"]["dihedrals"][:, 1]),
-                unconstrained_data["bonded"]["dihedrals"][:, 2]
             ), axis=-1)
     if "nonbonded" in unconstrained_data.keys():
         raise NotImplementedError(
@@ -820,7 +828,6 @@ def unconstrain_ff_params(constrained_data):
             unconstrained_params["bonded"]["dihedrals"] = jnp.stack((
                 90. + 90. * jnp.tanh(constrained_data["bonded"]["dihedrals"][:, 0]),
                 jnp.exp(constrained_data["bonded"]["dihedrals"][:, 1]),
-                lax.stop_gradient(constrained_data["bonded"]["dihedrals"][:, 2])
             ), axis=-1)
     if "nonbonded" in constrained_data.keys():
         raise NotImplementedError(
