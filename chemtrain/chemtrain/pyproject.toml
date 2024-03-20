@@ -1,0 +1,77 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chemtrain"
+authors = [
+    {name = "Stephan Thaler", email = "stephan.thaler@tum.de"},
+    {name = "Paul Fuchs", email = "paul.fuchs@tum.de"},
+]
+description = "Machine-learning deep molecular dynamics potentials."
+readme = "README.md"
+license = {"text" = "Apache-2.0"}
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: Scientific/Engineering",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers"
+]
+requires-python = ">=3.8"
+dependencies = [
+    'jax <= 0.4.23',
+    'jaxlib <= 0.4.23',
+    'jax-md',
+    'jax-sgmc',
+    'optax',
+    'dm-haiku',
+    'sympy',
+    'tree_math',
+    'cloudpickle',
+    'chex',
+    'blackjax==0.3.0',
+    'jaxopt',
+    'dm-tree',
+    'networkx'
+]
+dynamic = ["version"]
+
+[project.urls]
+"Documentation" = "https://chemtrain.readthedocs.io/en/latest/"
+"Source" = "https://github.com/tummfm/chemtrain"
+"Bug Tracker" = "https://github.com/tummfm/chemtrain/issues"
+
+[project.optional-dependencies]
+"all" = [
+    "mdtraj<=1.9.6",
+    "matplotlib",
+]
+"test" = [
+    "pylint",
+    "pytest",
+    "pytest-mock",
+]
+"docs" = [
+    "sphinx >= 3",
+    "sphinx_rtd_theme",
+    "sphinx-autodoc-typehints == 1.11.1",
+    "myst-nb",
+    "matplotlib",
+]
+"stable" = [
+    "jax == 0.3.25",
+    "jaxlib == 0.3.25",
+    "chex == 0.1.5",
+    "orbax-checkpoint == 0.1.1",
+    "orbax == 0.1.1"
+]
+
+[tool.setuptools.packages]
+find = {namespaces = false}
+
+[tool.setuptools.dynamic]
+version = {attr = "chemtrain.version.__version__"}

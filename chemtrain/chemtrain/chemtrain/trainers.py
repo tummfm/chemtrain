@@ -31,7 +31,7 @@ import numpy as onp
 
 from chemtrain.jax_md_mod import custom_quantity
 from chemtrain import (util, force_matching, traj_util, reweighting,
-                       probabilistic, max_likelihood, property_prediction)
+                           probabilistic, max_likelihood, property_prediction)
 from chemtrain.pickle_jit import jit
 
 from typing import Any, Mapping, Dict
