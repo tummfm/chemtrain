@@ -308,8 +308,10 @@ def truncated_lennard_jones_neighborlist(
     function needs to be initialized within a jitted function.
     """
     sigma = jnp.array(sigma, dtype=f32)
-    epsilon = jnp.array(epsilon, dtype=f32)
-    exp = jnp.array(exp, dtype=f32)
+    if isinstance(sigma, tuple):
+        sigma = (sigma[0], jnp.array(sigma[1], f32))
+    if isinstance(epsilon, tuple):
+        epsilon = (epsilon[0], jnp.array(epsilon[1], f32))
 
     energy_fn = smap.pair_neighbor_list(
       truncated_lennard_jones,

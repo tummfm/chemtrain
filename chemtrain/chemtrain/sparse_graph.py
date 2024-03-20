@@ -546,6 +546,10 @@ def subtract_topology_from_neighbor_list(nbrs: partition.NeighborList, topology:
         # TODO: Deal also with masked angles
         bond_idx, _, bond_mask = topology.get_bonds()
         angle_idx, _, angle_mask = topology.get_angles()
+        dihedral_idx, _, dihedral_mask = topology.get_dihedrals()
+        # The dihedral mask might be vectorized. It sufficies, if a single
+        # dihedral term for that dihedral is nonzero
+        dihedral_mask = jnp.any(dihedral_mask, axis=-1)
 
         # TODO: This vectorized implementation might require much memory
         #       E.g. for N particles with B bonds and d max neighbors, the
@@ -555,47 +559,32 @@ def subtract_topology_from_neighbor_list(nbrs: partition.NeighborList, topology:
         #          entries (However, not much more inefficient than neighbor list
         #          generation)
 
-        @functools.partial(vmap, in_axes=(0, 0, None))
-        def _find_bonds(particle_nbrs, idx, invalid):
+        @functools.partial(vmap, in_axes=(0, 0, None, None, None, None))
+        def _exclude(particle_nbrs, idx, invalid, mask, ref_i, ref_j):
             # Check for all neighbors whether they are already part of the bond
             # list.
-            is_bond = vmap(
+            exclude = vmap(
                 # Map over all pairs i, j that are part of the neighbor list
                 lambda i: jnp.any(
                     # Check whether these pairs appear in the bond list
                     jnp.logical_and(
-                        bond_mask,
+                        mask,
                         jnp.logical_or(
-                            jnp.logical_and(i == bond_idx[:, 0], idx == bond_idx[:, 1]),
-                            jnp.logical_and(i == bond_idx[:, 1], idx == bond_idx[:, 0])
+                            jnp.logical_and(i == ref_i, idx == ref_j),
+                            jnp.logical_and(i == ref_j, idx == ref_i)
                         )
                     )
                 )
             )(particle_nbrs)
-            return jnp.where(is_bond, invalid, particle_nbrs)
+            return jnp.where(exclude, invalid, particle_nbrs)
 
-        @functools.partial(vmap, in_axes=(0, 0, None))
-        def _find_angles(particle_nbrs, idx, invalid):
-            is_angle = vmap(
-                # Map over all pairs i, j that are part of the neighbor list
-                lambda i: jnp.any(
-                    # Check whether these pairs appear in the angle list
-                    jnp.logical_and(
-                        angle_mask,
-                        jnp.logical_or(
-                            jnp.logical_and(i == angle_idx[:, 0], idx == angle_idx[:, 2]),
-                            jnp.logical_and(i == angle_idx[:, 2], idx == angle_idx[:, 0])
-                        )
-                    )
-                )
-            )(particle_nbrs)
-            return jnp.where(is_angle, invalid, particle_nbrs)
 
         if nbrs.format == partition.NeighborListFormat.Dense:
             idx = nbrs.idx
             invalid_idx = idx.shape[0]
-            idx = _find_bonds(idx, jnp.arange(invalid_idx), invalid_idx)
-            idx = _find_angles(idx, jnp.arange(invalid_idx), invalid_idx)
+            idx = _exclude(idx, jnp.arange(invalid_idx), invalid_idx, bond_mask, bond_idx[:, 0], bond_idx[:, 1])
+            idx = _exclude(idx, jnp.arange(invalid_idx), invalid_idx, angle_mask, angle_idx[:, 0], angle_idx[:, 2])
+            idx = _exclude(idx, jnp.arange(invalid_idx), invalid_idx, dihedral_mask, dihedral_idx[:, 0], dihedral_idx[:, 3])
         else:
             raise NotImplementedError(
                 "Subtracting the toplogy from the neighbor list only suported "

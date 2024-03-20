@@ -152,6 +152,8 @@ class ForceField:
         data["bonded"]["dihedrals"] = jnp.asarray(dihedral_data)
         lookup["bonded"]["dihedrals"] = jnp.asarray(dihedrals_lookup)
 
+        data["lj14_scaling"] = ff["nonbonded"].get("lj14_scaling", 1.0)
+
         return cls(data, lookup, mapping)
 
     def write_ff(self, fname: str):
@@ -221,25 +223,27 @@ class ForceField:
         )
         angletypes += "\n"
 
-        dihedral_data = [
-            (i, j, k, l, self._lookup["bonded"]["dihedrals"][i, j, k, l])
-            for i, j, k, l in itertools.product(range(self.max_species), repeat=4)
-            if self._lookup["bonded"]["dihedrals"][i, j, k, l] >= 0 and i <= l
-        ]
+        max_terms = self._lookup["bonded"]["dihedrals"].shape[-1]
         dihedraltypes = "#    i,    j,    k,    l,    phase,    kd    pn\n"
-        dihedraltypes += "\n".join(
-            ",".join([
-                f"{reverse_mapping[i]}".rjust(5, " "),
-                f"{reverse_mapping[j]}".rjust(5, " "),
-                f"{reverse_mapping[k]}".rjust(5, " "),
-                f"{reverse_mapping[l]}".rjust(5, " "),
-                f"{self._data['bonded']['dihedrals'][idx][0] :.2f}".rjust(7, " "),
-                f"{self._data['bonded']['dihedrals'][idx][1] :.3f}".rjust(7, " "),
-                f"{self._data['bonded']['dihedrals'][idx][2] :.1f}".rjust(4, " "),
-            ])
-            for i, j, k, l, idx in dihedral_data
-        )
-        dihedraltypes += "\n"
+        for nd in range(max_terms):
+            dihedral_data = [
+                (i, j, k, l, self._lookup["bonded"]["dihedrals"][i, j, k, l, nd])
+                for i, j, k, l in itertools.product(range(self.max_species), repeat=4)
+                if self._lookup["bonded"]["dihedrals"][i, j, k, l, nd] >= 0 and i <= l
+            ]
+            dihedraltypes += "\n".join(
+                ",".join([
+                    f"{reverse_mapping[i]}".rjust(5, " "),
+                    f"{reverse_mapping[j]}".rjust(5, " "),
+                    f"{reverse_mapping[k]}".rjust(5, " "),
+                    f"{reverse_mapping[l]}".rjust(5, " "),
+                    f"{self._data['bonded']['dihedrals'][idx][0] :.2f}".rjust(7, " "),
+                    f"{self._data['bonded']['dihedrals'][idx][1] :.3f}".rjust(7, " "),
+                    f"{nd + 1}".rjust(4, " "),
+                ])
+                for i, j, k, l, idx in dihedral_data
+            )
+            dihedraltypes += "\n"
 
         ff_params = {
             "bonded": {
@@ -349,8 +353,16 @@ class ForceField:
 
         """
         @rename_atoms(lookup_table=renaming_pattern)
-        def mapping_fn(symbol: int, is_water: bool, name: str = "", **kwargs):
+        def mapping_fn(symbol: int, is_water: bool, name: str = "", residue: str = "", **kwargs):
+            print(residue)
             if by_name:
+                if residue == "ALA" and name == "CB":
+                    print(f"Rename ALA CB to CH3")
+                    name = "CH3"
+                if residue == "NME" and name == "C":
+                    print(f"Rename NME C to CH3")
+                    name = "CH3"
+
                 return self._mapping[name]
 
             if is_water:
@@ -602,7 +614,7 @@ class Topology:
         species = [
             mapping(
                 number=n.element.number, name=n.name,
-                symbol=n.element.symbol, code=n.residue.code,
+                symbol=n.element.symbol, code=n.residue.code, residue=n.residue.name,
                 is_water=n.residue.is_water, is_protein=n.residue.is_protein
             )
             for n in graph.nodes
