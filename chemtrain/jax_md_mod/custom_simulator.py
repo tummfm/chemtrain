@@ -20,7 +20,6 @@ from jax_md import quantity, util, space, dataclasses
 from jax_md.simulate import NVTNoseHooverState, NVEState, \
     SUZUKI_YOSHIDA_WEIGHTS, velocity_verlet
 
-from Legacy_files import adjoint_ode as ode
 
 static_cast = util.static_cast
 

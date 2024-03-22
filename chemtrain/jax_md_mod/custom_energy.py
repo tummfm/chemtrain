@@ -200,12 +200,12 @@ def harmonic_angle(displacement_or_metric: DisplacementOrMetricFn,
         Harmonic angle potential energy function.
     """
 
-    kbt = jnp.array(kbt, dtype=f32)
     angle_mask = jnp.ones([angle_idxs.shape[0], 1])
 
     if th0 is None:
         th0 = eq_mean
     if kth is None:
+        kbt = jnp.array(kbt, dtype=f32)
         kth = kbt / eq_variance
 
     harmonic_fn = partial(energy.simple_spring, length=th0, epsilon=kth)
@@ -226,8 +226,10 @@ def dihedral_energy(angle,
 
     https://manual.gromacs.org/documentation/2019/reference-manual/functions/bonded-interactions.html
     """
+    # Alternatively to varying the phase shift angle from 0 to + 180, we
+    # allow choosing a negative force constant, which will have the same effect.
     cos_angle = jnp.cos(n * angle - phase_angle)
-    energies = force_constant * (1 + cos_angle)
+    energies = jnp.abs(force_constant) + force_constant * cos_angle
     return jnp.sum(energies)
 
 
@@ -307,7 +309,6 @@ def truncated_lennard_jones_neighborlist(
     Provides option not to initialize neighborlist. This is useful if energy
     function needs to be initialized within a jitted function.
     """
-    sigma = jnp.array(sigma, dtype=f32)
     if isinstance(sigma, tuple):
         sigma = (sigma[0], jnp.array(sigma[1], f32))
     if isinstance(epsilon, tuple):
@@ -405,8 +406,10 @@ def generic_repulsion_neighborlist(
     Provides option not to initialize neighborlist. This is useful if energy
     function needs to be initialized within a jitted function.
     """
-    sigma = jnp.array(sigma, dtype=f32)
-    epsilon = jnp.array(epsilon, dtype=f32)
+    if isinstance(sigma, tuple):
+        sigma = (sigma[0], jnp.array(sigma[1], f32))
+    if isinstance(epsilon, tuple):
+        epsilon = (epsilon[0], jnp.array(epsilon[1], f32))
     exp = jnp.array(exp, dtype=f32)
     r_onset = jnp.array(r_onset, dtype=f32)
     r_cutoff = jnp.array(r_cutoff, dtype=f32)

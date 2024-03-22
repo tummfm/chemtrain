@@ -23,6 +23,9 @@ else:
 os.environ['CUDA_VISIBLE_DEVICES'] = str(visible_device)
 # os.environ['CUDA_VISIBLE_DEVICES'] = "0,1,2,3"
 
+import sys
+sys.path.append("../../")
+
 
 import cloudpickle as pickle
 from pathlib import Path
@@ -51,10 +54,10 @@ save_path = f'output/force_matching/model_alanine_{mapping}_{name}.pkl'
 save_params_path = f'output/force_matching/best_params_{mapping}_{name}.pkl'
 save_params_path2 = f'output/force_matching/params_{mapping}_{name}.pkl'
 save_plot = f'output/figures/FM_losses_alanine_{mapping}_{name}.png'
-configuration_str = f'../../../Datasets/Alanine/confs_{mapping}_100ns.npy'
-force_str = f'../../../Datasets/Alanine/forces_{mapping}_100ns.npy'
+configuration_str = f'../../../../Datasets/Alanine/confs_{mapping}_100ns.npy'
+force_str = f'../../../../Datasets/Alanine/forces_{mapping}_100ns.npy'
 train_parameters = (
-    (('bonded', ('bonds', 'angles')),)
+    (('bonded', ('bonds', 'angles', 'dihedrals')),)
 )
 
 used_dataset_size = 500000
@@ -63,7 +66,7 @@ val_ratio = 0.1
 batch_per_device = 2048
 batch_cache = 50
 
-initial_lr = 0.001
+initial_lr = 0.1
 epochs = 250
 check_freq = 10
 
@@ -95,7 +98,7 @@ position_data = data_processing.scale_dataset_fractional(position_data,
 r_init = position_data[0]
 
 lrd = int(used_dataset_size / batch_per_device * epochs)
-lr_schedule = optax.exponential_decay(-initial_lr, lrd, 0.1)
+lr_schedule = optax.exponential_decay(-initial_lr, lrd, 0.01)
 optimizer = optax.chain(
     optax.scale_by_adam(),
     optax.scale_by_schedule(lr_schedule)

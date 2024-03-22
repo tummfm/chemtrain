@@ -540,55 +540,92 @@ def _canonicalize_species(species, n_particles):
     return species
 
 
-def subtract_topology_from_neighbor_list(nbrs: partition.NeighborList, topology: "Topology"):
-        """Removes all neighbors connected via bonds and angles from the neighbor list. """
+def subtract_topology_from_neighbor_list(nbrs: partition.NeighborList,
+                                         topology: "Topology",
+                                         bond_mask = None,
+                                         angle_mask = None,
+                                         dihedral_mask = None):
+    """Removes all neighbors connected via bonds and angles from the neighbor list. """
 
-        # TODO: Deal also with masked angles
-        bond_idx, _, bond_mask = topology.get_bonds()
-        angle_idx, _, angle_mask = topology.get_angles()
-        dihedral_idx, _, dihedral_mask = topology.get_dihedrals()
-        # The dihedral mask might be vectorized. It sufficies, if a single
-        # dihedral term for that dihedral is nonzero
-        dihedral_mask = jnp.any(dihedral_mask, axis=-1)
+    # TODO: This seems to neglect unparametrized dihedrals, which should not
+    #       be excluded from the repulsive interactions
 
-        # TODO: This vectorized implementation might require much memory
-        #       E.g. for N particles with B bonds and d max neighbors, the
-        #       matrix has the shape N * d * B
-        #       -> E.g. for 900 water particles with 2/3 bonds per particle and
-        #          10 neighbors this results in 20 / 3 * (900) ** 2 = 5,4 mio
-        #          entries (However, not much more inefficient than neighbor list
-        #          generation)
+    bond_idx, _, bond_mask_2 = topology.get_bonds()
+    if bond_mask is not None:
+        bond_mask = jnp.logical_and(bond_mask, bond_mask_2)
+    else:
+        bond_mask = bond_mask_2
 
-        @functools.partial(vmap, in_axes=(0, 0, None, None, None, None))
-        def _exclude(particle_nbrs, idx, invalid, mask, ref_i, ref_j):
-            # Check for all neighbors whether they are already part of the bond
-            # list.
-            exclude = vmap(
-                # Map over all pairs i, j that are part of the neighbor list
-                lambda i: jnp.any(
-                    # Check whether these pairs appear in the bond list
-                    jnp.logical_and(
-                        mask,
-                        jnp.logical_or(
-                            jnp.logical_and(i == ref_i, idx == ref_j),
-                            jnp.logical_and(i == ref_j, idx == ref_i)
-                        )
+    angle_idx, _, angle_mask_2 = topology.get_angles()
+    if angle_mask is not None:
+        angle_mask = jnp.logical_and(angle_mask, angle_mask_2)
+    else:
+        angle_mask = angle_mask_2
+
+    dihedral_idx, _, dihedral_mask_2 = topology.get_dihedrals()
+    # The dihedral mask might be vectorized. It sufficies, if a single
+    # dihedral term for that dihedral is nonzero
+    dihedral_mask_2 = jnp.any(dihedral_mask_2, axis=-1)
+    if dihedral_mask is not None:
+        dihedral_mask = jnp.logical_and(dihedral_mask, dihedral_mask_2)
+    else:
+        dihedral_mask = dihedral_mask_2
+
+    # TODO: This vectorized implementation might require much memory
+    #       E.g. for N particles with B bonds and d max neighbors, the
+    #       matrix has the shape N * d * B
+    #       -> E.g. for 900 water particles with 2/3 bonds per particle and
+    #          10 neighbors this results in 20 / 3 * (900) ** 2 = 5,4 mio
+    #          entries (However, not much more inefficient than neighbor list
+    #          generation)
+
+    @functools.partial(vmap, in_axes=(0, 0, None, None, None, None))
+    def _exclude(particle_nbrs, idx, invalid, mask, ref_i, ref_j):
+        # Check for all neighbors whether they are already part of the bond
+        # list.
+        exclude = vmap(
+            # Map over all pairs i, j that are part of the neighbor list
+            lambda i: jnp.any(
+                # Check whether these pairs appear in the bond list
+                jnp.logical_and(
+                    mask,
+                    jnp.logical_or(
+                        jnp.logical_and(i == ref_i, idx == ref_j),
+                        jnp.logical_and(i == ref_j, idx == ref_i)
                     )
                 )
-            )(particle_nbrs)
-            return jnp.where(exclude, invalid, particle_nbrs)
+            )
+        )(particle_nbrs)
+        return jnp.where(exclude, invalid, particle_nbrs)
 
+    @functools.partial(vmap, in_axes=(1, None, None, None, None), out_axes=1)
+    def _exclude_sparse(nbr_idx, invalid, ref_i, ref_j, mask):
+        # Map through the entries in the neighbor list and exclude them if
+        # they are part of the bond list
+        exclude = jnp.logical_or(
+            jnp.logical_and(nbr_idx[0] == ref_i, nbr_idx[1] == ref_j),
+            jnp.logical_and(nbr_idx[0] == ref_j, nbr_idx[1] == ref_i)
+        )
+        # Mask out invalid bonds or angles
+        exclude = jnp.any(jnp.logical_and(exclude, mask))
+        return jnp.where(exclude, invalid, nbr_idx)
 
-        if nbrs.format == partition.NeighborListFormat.Dense:
-            idx = nbrs.idx
-            invalid_idx = idx.shape[0]
-            idx = _exclude(idx, jnp.arange(invalid_idx), invalid_idx, bond_mask, bond_idx[:, 0], bond_idx[:, 1])
-            idx = _exclude(idx, jnp.arange(invalid_idx), invalid_idx, angle_mask, angle_idx[:, 0], angle_idx[:, 2])
-            idx = _exclude(idx, jnp.arange(invalid_idx), invalid_idx, dihedral_mask, dihedral_idx[:, 0], dihedral_idx[:, 3])
-        else:
-            raise NotImplementedError(
-                "Subtracting the toplogy from the neighbor list only suported "
-                "for dense neighbor lists.")
+    if nbrs.format == partition.NeighborListFormat.Dense:
+        idx = nbrs.idx
+        invalid_idx = idx.shape[0]
+        idx = _exclude(idx, jnp.arange(invalid_idx), invalid_idx, bond_mask,
+                       bond_idx[:, 0], bond_idx[:, 1])
+        idx = _exclude(idx, jnp.arange(invalid_idx), invalid_idx, angle_mask,
+                       angle_idx[:, 0], angle_idx[:, 2])
+        idx = _exclude(idx, jnp.arange(invalid_idx), invalid_idx, dihedral_mask,
+                       dihedral_idx[:, 0], dihedral_idx[:, 3])
+    else:
+        invalid_idx = nbrs.reference_position.shape[0]
+        idx = _exclude_sparse(nbrs.idx, invalid_idx, bond_idx[:, 0],
+                              bond_idx[:, 1], bond_mask)
+        idx = _exclude_sparse(idx, invalid_idx, angle_idx[:, 0],
+                              angle_idx[:, 2], angle_mask)
+        idx = _exclude_sparse(idx, invalid_idx, dihedral_idx[:, 0],
+                              dihedral_idx[:, 2], dihedral_mask)
 
-        return nbrs.set(idx=idx)
-
+    return nbrs.set(idx=idx)

@@ -8,9 +8,7 @@ from typing import List, Tuple, Union
 import jax
 import jax.numpy as jnp
 import numpy as onp
-import tomli
-import tomli_w
-from jax import lax, tree_util
+from jax import lax, tree_util, debug
 from jax.typing import ArrayLike
 from jax_md import energy
 
@@ -137,9 +135,9 @@ class ForceField:
 
         dihedrals_lookup = onp.full(
             (num_species, num_species, num_species, num_species, max_terms), -1, dtype=int)
-        dihedral_data = onp.zeros((max([len(dihedrals), 1]), 2))
+        dihedral_data = onp.zeros((max([len(dihedrals), 1]), 1))
         for idx, dihedral in enumerate(dihedrals):
-            i, j, k, l, *params, nd = dihedral
+            i, j, k, l, phase, kd, nd = dihedral
             s1 = mapping[i.decode('UTF-8').strip()]
             s2 = mapping[j.decode('UTF-8').strip()]
             s3 = mapping[k.decode('UTF-8').strip()]
@@ -147,7 +145,17 @@ class ForceField:
 
             dihedrals_lookup[s1, s2, s3, s4, nd - 1] = idx
             dihedrals_lookup[s4, s3, s2, s1, nd - 1] = idx
-            dihedral_data[idx, :] = onp.asarray(params)
+
+            # We assume that the phase shift only assumes values of multiples of
+            # pi (i.e. 0 or 180 deg). To simply learn the phase shift, we
+            # reformulate the dihedral potential function from
+            # kd * (1 + cos(psi - phase)) to |kd| + kd * cos(psi) and choose
+            # kd < 0 for a phase shift of 180.0 deg and kd > 0 otherwise.
+
+            if phase >= 90.:
+                dihedral_data[idx, :] = -onp.asarray(kd)
+            else:
+                dihedral_data[idx, :] = onp.asarray(kd)
 
         data["bonded"]["dihedrals"] = jnp.asarray(dihedral_data)
         lookup["bonded"]["dihedrals"] = jnp.asarray(dihedrals_lookup)
@@ -226,19 +234,27 @@ class ForceField:
         max_terms = self._lookup["bonded"]["dihedrals"].shape[-1]
         dihedraltypes = "#    i,    j,    k,    l,    phase,    kd    pn\n"
         for nd in range(max_terms):
+            dihedral_idx = [
+                idx if idx[0] < idx[3] else idx[::-1]
+                for idx in itertools.product(range(self.max_species), repeat=4)
+            ]
+
+            # Remove double elements and undefined entries
+            dihedral_idx = set(dihedral_idx)
             dihedral_data = [
                 (i, j, k, l, self._lookup["bonded"]["dihedrals"][i, j, k, l, nd])
-                for i, j, k, l in itertools.product(range(self.max_species), repeat=4)
-                if self._lookup["bonded"]["dihedrals"][i, j, k, l, nd] >= 0 and i <= l
+                for i, j, k, l in dihedral_idx
+                if self._lookup["bonded"]["dihedrals"][i, j, k, l, nd] >= 0
             ]
+
             dihedraltypes += "\n".join(
                 ",".join([
                     f"{reverse_mapping[i]}".rjust(5, " "),
                     f"{reverse_mapping[j]}".rjust(5, " "),
                     f"{reverse_mapping[k]}".rjust(5, " "),
                     f"{reverse_mapping[l]}".rjust(5, " "),
-                    f"{self._data['bonded']['dihedrals'][idx][0] :.2f}".rjust(7, " "),
-                    f"{self._data['bonded']['dihedrals'][idx][1] :.3f}".rjust(7, " "),
+                    f"{180. * (self._data['bonded']['dihedrals'][idx][0] <= 0) :.2f}".rjust(7, " "),
+                    f"{onp.abs(self._data['bonded']['dihedrals'][idx][0]) :.3f}".rjust(7, " "),
                     f"{nd + 1}".rjust(4, " "),
                 ])
                 for i, j, k, l, idx in dihedral_data
@@ -354,7 +370,6 @@ class ForceField:
         """
         @rename_atoms(lookup_table=renaming_pattern)
         def mapping_fn(symbol: int, is_water: bool, name: str = "", residue: str = "", **kwargs):
-            print(residue)
             if by_name:
                 if residue == "ALA" and name == "CB":
                     print(f"Rename ALA CB to CH3")
@@ -671,7 +686,7 @@ def init_bond_potential(displacement_fn, topology, force_field):
     )
     bond_potential = energy.simple_spring_bond(
         displacement_fn, bond_idx, length=b0, epsilon=kb)
-    return bond_potential
+    return bond_potential, jnp.logical_and(mask, bond_mask)
 
 
 def init_angle_potential(displacement_fn, topology, force_field):
@@ -686,7 +701,7 @@ def init_angle_potential(displacement_fn, topology, force_field):
     )
     angle_potential = custom_energy.harmonic_angle(
         displacement_fn, angle_idx, th0=th0, kth=kth)
-    return angle_potential
+    return angle_potential, jnp.logical_and(mask, angle_mask)
 
 
 def init_dihedral_potential(displacement_fn, topology, force_field):
@@ -696,42 +711,65 @@ def init_dihedral_potential(displacement_fn, topology, force_field):
         dihedral_species[:, 0], dihedral_species[:, 1], dihedral_species[:, 2],
         dihedral_species[:, 3]
     )
-    kd, phase = data[:, 0], data[:, 1]
 
-    # Mask out bonds by setting their energy to zero
+    kd = data[:, 0, :]
+    phase = jnp.zeros_like(kd)
+
+    # Mask out bonds by setting their energy to zero if
+    # - the term with corresponding multiplicity is undefined
+    # - the dihedral angle does not exist
     kd = jnp.where(jnp.logical_and(mask, dihedral_mask[:, None]), kd, 0.0)
 
     dihedral_potential = custom_energy.periodic_dihedral(
         displacement_fn, dihedral_idx, phase_angle=phase, force_constant=kd,
         multiplicity=mult
     )
-    return dihedral_potential
+    return dihedral_potential, jnp.logical_and(jnp.any(mask, axis=1), dihedral_mask)
 
 
-def init_nonbonded_potential(displacement_fn, topology, force_field: ForceField):
+def init_nonbonded_potential(displacement_fn,
+                             topology,
+                             force_field: ForceField,
+                             nonbonded_type = "repulsion"):
     """Initializes the non-bonded interactions for the given topology. """
     species = topology.get_atom_species()
     nonbonded_params, mask = force_field.get_nonbonded_params(species)
 
     # Box size is not necessary, as we don't generate a neighbor list.
-    # We use the Lorentz-Berthold combining rules.
-    lennard_jones_fn = custom_energy.customn_lennard_jones_neighbor_list(
-        displacement_fn, initialize_neighbor_list=False, box_size=0.0,
+    # We use the Lorentz-Berthelot combining rules.
+    kwargs = dict(
+        initialize_neighbor_list=False, box_size=0.0,
         sigma=(lambda s1, s2: 0.5 * (s1 + s2), nonbonded_params[:, 1]),
         epsilon=(lambda e1, e2: jnp.sqrt(e1 * e2), nonbonded_params[:, 2])
     )
-    return lennard_jones_fn
+    if nonbonded_type == "repulsion":
+        return custom_energy.generic_repulsion_neighborlist(
+            displacement_fn, **kwargs)
+    if nonbonded_type == "truncated_lennard_jones":
+        return custom_energy.truncated_lennard_jones_neighborlist(
+            displacement_fn, **kwargs)
+    if nonbonded_type == "lennard_jones":
+        return custom_energy.lennard_jones_neighborlist(
+            displacement_fn, **kwargs)
+
+    raise NotImplementedError(
+        f"Nonbonded type {nonbonded_type} is not a valid choice. Choose from"
+        f"'repulsion', 'truncated_lennard_jones' or 'lennard_jones'."
+    )
 
 
-def init_prior_potential(displacement_fn, mask_bonded: bool = True):
+def init_prior_potential(displacement_fn,
+                         mask_bonded: bool = True,
+                         nonbonded_type: str = "repulsion"):
     """Initializes the prior template.
 
     Args:
         displacement_fn: `jax_md` displacement function
         mask_bonded: Excluded non-bonded interactions between bonded atoms via
             masking them in the neighbor list. This might be ineffective if the
-            number of bonds is very large. Otherwise, the non-bonded interaction
-            is simply substracted from the ...
+            number of bonds is very large.
+        nonbonded_type: Type of the nonbonded interactions. Possible values are
+            ``"repulsion"``, ``"lennard_jones"``, ``"truncated_lennard_jones"``.
 
     Returns:
         Returns a function that, given a topology and force field, creates a
@@ -741,12 +779,16 @@ def init_prior_potential(displacement_fn, mask_bonded: bool = True):
     """
     def prior_potential_template(topology: Topology, force_field: ForceField):
         # Bonded
-        bond_potential = init_bond_potential(displacement_fn, topology, force_field)
-        angle_potential = init_angle_potential(displacement_fn, topology, force_field)
-        dihedral_potential = init_dihedral_potential(displacement_fn, topology, force_field)
+        bond_potential, bond_mask = init_bond_potential(
+            displacement_fn, topology, force_field)
+        angle_potential, angle_mask = init_angle_potential(
+            displacement_fn, topology, force_field)
+        dihedral_potential, dihedral_mask = init_dihedral_potential(
+            displacement_fn, topology, force_field)
 
         # Nonbonded
-        nonbonded_potential_fn = init_nonbonded_potential(displacement_fn, topology, force_field)
+        nonbonded_potential_fn = init_nonbonded_potential(
+            displacement_fn, topology, force_field, nonbonded_type)
 
         def potential_fn(position, neighbor=None, **kwargs):
             pot = 0.0
@@ -759,7 +801,9 @@ def init_prior_potential(displacement_fn, mask_bonded: bool = True):
                 # neighbor list to exclude them also from beeing considered
                 # in the nonbonded potential computation
                 neighbor = sparse_graph.subtract_topology_from_neighbor_list(
-                    neighbor, topology)
+                    neighbor, topology, bond_mask=bond_mask,
+                    angle_mask=angle_mask, dihedral_mask=dihedral_mask
+                )
                 pot += nonbonded_potential_fn(position, neighbor)
             else:
                 raise NotImplementedError(
@@ -804,10 +848,7 @@ def constrain_ff_params(unconstrained_data):
                 jnp.log(unconstrained_data["bonded"]["angles"][:, 1])
             ), axis=-1)
         if "dihedrals" in unconstrained_data["bonded"].keys():
-            constrained_params["bonded"]["dihedrals"] = jnp.stack((
-                jnp.arctanh(unconstrained_data["bonded"]["dihedrals"][:, 0] / 90. - 1.),
-                jnp.log(unconstrained_data["bonded"]["dihedrals"][:, 1]),
-            ), axis=-1)
+            constrained_params["bonded"]["dihedrals"] = unconstrained_data["bonded"]["dihedrals"]
     if "nonbonded" in unconstrained_data.keys():
         raise NotImplementedError(
             "Constraining nonbonded data not yet supported.")
@@ -837,10 +878,7 @@ def unconstrain_ff_params(constrained_data):
                 jnp.exp(constrained_data["bonded"]["angles"][:, 1])
             ), axis=-1)
         if "dihedrals" in constrained_data["bonded"].keys():
-            unconstrained_params["bonded"]["dihedrals"] = jnp.stack((
-                90. + 90. * jnp.tanh(constrained_data["bonded"]["dihedrals"][:, 0]),
-                jnp.exp(constrained_data["bonded"]["dihedrals"][:, 1]),
-            ), axis=-1)
+            unconstrained_params["bonded"]["dihedrals"] = constrained_data["bonded"]["dihedrals"]
     if "nonbonded" in constrained_data.keys():
         raise NotImplementedError(
             "Constraining nonbonded data not yet supported.")

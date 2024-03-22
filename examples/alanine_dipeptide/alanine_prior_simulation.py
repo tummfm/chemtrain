@@ -25,6 +25,8 @@ else:
 os.environ['CUDA_VISIBLE_DEVICES'] = str(visible_device)
 os.environ['CHEMTRAIN_VERBOSE'] = str(True)
 
+sys.path.append("../../")
+
 import cloudpickle as pickle
 from pathlib import Path
 import time
@@ -45,9 +47,9 @@ folder_name = 'output/prior'
 labels = ['Reference', 'Predicted']
 
 file_topology = 'data/confs/heavy_2_7nm.gro'
-configuration_str = '../../../Datasets/Alanine/confs_heavy_100ns.npy'
+configuration_str = '../../../../Datasets/Alanine/confs_heavy_100ns.npy'
 used_dataset_size = 500000
-n_trajectory = 50
+n_trajectory = 10
 top = mdtraj.load_topology(file_topology)
 
 model = 'Tabulated'
@@ -68,8 +70,6 @@ t_equilib = 100.
 print_every = 0.1
 target_dict = None
 
-#temperatures = jnp.asarray([kbt, 3.0, 3.5, 4.0, 5.0, 6.5, 9.0])
-temperatures = jnp.asarray([kbt, 2.7, 3.0, 3.3, 3.8, 4.3, 5.0])
 ###############################
 
 Path(f'output/postprocessing/{folder_name}').mkdir(parents=True,
@@ -77,9 +77,10 @@ Path(f'output/postprocessing/{folder_name}').mkdir(parents=True,
 Path('output/trajectories').mkdir(parents=True, exist_ok=True)
 
 box, _, _, _ = io.load_box(file_topology)
-priors = ['bond', 'angle', 'dihedral']
-species, prior_idxs, prior_constants = Initialization.select_protein(
-    'heavy_alanine_dipeptide', priors)
+position_data = data_processing.get_dataset(configuration_str)
+key = random.PRNGKey(0)
+r_init = random.choice(key, position_data, (n_trajectory,), replace=False)
+
 
 
 force_field = ForceField.load_ff("data/force_fields/heavy.toml")
@@ -87,11 +88,7 @@ topology = Topology.from_mdtraj(top, mapping=force_field.mapping(by_name=True))
 energy_params = force_field
 
 masses = force_field.get_nonbonded_params(topology.get_atom_species())[0][:, 0]
-print(f"Masses: {masses}")
-
-# Random starting points
-box, r_init, _, _ = io.load_box(file_topology)
-position_data = data_processing.get_dataset(configuration_str)[1:]
+species = topology.get_atom_species()
 
 displacement, _ = space.periodic_general(box, fractional_coordinates=True)
 
@@ -111,21 +108,19 @@ reference_state, _, simulation_fns, _, _ = \
     Initialization.initialize_simulation(simulation_data,
                                          model,
                                          integrator='Langevin',
-                                         prior_constants=prior_constants,
-                                         prior_idxs=prior_idxs,
-                                         n_replicas=temperatures.size)
+                                         prior_constants={},
+                                         prior_idxs={})
 
 simulator_template, _, neighbor_fn = simulation_fns
 
 
 trajectory_generator = traj_util.trajectory_generator_init(simulator_template,
                                                            energy_fn_template,
-                                                           timings,
-                                                           replica_exchange=False)
+                                                           timings)
 
 # compute trajectory and quantities
 t_start = time.time()
-traj_state = trajectory_generator(energy_params, reference_state, kT=temperatures)
+traj_state = trajectory_generator(energy_params, reference_state, kT=kbt)
 t_end = time.time() - t_start
 print('total runtime:', t_end)
 
@@ -167,8 +162,8 @@ mse = onp.mean((h_ref - h_pred)**2)
 dihedral_angles_split = dihedral_angles.reshape((n_trajectory, -1, 2))
 
 # Plots
-phi_angles_ref = onp.load('../../../Datasets/Alanine/phi_angles_r100ns.npy')
-psi_angles_ref = onp.load('../../../Datasets/Alanine/psi_angles_r100ns.npy')
+phi_angles_ref = onp.load('../../../../Datasets/Alanine/phi_angles_r100ns.npy')
+psi_angles_ref = onp.load('../../../../Datasets/Alanine/psi_angles_r100ns.npy')
 # dihedral histograms
 visualization.plot_histogram_dihedral(dihedral_angles, save_name + '_predicted',
                                       folder=folder_name)
