@@ -2,8 +2,7 @@ name: PushGitlab
 
 on:
   push:
-    branches: [ master ]
-  workflow_dispatch:
+    branches: [ main ]
 
 
 jobs:
