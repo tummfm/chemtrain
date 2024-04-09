@@ -1,13 +1,11 @@
 from pathlib import Path
 
-import numpy as np
 import numpy as onp
 import pytest
 
 import mdtraj
 
 from jax import tree_util
-import jax.numpy as jnp
 
 from chemtrain.potential.prior import Topology, ForceField
 

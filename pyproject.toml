@@ -13,7 +13,7 @@ readme = "README.md"
 license = {"text" = "Apache-2.0"}
 classifiers = [
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: MacOS",
     "Operating System :: POSIX :: Linux",
@@ -21,10 +21,11 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Intended Audience :: Developers"
 ]
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 dependencies = [
     'jax <= 0.4.23',
     'jaxlib <= 0.4.23',
+    'scipy < 1.13', # Removed scipy.linal.tril, etc.
     'jax-md',
     'jax-sgmc',
     'optax',
@@ -36,7 +37,7 @@ dependencies = [
     'blackjax==0.3.0',
     'jaxopt',
     'dm-tree',
-    'networkx'
+    'networkx',
 ]
 dynamic = ["version"]
 
@@ -47,8 +48,10 @@ dynamic = ["version"]
 
 [project.optional-dependencies]
 "all" = [
-    "mdtraj<=1.9.6",
+    "mdtraj",
     "matplotlib",
+    'tomli',
+    'tomli-w'
 ]
 "test" = [
     "pylint",
