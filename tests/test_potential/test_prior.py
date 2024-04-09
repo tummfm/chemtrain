@@ -6,7 +6,6 @@ import pytest
 import mdtraj
 
 from jax import tree_util
-import jax.numpy as jnp
 
 from chemtrain.potential.prior import Topology, ForceField
 

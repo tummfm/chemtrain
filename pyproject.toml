@@ -25,6 +25,7 @@ requires-python = ">=3.10"
 dependencies = [
     'jax <= 0.4.23',
     'jaxlib <= 0.4.23',
+    'scipy < 1.13', # Removed scipy.linal.tril, etc.
     'jax-md',
     'jax-sgmc',
     'optax',
