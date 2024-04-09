@@ -37,7 +37,7 @@ dependencies = [
     'blackjax==0.3.0',
     'jaxopt',
     'dm-tree',
-    'networkx'
+    'networkx',
 ]
 dynamic = ["version"]
 
@@ -50,6 +50,8 @@ dynamic = ["version"]
 "all" = [
     "mdtraj",
     "matplotlib",
+    'tomli',
+    'tomli-w'
 ]
 "test" = [
     "pylint",
