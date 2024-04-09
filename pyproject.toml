@@ -47,7 +47,7 @@ dynamic = ["version"]
 
 [project.optional-dependencies]
 "all" = [
-    "mdtraj<=1.9.6",
+    "mdtraj",
     "matplotlib",
 ]
 "test" = [
