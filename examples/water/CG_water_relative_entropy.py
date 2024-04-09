@@ -29,7 +29,9 @@ from jax import tree_util, random, numpy as jnp
 import numpy as onp
 import optax
 
-from chemtrain import util, trainers, traj_util, data_processing
+from chemtrain import util, trainers
+from chemtrain.data import data_processing
+from chemtrain.trajectory import traj_util
 from util import Initialization
 
 Path('output/figures').mkdir(parents=True, exist_ok=True)

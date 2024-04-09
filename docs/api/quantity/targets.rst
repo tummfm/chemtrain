@@ -1,5 +1,5 @@
-chemtrain.quantity.targets
-===========================
+``chemtrain.quantity.targets``
+==============================
 
 This module creates DiffTRe targets and builds the functions computing
 predictions based on a simulated trajectory.

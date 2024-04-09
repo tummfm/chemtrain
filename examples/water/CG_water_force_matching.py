@@ -32,7 +32,8 @@ import matplotlib.pyplot as plt
 import numpy as onp
 import optax
 
-from chemtrain import trainers, util, data_processing, quantities
+from chemtrain import trainers, util, quantities
+from chemtrain.data import data_processing
 from chemtrain.jax_md_mod import custom_space
 from util import Initialization
 

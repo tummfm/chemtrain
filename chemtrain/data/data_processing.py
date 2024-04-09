@@ -1,0 +1,212 @@
+# Copyright 2023 Multiscale Modeling of Fluid Materials, TU Munich
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Common operations to pre-process datasets for machine learning potentials.
+
+Typical pre-processing steps for molecular reference data are subsampling,
+splitting into training, validation and testing sets, as well as scaling
+the positions into fractional coordinates.
+
+Examples:
+
+    An example of loading a small subset of a heavy-atom trajectory of alanine:
+
+    >>> from pathlib import Path
+    >>> root = Path.cwd().parent
+
+    >>> from chemtrain.jax_md_mod import io
+    >>> from chemtrain.data.data_processing import (
+    ...     get_dataset, scale_dataset_fractional, train_val_test_split,
+    ...     init_dataloaders)
+
+    We only get a subset of 10 conformations from the training data and scale the
+    conformations to fractional coordinates:
+
+    >>> box, *_ = io.load_box(root / "examples/alanine_dipeptide/data/confs/heavy_2_7nm.gro")
+    >>> position_data = get_dataset(
+    ...     root / "examples/alanine_dipeptide/data/simulations/alanine_heavy_50000_confs.npy",
+    ...     retain=10)
+    >>> force_data = get_dataset(
+    ...     root / "examples/alanine_dipeptide/data/simulations/alanine_heavy_50000_forces.npy",
+    ...     retain=10)
+    >>> position_data = scale_dataset_fractional(position_data, box)
+
+    We split the dataset into a training, validation and testing set:
+
+    >>> train, val, test = train_val_test_split(position_data, train_ratio=0.8, shuffle=False)
+    >>> # Print the coordinates of the Calpha atom
+    >>> print(test[0, 4, :])
+    [0.25101155 0.9239973  0.50758266]
+
+    Alternatively, we can directly instanciate ``jax_sgmc`` data-loaders based
+    on the split datasets by using:
+    >>> dataset = {"positions": position_data, "forces": force_data}
+    >>> train_loader, val_loader, test_loader = init_dataloaders(dataset)
+    >>> print(train_loader.static_information)
+    {'observation_count': 7}
+
+"""
+
+
+import numpy as onp
+from jax import lax, tree_util
+from jax_sgmc.data import numpy_loader
+
+from chemtrain.jax_md_mod import custom_space
+from chemtrain import util
+
+
+def get_dataset(data_location_str, retain=0, subsampling=1, offset=0):
+    """Loads dataset from a ``"*.npy"`` array file.
+
+    Args:
+        data_location_str: String of ``"*.npy"`` data location
+        retain: Number of samples to keep in the dataset. All by default.
+        subsampling: Only keep every n-th sample of the data.
+        offset: Select which part of data to be used. Last part by default.
+
+    Returns:
+        Sub-sampled array of reference data.
+
+    """
+    loaded_data = onp.load(data_location_str)
+    if offset == 0:
+        assert retain <= loaded_data.shape[0], (
+            f"Cannot retain more than {loaded_data.shape[0]} samples, got "
+            f"retain = {retain}."
+        )
+        loaded_data = loaded_data[-retain::subsampling]
+    else:
+        loaded_data = loaded_data[-retain-offset:-offset:subsampling]
+        assert retain + offset <= offset <= loaded_data.shape, (
+            f"Cannot retain more than {loaded_data.shape[0] - offset} given "
+            f"an offset of {offset}. Got retain = {retain}."
+        )
+    return loaded_data
+
+
+def train_val_test_split(dataset, train_ratio=0.7, val_ratio=0.1, shuffle=False,
+                         shuffle_seed=0):
+    """Split data into disjoint subsets for training, validation and testing.
+
+    Splitting works on arbitrary pytrees, including chex.dataclasses,
+    dictionaries, and single arrays.
+
+    The function splits the pytree leaves along their first dimension.
+
+    If a subset ratio ratios is ``0``, returns ``None`` for the respective subset.
+
+    Args:
+        dataset: Dataset as pytree. Samples are assumed to be stacked along
+            the first dimension of the pytree leaves.
+        train_ratio: Fraction of dataset to use for training.
+        val_ratio: Fraction of dataset to use for validation.
+        shuffle: If True, shuffles data before splitting into train-val-test.
+            Shuffling copies the dataset.
+        shuffle_seed: PRNG Seed for data shuffling
+
+    Returns:
+        Returns a tuple ``(train_data, val_data, test_data)``, where each tuple
+        element has the same pytree structure as the input pytree.
+
+    """
+    assert train_ratio + val_ratio <= 1., 'Distribution of data exceeds 100%.'
+    leaves, _ = tree_util.tree_flatten(dataset)
+    dataset_size = leaves[0].shape[0]
+    train_size = int(dataset_size * train_ratio)
+    val_size = int(dataset_size * val_ratio)
+
+    if shuffle:
+        dataset_idxs = onp.arange(dataset_size)
+        numpy_rng = onp.random.default_rng(shuffle_seed)
+        numpy_rng.shuffle(dataset_idxs)
+
+        def retreive_datasubset(idxs):
+            data_subset = util.tree_take(dataset, idxs, axis=0)
+            subset_leaves, _ = tree_util.tree_flatten(data_subset)
+            subset_size = subset_leaves[0].shape[0]
+            if subset_size == 0:
+                data_subset = None
+            return data_subset
+
+        train_data = retreive_datasubset(dataset_idxs[:train_size])
+        val_data = retreive_datasubset(dataset_idxs[train_size:
+                                                    val_size + train_size])
+        test_data = retreive_datasubset(dataset_idxs[val_size + train_size:])
+
+    else:
+        def retreive_datasubset(start, end):
+            data_subset = util.tree_get_slice(dataset, start, end,
+                                              to_device=False)
+            subset_leaves, _ = tree_util.tree_flatten(data_subset)
+            subset_size = subset_leaves[0].shape[0]
+            if subset_size == 0:
+                data_subset = None
+            return data_subset
+
+        train_data = retreive_datasubset(0, train_size)
+        val_data = retreive_datasubset(train_size, train_size + val_size)
+        test_data = retreive_datasubset(train_size + val_size, None)
+    return train_data, val_data, test_data
+
+
+def init_dataloaders(dataset, train_ratio=0.7, val_ratio=0.1, shuffle=False):
+    """Splits dataset and initializes dataloaders.
+
+    If the validation or test ratios are 0, returns None for the respective
+    dataloaders.
+
+    Args:
+        dataset: Dictionary containing the whole dataset. The NumpyDataLoader
+            returns batches with the same kwargs as provided in dataset.
+        train_ratio: Fraction of dataset to use for training.
+        val_ratio: Fraction of dataset to use for validation.
+        shuffle: Whether to shuffle data before splitting into train-val-test.
+
+    Returns:
+        Returns a tuple ``(train_loader, val_loader, test_loader)`` of
+        NumpyDataLoaders.
+
+    """
+    def init_subloader(data_subset):
+        if data_subset is None:
+            loader = None
+        else:
+            loader = numpy_loader.NumpyDataLoader(**data_subset, copy=False)
+        return loader
+
+    train_set, val_set, test_set = train_val_test_split(
+        dataset, train_ratio, val_ratio, shuffle=shuffle)
+    train_loader = init_subloader(train_set)
+    val_loader = init_subloader(val_set)
+    test_loader = init_subloader(test_set)
+    return train_loader, val_loader, test_loader
+
+
+def scale_dataset_fractional(traj, box):
+    """Scales a dataset of positions from real space to fractional coordinates.
+
+    Args:
+        traj: An array with shape ``(N_snapshots, N_particles, 3)`` with
+            particle positions.
+        box: A 1 or 2-dimensional ``jax_md`` box.
+
+    Returns:
+        Returns an array with  shape ``(N_snapshots, N_particles, 3)`` with
+        particle positions in fractional coordinates.
+
+    """
+    _, scale_fn = custom_space.init_fractional_coordinates(box)
+    scaled_traj = lax.map(scale_fn, traj)
+    return scaled_traj

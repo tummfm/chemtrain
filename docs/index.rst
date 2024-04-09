@@ -45,15 +45,11 @@ These extensions are gathered in the
 
 .. toctree::
    :hidden:
-   :caption: Chemtrain API
+   :caption: Chemtrain
    :maxdepth: 2
 
-   api/reweighting
-   api/potential/index
-   api/quantity/index
-   api/force_matching
-   api/data_processing
-   api/max_likelihood
+   api/index
+
 
 .. toctree::
    :maxdepth: 2

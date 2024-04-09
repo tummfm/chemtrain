@@ -1,5 +1,5 @@
-chemtrain.quantity.units
-========================
+``chemtrain.quantity.units``
+============================
 
 This utility module contains some useful constants and classes simplifying
 converting quantities between commonly used units.

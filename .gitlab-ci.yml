@@ -32,7 +32,7 @@ test:
   script:
     - virtualenv venv_test
     - source venv_test/bin/activate
-    - pip install --editable ".[test]"
+    - pip install --editable ".[test,all]"
     - pytest tests --strict --disable-warnings -v
 
 pages:

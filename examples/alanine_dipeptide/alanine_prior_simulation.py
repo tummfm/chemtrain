@@ -27,16 +27,16 @@ os.environ['CHEMTRAIN_VERBOSE'] = str(True)
 
 sys.path.append("../../")
 
-import cloudpickle as pickle
 from pathlib import Path
 import time
 
-from jax import vmap, random, tree_util, numpy as jnp
+from jax import vmap, random, numpy as jnp
 from jax_md import space
 import numpy as onp
 
 from chemtrain.jax_md_mod import io, custom_space, custom_quantity
-from chemtrain import util, data_processing, traj_util
+from chemtrain.data import data_processing
+from chemtrain.trajectory import traj_util
 from util import Initialization
 import visualization
 from chemtrain.potential.prior import ForceField, Topology, init_prior_potential

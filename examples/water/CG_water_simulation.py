@@ -31,7 +31,9 @@ import cloudpickle as pickle
 from jax import tree_util, numpy as jnp
 import numpy as onp
 
-from chemtrain import traj_util, util, data_processing
+from chemtrain import util
+from chemtrain.data import data_processing
+from chemtrain.trajectory import traj_util
 from util import Postprocessing, Initialization
 
 Path('output/figures').mkdir(parents=True, exist_ok=True)

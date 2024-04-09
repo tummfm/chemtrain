@@ -8,11 +8,11 @@ from typing import List, Tuple, Union
 import jax
 import jax.numpy as jnp
 import numpy as onp
-from jax import lax, tree_util, debug
+from jax import tree_util
 from jax.typing import ArrayLike
 from jax_md import energy
 
-from chemtrain import sparse_graph
+from chemtrain.potential import sparse_graph
 from chemtrain.jax_md_mod import custom_energy
 
 
@@ -740,7 +740,7 @@ def init_nonbonded_potential(displacement_fn,
     kwargs = dict(
         initialize_neighbor_list=False, box_size=0.0,
         sigma=(lambda s1, s2: 0.5 * (s1 + s2), nonbonded_params[:, 1]),
-        epsilon=(lambda e1, e2: jnp.sqrt(e1 * e2), nonbonded_params[:, 2])
+        epsilon=(lambda e1, e2: jnp.sqrt(e1 * e2), mask * nonbonded_params[:, 2])
     )
     if nonbonded_type == "repulsion":
         return custom_energy.generic_repulsion_neighborlist(
@@ -850,8 +850,8 @@ def constrain_ff_params(unconstrained_data):
         if "dihedrals" in unconstrained_data["bonded"].keys():
             constrained_params["bonded"]["dihedrals"] = unconstrained_data["bonded"]["dihedrals"]
     if "nonbonded" in unconstrained_data.keys():
-        raise NotImplementedError(
-            "Constraining nonbonded data not yet supported.")
+        constrained_params["nonbonded"] = jnp.log(unconstrained_data["nonbonded"])
+
     return constrained_params
 
 def unconstrain_ff_params(constrained_data):
@@ -874,14 +874,14 @@ def unconstrain_ff_params(constrained_data):
             )
         if "angles" in constrained_data["bonded"].keys():
             unconstrained_params["bonded"]["angles"] = jnp.stack((
-                90. + 90. * jnp.tanh(constrained_data["bonded"]["angles"][:, 0]),
+                90. * (1 + jnp.tanh(constrained_data["bonded"]["angles"][:, 0])),
                 jnp.exp(constrained_data["bonded"]["angles"][:, 1])
             ), axis=-1)
         if "dihedrals" in constrained_data["bonded"].keys():
             unconstrained_params["bonded"]["dihedrals"] = constrained_data["bonded"]["dihedrals"]
     if "nonbonded" in constrained_data.keys():
-        raise NotImplementedError(
-            "Constraining nonbonded data not yet supported.")
+        unconstrained_params["nonbonded"] = jnp.exp(constrained_data["nonbonded"])
+
     return unconstrained_params
 
 

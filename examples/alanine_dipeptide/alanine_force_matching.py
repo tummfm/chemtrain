@@ -30,7 +30,8 @@ from jax_md import space
 import matplotlib.pyplot as plt
 import optax
 
-from chemtrain import trainers, data_processing, util
+from chemtrain import trainers, util
+from chemtrain.data import data_processing
 from chemtrain.jax_md_mod import custom_space, io
 from util import Initialization
 

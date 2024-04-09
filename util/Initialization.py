@@ -22,7 +22,8 @@ from jax_md import util, simulate, partition, space, energy, minimize
 import numpy as onp
 from scipy import interpolate as sci_interpolate
 
-from chemtrain import (util as chem_util, traj_util)
+from chemtrain import (util as chem_util)
+from chemtrain.trajectory import traj_util
 from chemtrain.potential import neural_networks, layers, dropout
 from chemtrain.quantity import observables
 from chemtrain.jax_md_mod import (custom_energy, custom_space, custom_quantity,

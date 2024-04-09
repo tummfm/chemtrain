@@ -33,7 +33,9 @@ import numpy as onp
 from scipy import interpolate as sci_interpolate
 
 from chemtrain.jax_md_mod import io
-from chemtrain import ibi, traj_util, util, max_likelihood
+from chemtrain import util
+from chemtrain.trajectory import traj_util
+from chemtrain.learn import ibi, max_likelihood
 from util import Postprocessing, Initialization
 
 ########   user input

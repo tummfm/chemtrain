@@ -1,8 +1,9 @@
-chemtrain.potential.prior
-==========================
-
+``chemtrain.potential.prior``
+=============================
 
 .. currentmodule:: chemtrain.potential.prior
+
+.. automodule:: chemtrain.potential.prior
 
 Topological Information
 ------------------------

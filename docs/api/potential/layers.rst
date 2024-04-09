@@ -1,5 +1,5 @@
-chemtrain.potential.layers
-==========================
+``chemtrain.potential.layers``
+==============================
 
 .. currentmodule:: chemtrain.potential.layers
 

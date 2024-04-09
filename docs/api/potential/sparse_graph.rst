@@ -1,7 +1,9 @@
-chemtrain.potential.sparse_graph
-================================
+``chemtrain.potential.sparse_graph``
+====================================
 
-.. automodule:: chemtrain.sparse_graph
+.. currentmodule:: chemtrain.potential.sparse_graph
+
+.. automodule:: chemtrain.potential.sparse_graph
 
 Graph dataclass
 ------------------------

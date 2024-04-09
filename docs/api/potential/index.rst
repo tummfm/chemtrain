@@ -1,5 +1,5 @@
-chemtrain.potential
-===================
+``chemtrain.potential``
+=======================
 
 
 .. toctree::

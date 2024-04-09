@@ -19,7 +19,7 @@ import sys
 if len(sys.argv) > 1:
     visible_device = str(sys.argv[1])
 else:
-    visible_device = 1
+    visible_device = 3
     # controls on which gpu the program runs
 os.environ['CUDA_VISIBLE_DEVICES'] = str(visible_device)
 
@@ -28,7 +28,8 @@ import optax
 from pathlib import Path
 
 from chemtrain.jax_md_mod import io
-from chemtrain import trainers, traj_util, util
+from chemtrain import trainers, util
+from chemtrain.trajectory import traj_util
 from util import Postprocessing, Initialization
 
 from jax.lib import xla_bridge
@@ -58,9 +59,9 @@ file = 'data/confs/Water_experimental_3nm.gro'  # 901 particles
 # file = 'data/confs/SPC_FW_2nm.gro'  # 229 particles
 
 # model = 'LJ'
-# model = 'Tabulated'
+model = 'Tabulated'
 # model = 'PairNN'
-model = 'CGDimeNet'
+# model = 'CGDimeNet'
 
 kbt_dependent = False
 dropout_init_seed = 42
@@ -81,9 +82,15 @@ mass = 18.0154
 time_step = 0.01
 
 # lower bound from noise for 2/20: 0.015
-total_time = 70.
-t_equilib = 10.
+num_chains = 6
+total_time = 61.
+t_equilib = 1.
 print_every = 0.1
+
+# Recompute effective traj length
+if num_chains is not None:
+    total_time = ((total_time - t_equilib) / num_chains) + t_equilib
+    print(f"Vectorized total time is {total_time}")
 
 # optimization parameters:
 check_freq = 10
@@ -107,7 +114,7 @@ target_rdf = 'Water_Ox'
 pressure_target = 1. / 16.6054  # 1 bar in kJ / mol nm^3
 rdf_struct = Initialization.select_target_rdf(target_rdf)
 adf_struct = Initialization.select_target_adf('Water_Ox', 0.318)
-target_dict = {'rdf': rdf_struct, 'adf': adf_struct,
+target_dict = {'rdf': rdf_struct, # 'adf': adf_struct,
                'pressure': pressure_target}
 # target_dict = {'rdf': rdf_struct, 'pressure': pressure_target}
 # target_dict = {'rdf': rdf_struct}
@@ -144,7 +151,9 @@ trainer = trainers.Difftre(init_params,
 
 trainer.add_statepoint(energy_fn_template, simulator_template,
                        neighbor_fn, timings, kbt, compute_fns, reference_state,
-                       targets, pressure_target)
+                       targets, pressure_target, num_chains=num_chains)
+
+trainer.init_step_size_adaption(0.25)
 
 if checkpoint is not None:  # restart from a previous checkpoint
     trainer = util.load_trainer(checkpoint)

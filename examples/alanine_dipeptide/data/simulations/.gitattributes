@@ -1,0 +1,2 @@
+alanine_heavy_50000_confs.npy filter=lfs diff=lfs merge=lfs -text
+alanine_heavy_50000_forces.npy filter=lfs diff=lfs merge=lfs -text

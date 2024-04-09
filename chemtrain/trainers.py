@@ -21,17 +21,18 @@ import time
 import jax.tree_util
 import warnings
 
-import optax
 from blackjax import nuts, stan_warmup
-from jax import value_and_grad, random, numpy as jnp, debug, lax, tree_util
+from jax import random, numpy as jnp, lax, tree_util
 from jax_sgmc import data
 from jax_sgmc.data import numpy_loader
 
 import numpy as onp
 
 from chemtrain.jax_md_mod import custom_quantity
-from chemtrain import (util, force_matching, traj_util, reweighting,
-                           probabilistic, max_likelihood, property_prediction)
+from chemtrain import (util)
+from chemtrain.quantity import property_prediction
+from chemtrain.learn import force_matching, max_likelihood, probabilistic
+from chemtrain.trajectory import reweighting, traj_util
 from chemtrain.pickle_jit import jit
 
 from typing import Any, Mapping, Dict
@@ -42,7 +43,7 @@ except:
 from optax import GradientTransformationExtraArgs
 from jax_md.partition import NeighborFn
 from chemtrain.typing import EnergyFnTemplate
-from chemtrain.traj_util import TrajectoryState, TimingClass
+from chemtrain.trajectory.traj_util import TrajectoryState, TimingClass
 
 class PropertyPrediction(max_likelihood.DataParallelTrainer):
     """Trainer for direct prediction of molecular properties."""
@@ -277,9 +278,9 @@ class Difftre(reweighting.PropagationBase):
                        initialize_traj: bool = True,
                        set_key: str = None,
                        loss_kwargs: Mapping = None,
-                       constrained: bool = False,
                        entropy_approximation: bool = False,
-                       replica_kbt: ArrayLike = None):
+                       replica_kbt: ArrayLike = None,
+                       num_chains: int = None):
         """
         Adds a state point to the pool of simulations with respective targets.
 
@@ -342,16 +343,8 @@ class Difftre(reweighting.PropagationBase):
                 training.
             loss_kwargs: Keyword arguments that are passed to the initializer
                 of the loss function.
-            constrained: Use a constrained loss maximizing the entropy.
-                When selecting this option, difftre uses the modified method
-                of multipliers [#miele1972]_ to solve the constrained
-                optimization.
-
-        References:
-            .. [#miele1972] On the method of multipliers for mathematical
-               programming problems. Miele, A.; Moseley, P. E.; Levy, A. V.;
-               Coggins, G. M in Journal of Optimization Theory and Applications
-               1972, 10, 1–33.
+            num_chains: Sample from vectorized simulations instead from a single
+               long one.
 
         """
         if loss_kwargs is None:
@@ -372,50 +365,21 @@ class Difftre(reweighting.PropagationBase):
             safe_propagation=False,
             entropy_approximation=entropy_approximation,
             replica_kbt=replica_kbt,
+            num_chains=num_chains
         )
-
-        # Add lagrange multipliers to constrain the predictions to the
-        # observables and try to maximize the entropy
-        lagrange_multipliers = None
-        if constrained:
-            loss_fn = reweighting.init_constrained_loss_fn(targets, **loss_kwargs)
-            lagrange_multipliers = {
-                "lambda": {
-                    target_key: jnp.zeros_like(target['target'])
-                    for target_key, target in targets.items()
-                },
-                "kappa": 1.0
-            }
-
-        # Discard the lagrange multiplier argument in all other loss functions
-        def loss_wrapper(fun):
-            @functools.wraps(fun)
-            def wrapped(*args):
-                if not constrained:
-                    # Remove the multipliers and penalty coefficient
-                    args = args[:-1]
-                    loss, predictions = fun(*args)
-                    return jnp.asarray([loss, 0.0]), predictions
-                else:
-                    return fun(*args)
-            return wrapped
 
 
         # build loss function for current state point
         if loss_fn is None:
             loss_fn = reweighting.init_default_loss_fn(targets, **loss_kwargs)
-        elif not constrained:
+        else:
             print('Using custom loss function. Ignoring "target" dict.')
-        loss_fn = loss_wrapper(loss_fn)
-
 
         quantities['energy'] = custom_quantity.energy_wrapper(
             energy_fn_template)
-        print(f"Compute quantities: ")
-        print(quantities)
         reweighting.checkpoint_quantities(quantities)
 
-        def difftre_loss(params, traj_state, multipliers):
+        def difftre_loss(params, traj_state):
             """Computes the loss using the DiffTRe formalism and
             additionally returns predictions of the current model.
             """
@@ -426,81 +390,30 @@ class Difftre(reweighting.PropagationBase):
                 traj_state, quantities, params)
             quantity_trajs.update(entropy=entropy, free_energy=free_energy)
 
-            loss_and_penalty, predictions = loss_fn(
-                quantity_trajs, weights, multipliers)
+            loss, predictions = loss_fn(quantity_trajs, weights)
 
             # Always save free energy and entropy even if they are not part of
             # the loss.
             predictions.update(entropy=entropy, free_energy=free_energy)
 
-            return loss_and_penalty, (loss_and_penalty, predictions)
+            return loss, predictions
 
-        loss_jac = jax.jacrev(difftre_loss, has_aux=True, argnums=(0, 2))
-
-        def statepoint_grad_fn(params, traj_state, multipliers):
-            jacobians, outputs = loss_jac(params, traj_state, multipliers)
-            (loss_val, penalty), *aux = outputs
-            thetha_jac, lambda_jac = jacobians
-
-            loss_grad = jax.tree_util.tree_map(
-                functools.partial(jnp.take, indices=0, axis=0), thetha_jac
-            )
-            penalty_grad = jax.tree_util.tree_map(
-                functools.partial(jnp.take, indices=1, axis=0), thetha_jac
-            )
-            phi_vect = jax.tree_util.tree_map(
-                functools.partial(jnp.take, indices=0, axis=0), lambda_jac
-            )
-
-            # Update the multipliers for the constrained optimization
-            if multipliers is not None:
-
-                dpTdp = sum([
-                    jnp.sum(dp * dp)
-                    for dp in jax.tree_util.tree_leaves(penalty_grad)
-                ])
-                dpTdf = sum([
-                    jnp.sum(dp * df) for dp, df in zip(
-                        jax.tree_util.tree_leaves(penalty_grad),
-                        jax.tree_util.tree_leaves(loss_grad)
-                    )
-                ])
-
-                beta = -dpTdf / dpTdp
-
-                # Augmented lagrangian consists of original lagrangian and
-                # penalty term
-                loss_val =  loss_val + multipliers["kappa"] * penalty
-                loss_grad = jax.tree_map(
-                    lambda df, dp: df + multipliers["kappa"] * dp,
-                    loss_grad, penalty_grad
-                )
-
-                multipliers["kappa"] = 2 * penalty / dpTdp
-                multipliers["lambda"] = jax.tree_map(
-                    lambda l, phi: l + 2 * beta * phi,
-                    multipliers["lambda"], phi_vect["lambda"]
-                )
-
-            return loss_val, loss_grad, multipliers, aux
+        loss_grad_fn = jax.value_and_grad(difftre_loss, has_aux=True, argnums=0)
 
         @safe_propagate
         @jit
-        def difftre_grad_and_propagation(params, traj_state, multipliers):
+        def difftre_grad_and_propagation(params, traj_state):
             """The main DiffTRe function that recomputes trajectories
             when needed and computes gradients of the loss wrt. energy function
             parameters for a single state point.
             """
             traj_state = propagate(params, traj_state)
-            loss, loss_grad, multipliers, aux = statepoint_grad_fn(
-                params, traj_state, multipliers)
-            predictions, = aux
-            return (traj_state, loss, loss_grad, multipliers, predictions)
+            (loss_val, predictions), loss_grad = loss_grad_fn(params, traj_state)
+            return traj_state, loss_val, loss_grad, predictions
 
         self.grad_fns[key] = difftre_grad_and_propagation
         self.predictions[key] = {}  # init saving predictions for this point
         self.weights_fn[key] = jax.jit(weights_fn)
-        self.lagrange_multipliers[key] = lagrange_multipliers
 
         # Reset loss measures if new state point es added since loss values
         # are not necessarily comparable
@@ -525,26 +438,15 @@ class Difftre(reweighting.PropagationBase):
         # parallelization efforts
         grads, losses = [], []
         for sim_key in batch:
-            multipliers = self.lagrange_multipliers.get(sim_key)
 
             grad_fn = self.grad_fns[sim_key]
-            (new_traj_state, loss_val, curr_grad, multipliers,
+            (new_traj_state, loss_val, curr_grad,
              state_point_predictions) = grad_fn(
-                self.params, self.trajectory_states[sim_key], multipliers)
+                self.params, self.trajectory_states[sim_key])
 
-            # Print the updated multiplier norms
-            if multipliers is not None:
-                multiplier_norm = jax.tree_map(
-                    jnp.linalg.norm, multipliers
-                )
-
-                print(f"[DiffTRe] Statepoint {sim_key} multiplier norms are:")
-                for key in multiplier_norm.keys():
-                    print(f"\t{key}: {multiplier_norm[key]}")
-
-            self.lagrange_multipliers[sim_key] = multipliers
             self.trajectory_states[sim_key] = new_traj_state
             self.predictions[sim_key][self._epoch] = state_point_predictions
+
             grads.append(curr_grad)
             losses.append(loss_val)
             if jnp.isnan(loss_val):

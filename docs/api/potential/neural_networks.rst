@@ -1,5 +1,7 @@
-chemtrain.potential.neural_networks
-========================================
+``chemtrain.potential.neural_networks``
+=======================================
+
+.. currentmodule:: chemtrain.potential.neural_networks
 
 .. automodule:: chemtrain.potential.neural_networks
 

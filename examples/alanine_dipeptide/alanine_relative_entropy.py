@@ -29,7 +29,9 @@ from pathlib import Path
 from jax import random
 import optax
 
-from chemtrain import util, trainers, traj_util, data_processing
+from chemtrain import util, trainers
+from chemtrain.data import data_processing
+from chemtrain.trajectory import traj_util
 from chemtrain.jax_md_mod import io
 from util import Initialization
 

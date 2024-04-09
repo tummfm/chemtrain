@@ -1,6 +1,6 @@
 # Training Molecular Dynamics Potentials in JAX
 
-[**Documentation**](https://mfm.pages.gitlab.lrz.de/science/myjaxmd) | [**Getting Started**](#getting-started) | [**Installation**](#installation)
+[**Documentation**](https://mfm.pages.gitlab.lrz.de/science/chemtrain) | [**Getting Started**](#getting-started) | [**Installation**](#installation)
 
 [![PyPI version](https://badge.fury.io/py/chemtrain.svg)](https://badge.fury.io/py/chemtrain)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)

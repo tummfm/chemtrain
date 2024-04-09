@@ -26,7 +26,7 @@ import optax
 
 import matplotlib.pyplot as plt
 
-from chemtrain import quantity, trainers, traj_util
+from chemtrain import quantity, trainers, trajectory
 ```
 
 # Differentiable Trajectory Reweighting (DiffTRe)
@@ -77,6 +77,12 @@ decreases below a threshold, DiffTRe replaces the reference potential by the
 current potential $\tilde U \leftarrow U_\theta$ and resamples the conformations
 $x^{(i)}$.
 
+To accelerate the resampling and use the full computational capabilities of a
+GPU, DiffTRe enables to sample from vectorized simulations.
+To seed the vectorized simulations, DiffTRe chooses initial states from the 
+simulated trajectory, with probability corresponding to their weight.
+Since the velocities are independent of the positions, it additionally
+selects the particle velocities from distinct replicas. 
 
 ## Toy Example
 
@@ -84,8 +90,9 @@ For a canonical system of two-particles connected by a spring,
 the Boltzmann factor is
 
 ```{math}
-  \rho(\mathbf{r}) \propto e^{-\frac{1}{2}b(||\mathbf{r}_1 - \mathbf{r}_2|| - r_0)^2}
+  \rho(\mathbf{r}) \propto e^{-\frac{1}{2}b(||\mathbf{r}_1 - \mathbf{r}_2|| - r_0)^2}, \quad b = \beta\cdot b_S,
 ```
+with temperature dependent effective spring constant $b$.
 
 Hence, the probability of finding the two identical
 particles in a distance of $r$ is
@@ -104,7 +111,8 @@ distribution function.
 ```{code-cell} ipython3
 box = 1.0
 
-def radial_distribution(r, r_0=0.35, b=200.0):
+def radial_distribution(r, r_0=0.35, b=250.0, kbt=2.56):
+    b = b / kbt
     norm = onp.sqrt(onp.pi / (2 * b)) * (1 + b * r_0 ** 2) / b
     g_r = box ** 3 / (16 * onp.pi) * onp.exp(-0.5 * b * (r - r_0) ** 2) / norm
     return g_r
@@ -132,12 +140,12 @@ def energy_fn_template(params):
         displacement_fn,
         jnp.asarray([[0, 1]]),
         length=params["r_0"],
-        epsilon=100 * params["b"],
+        epsilon=100 * params["scaled_b"],
         alpha=2.0
     )
     return energy_fn
 
-init_params = {"r_0": 0.3, "b": 1.5}
+init_params = {"r_0": 0.3, "scaled_b": 1.5}
 
 ```
 
@@ -148,7 +156,7 @@ r_init = jnp.asarray([[0.0, 0.0, 0.0], [0.11, 0.09, 0.12]])
 displacement_fn, shift_fn = space.periodic_general(box)
 
 dt = 0.01
-timings = traj_util.process_printouts(dt, 1100, 100, 1.0)
+timings = trajectory.traj_util.process_printouts(dt, 1100, 100, 1.0)
 
 simulator_template = partial(
     simulate.nvt_langevin, shift_fn=shift_fn,
@@ -225,8 +233,10 @@ plt.ylabel("Loss")
 ```
 
 ```{code-cell} ipython3
+last_epoch = len(trainer.predictions[0]) - 1
+
 plt.plot(onp.linspace(0.00, 1.0, 50), trainer.predictions[0][0]['rdf'], label="Initial")
-plt.plot(onp.linspace(0.00, 1.0, 50), trainer.predictions[0][149]['rdf'], label="Final")
+plt.plot(onp.linspace(0.00, 1.0, 50), trainer.predictions[0][last_epoch]['rdf'], label="Final")
 plt.plot(r, radial_distribution(r), label="Reference")
 plt.legend()
 plt.title("Radial Distribution Function")

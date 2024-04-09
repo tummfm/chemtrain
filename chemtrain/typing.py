@@ -20,6 +20,13 @@ class EnergyFn(Protocol):
 
 EnergyFnTemplate = Callable[[Any], EnergyFn]
 
+# Error Function
+
+class ErrorFn(Protocol):
+    def __call__(self,
+                 predictions: ArrayLike,
+                 targets: ArrayLike,
+                 mask: ArrayLike = None) -> ArrayLike:...
 
 # Quantities
 

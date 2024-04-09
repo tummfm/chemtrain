@@ -26,8 +26,6 @@ os.environ['CUDA_VISIBLE_DEVICES'] = str(visible_device)
 import sys
 sys.path.append("../../")
 
-
-import cloudpickle as pickle
 from pathlib import Path
 
 from jax import random
@@ -38,10 +36,10 @@ import mdtraj
 
 from jax_md import partition
 
-from chemtrain import trainers, data_processing, util
+from chemtrain import trainers, util
+from chemtrain.data import data_processing
 from chemtrain.jax_md_mod import custom_space, io
 from chemtrain.potential.prior import Topology, ForceField, init_prior_potential, constrain_ff_params, unconstrain_ff_params
-from util import Initialization
 
 Path('output/figures').mkdir(parents=True, exist_ok=True)
 Path('output/force_matching').mkdir(parents=True, exist_ok=True)
@@ -115,9 +113,6 @@ print(force_field.get_dihedral_params(species[:, 0], species[:, 1], species[:, 2
 init_params = force_field.get_data(train_parameters)
 
 template_fn = init_prior_potential(displacement, mask_bonded=True)
-
-import jax.numpy as jnp
-
 
 print(init_params)
 init_params = constrain_ff_params(init_params)

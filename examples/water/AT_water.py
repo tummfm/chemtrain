@@ -27,10 +27,9 @@ print('Jax Device: ', xla_bridge.get_backend().platform)
 
 import time
 
-from chemtrain.traj_util import process_printouts, trajectory_generator_init, \
-    quantity_traj
+from chemtrain.trajectory.traj_util import process_printouts, trajectory_generator_init
 from chemtrain.jax_md_mod import io
-from util import Postprocessing, Initialization
+from util import Initialization
 
 file = 'data/confs/Water_AT_2_5nm.gro'
 # file = 'data/confs/Water_AT_2nm.gro'

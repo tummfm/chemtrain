@@ -13,20 +13,19 @@ class TestForceField:
 
     @pytest.mark.parametrize("sample_conf", [
             (
-                "examples/alanine_dipeptide/data/confs/heavy_2_7nm.gro",
-                "examples/alanine_dipeptide/data/force_fields/heavy_untrained.toml",
+                "heavy_2_7nm.gro",
+                "heavy_untrained.toml",
                 True
             ),
         ])
-    def test_io(self, tmp_path, sample_conf):
+    def test_io(self, tmp_path, datafiles, sample_conf):
         # Test whether loading and saving of a force field works by comparing
         # the loaded values for multiple topologies
 
         top, ff_file, by_name = sample_conf
+        top = datafiles / top
+        ff_file = datafiles / ff_file
         top = mdtraj.load_topology(top)
-
-        print(Path.cwd())
-        assert (Path.cwd() / "chemtrain").is_dir()
 
         org_force_field = ForceField.load_ff(ff_file)
         topology = Topology.from_mdtraj(top, org_force_field.mapping(by_name=by_name))
