@@ -39,7 +39,7 @@ pages:
   script:
     - virtualenv venv_docs
     - source venv_docs/bin/activate
-    - pip install ".[docs]"
+    - pip install ".[all,docs]"
     - cd docs
     - make html
     - mv _build/html/ ../public/
