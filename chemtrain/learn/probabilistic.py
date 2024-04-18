@@ -14,12 +14,10 @@
 
 """This module provides utilities for setting up probabilistic trainers,
  such as trainers.SGMC"""
-import abc
 from functools import partial
-import time
 
 from jax import (lax, vmap, pmap, checkpoint, random, device_count,
-                 scipy as jscipy, numpy as jnp, tree_map)
+                 scipy as jscipy, numpy as jnp, jit)
 from jax_md import quantity
 from jax_sgmc import data, potential
 from scipy import stats
@@ -30,7 +28,7 @@ from chemtrain.data import data_processing
 from chemtrain.trajectory import traj_util
 from chemtrain.learn import force_matching, max_likelihood
 from chemtrain.potential import dropout
-from chemtrain.pickle_jit import jit
+
 
 # Modeling
 
@@ -298,80 +296,6 @@ def init_log_posterior_fn(likelihood, prior, train_loader, batch_size,
         return -potential_val  # potential is negative posterior
     return log_posterior_fn
 
-# Trainers
-
-
-class ProbabilisticFMTrainerTemplate(util.TrainerInterface):
-    """Trainer template for methods that result in multiple parameter sets for
-    Monte-Carlo-style uncertainty quantification, based on a force-matching
-    formulation.
-    """
-    def __init__(self, checkpoint_path, energy_fn_template,
-                 val_dataloader=None):
-        super().__init__(checkpoint_path, energy_fn_template)
-        self.results = []
-
-        # TODO use val_loader for some metrics that are interesting for MCMC
-        #  and SG-MCMC
-
-    def move_to_device(self):
-        params = []
-        for param_set in self.params:
-            params.append(tree_map(jnp.array, param_set))  # move on device
-        self.params = params
-
-    @property
-    @abc.abstractmethod
-    def list_of_params(self):
-        """ Returns a list containing n single model parameter sets, where n
-        is the number of samples. This provides a more intuitive parameter
-        interface that self.params, which returns a large set of parameters,
-        where n is the leading axis of each leaf. Self.params is most useful,
-        if parameter sets are mapped via map or vmap in a postprocessing step.
-        """
-
-
-class MCMCForceMatchingTemplate(ProbabilisticFMTrainerTemplate):
-    """Initializes log_posterior function to be used for MCMC with blackjax,
-    including batch-wise evaluation of the likelihood and re-materialization.
-    """
-    def __init__(self, init_state, kernel, checkpoint_path, val_loader=None,
-                 ref_energy_fn_template=None):
-        super().__init__(checkpoint_path, ref_energy_fn_template, val_loader)
-        self.kernel = jit(kernel)
-        self.state = init_state
-
-    def train(self, num_samples, checkpoint_freq=None, init_samples=None,
-              rng_key=random.PRNGKey(0)):
-        if init_samples is not None:
-            # TODO implement multiple chains
-            raise NotImplementedError
-
-        for i in range(num_samples):
-            start_time = time.time()
-            rng_key, consumed_key = random.split(rng_key)
-            self.state, info = self.kernel(consumed_key, self.state)
-            self.results.append(self.state)
-            print(f'Time for sample {i}: {(time.time() - start_time) / 60.}'
-                  f' min.', info)
-            self._epoch += 1
-            self._dump_checkpoint_occasionally(frequency=checkpoint_freq)
-
-    @property
-    def list_of_params(self):
-        return [state.position['params'] for state in self.results]
-
-    @property
-    def params(self):
-        return util.tree_stack(self.list_of_params)
-
-    @params.setter
-    def params(self, loaded_params):
-        raise NotImplementedError('Setting params seems not meaningful for MCMC'
-                                  ' samplers.')
-
-
-# Uncertainty propagation
 
 def init_dropout_uq_fwd(batched_model, meta_params, n_dropout_samples=8):
     """Initializes a function that predicts a distribution of predictions for

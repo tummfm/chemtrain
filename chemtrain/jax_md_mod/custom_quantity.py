@@ -21,12 +21,11 @@ from functools import partial
 
 import numpy as onp
 
-from jax import grad, vmap, lax, jacrev, jacfwd, numpy as jnp
+from jax import grad, vmap, lax, jacrev, jacfwd, numpy as jnp, jit
 from jax.scipy.stats import norm
 from jax_md import space, util, dataclasses, quantity, simulate
 
 from chemtrain.potential import sparse_graph
-from chemtrain.pickle_jit import jit
 
 Array = util.Array
 

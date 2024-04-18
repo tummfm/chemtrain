@@ -15,6 +15,7 @@
 
 """This file contains several Trainer classes as a quickstart for users."""
 import functools
+import gc
 import pickle
 import time
 
@@ -22,20 +23,19 @@ import jax.tree_util
 import warnings
 
 from blackjax import nuts, stan_warmup
-from jax import random, numpy as jnp, lax, tree_util
+from jax import random, numpy as jnp, lax, tree_util, jit
 from jax_sgmc import data
 from jax_sgmc.data import numpy_loader
 
 import numpy as onp
 
-from chemtrain.jax_md_mod import custom_quantity
 from chemtrain import (util)
 from chemtrain.quantity import property_prediction
-from chemtrain.learn import force_matching, max_likelihood, probabilistic
-from chemtrain.trajectory import reweighting, traj_util
-from chemtrain.pickle_jit import jit
+from chemtrain.learn import force_matching, max_likelihood, probabilistic, difftre
+from chemtrain.trainers import base as tt
 
-from typing import Any, Mapping, Dict
+from typing import Any, Mapping, Dict, Union, Callable
+
 try:
     from jax.typing import ArrayLike
 except:
@@ -45,7 +45,7 @@ from jax_md.partition import NeighborFn
 from chemtrain.typing import EnergyFnTemplate
 from chemtrain.trajectory.traj_util import TrajectoryState, TimingClass
 
-class PropertyPrediction(max_likelihood.DataParallelTrainer):
+class PropertyPrediction(tt.DataParallelTrainer):
     """Trainer for direct prediction of molecular properties."""
     def __init__(self, error_fn, prediction_model, init_params, optimizer,
                  graph_dataset, targets, batch_per_device=1, batch_cache=10,
@@ -101,7 +101,7 @@ class PropertyPrediction(max_likelihood.DataParallelTrainer):
             self._test_fn = None
 
 
-class ForceMatching(max_likelihood.DataParallelTrainer):
+class ForceMatching(tt.DataParallelTrainer):
     """Force-matching trainer.
 
     This implementation assumes a constant number of particles per box and
@@ -121,10 +121,10 @@ class ForceMatching(max_likelihood.DataParallelTrainer):
                  gamma_p=1.e-6, batch_per_device=1, batch_cache=10,
                  train_ratio=0.7, val_ratio=0.1, shuffle=False,
                  full_checkpoint=False,
+                 disable_shmap=False, penalty_fn=None,
                  convergence_criterion='window_median',
-                 checkpoint_folder='Checkpoints'):
+                 checkpoint_folder='checkpoints'):
 
-        checkpoint_path = 'output/force_matching/' + str(checkpoint_folder)
         dataset_dict = {'position_data': position_data,
                         'energy_data': energy_data,
                         'force_data': force_data,
@@ -139,8 +139,9 @@ class ForceMatching(max_likelihood.DataParallelTrainer):
         loss_fn = force_matching.init_loss_fn(gamma_f=gamma_f, gamma_p=gamma_p)
 
         super().__init__(dataset_dict, loss_fn, model, init_params, optimizer,
-                         checkpoint_path, batch_per_device, batch_cache,
+                         checkpoint_folder, batch_per_device, batch_cache,
                          train_ratio, val_ratio, shuffle=shuffle,
+                         disable_shmap=disable_shmap, penalty_fn=penalty_fn,
                          convergence_criterion=convergence_criterion,
                          full_checkpoint=full_checkpoint,
                          energy_fn_template=energy_fn_template)
@@ -158,7 +159,7 @@ class ForceMatching(max_likelihood.DataParallelTrainer):
         assert self.test_loader is not None, ('No test set available. Check'
                                               ' train and val ratios or add a'
                                               ' test_loader manually.')
-        maes = self.mae_fn(self.best_inference_params_replicated)
+        maes = self.mae_fn(self.best_inference_params)
         for key, mae_value in maes.items():
             print(f'{key}: MAE = {mae_value:.4f}')
 
@@ -174,7 +175,7 @@ class ForceMatching(max_likelihood.DataParallelTrainer):
             self.mae_fn = None
 
 
-class Difftre(reweighting.PropagationBase):
+class Difftre(tt.PropagationBase):
     """Trainer class for parametrizing potentials via the DiffTRe method.
 
     The implementation assumes a NVT ensemble in weight computation.
@@ -260,8 +261,8 @@ class Difftre(reweighting.PropagationBase):
         self.predictions = self.checkpoint("predictions", {})
         self.lagrange_multipliers: Dict[str, Any] = self.checkpoint("lagrange_multipliers", {})
 
-        self.early_stop = max_likelihood.EarlyStopping(self.params,
-                                                       convergence_criterion)
+        self.early_stop = tt.EarlyStopping(self.params,
+                                        convergence_criterion)
 
     def add_statepoint(self,
                        energy_fn_template: EnergyFnTemplate,
@@ -351,7 +352,7 @@ class Difftre(reweighting.PropagationBase):
             loss_kwargs = {}
 
         # init simulation, reweighting functions and initial trajectory
-        (key, weights_fn, propagate, safe_propagate) = self._init_statepoint(
+        (key, *reweight_fns) = self._init_statepoint(
             reference_state,
             energy_fn_template,
             simulator_template,
@@ -368,52 +369,19 @@ class Difftre(reweighting.PropagationBase):
             num_chains=num_chains
         )
 
-
         # build loss function for current state point
         if loss_fn is None:
-            loss_fn = reweighting.init_default_loss_fn(targets, **loss_kwargs)
+            loss_fn = difftre.init_default_loss_fn(targets, **loss_kwargs)
         else:
             print('Using custom loss function. Ignoring "target" dict.')
 
-        quantities['energy'] = custom_quantity.energy_wrapper(
-            energy_fn_template)
-        reweighting.checkpoint_quantities(quantities)
-
-        def difftre_loss(params, traj_state):
-            """Computes the loss using the DiffTRe formalism and
-            additionally returns predictions of the current model.
-            """
-            weights, _, entropy, free_energy = weights_fn(
-                params, traj_state, entropy_and_free_energy=True)
-
-            quantity_trajs = traj_util.quantity_traj(
-                traj_state, quantities, params)
-            quantity_trajs.update(entropy=entropy, free_energy=free_energy)
-
-            loss, predictions = loss_fn(quantity_trajs, weights)
-
-            # Always save free energy and entropy even if they are not part of
-            # the loss.
-            predictions.update(entropy=entropy, free_energy=free_energy)
-
-            return loss, predictions
-
-        loss_grad_fn = jax.value_and_grad(difftre_loss, has_aux=True, argnums=0)
-
-        @safe_propagate
-        @jit
-        def difftre_grad_and_propagation(params, traj_state):
-            """The main DiffTRe function that recomputes trajectories
-            when needed and computes gradients of the loss wrt. energy function
-            parameters for a single state point.
-            """
-            traj_state = propagate(params, traj_state)
-            (loss_val, predictions), loss_grad = loss_grad_fn(params, traj_state)
-            return traj_state, loss_val, loss_grad, predictions
+        difftre_grad_and_propagation = difftre.init_difftre_gradient_and_propagation(
+            reweight_fns, loss_fn, quantities, energy_fn_template
+        )
 
         self.grad_fns[key] = difftre_grad_and_propagation
         self.predictions[key] = {}  # init saving predictions for this point
-        self.weights_fn[key] = jax.jit(weights_fn)
+        self.weights_fn[key] = jax.jit(reweight_fns[0])
 
         # Reset loss measures if new state point es added since loss values
         # are not necessarily comparable
@@ -436,19 +404,26 @@ class Difftre(reweighting.PropagationBase):
         # into difftre_grad_and_propagation, which would increase re-usability
         # with relative_entropy. However, this would probably stop all
         # parallelization efforts
-        grads, losses = [], []
-        for sim_key in batch:
 
+        losses = 0.0
+        grads = None
+
+        for sim_key in batch:
             grad_fn = self.grad_fns[sim_key]
             (new_traj_state, loss_val, curr_grad,
              state_point_predictions) = grad_fn(
                 self.params, self.trajectory_states[sim_key])
 
             self.trajectory_states[sim_key] = new_traj_state
-            self.predictions[sim_key][self._epoch] = state_point_predictions
+            self.predictions[sim_key][self._epoch] = tree_util.tree_map(
+                onp.asarray, state_point_predictions)
 
-            grads.append(curr_grad)
-            losses.append(loss_val)
+            losses += loss_val
+            if grads is None:
+                grads = curr_grad
+            else:
+                grads = util.tree_sum(grads, curr_grad)
+
             if jnp.isnan(loss_val):
                 warnings.warn(f'Loss of state point {sim_key} in epoch '
                               f'{self._epoch} is NaN. This was likely caused by'
@@ -457,8 +432,8 @@ class Difftre(reweighting.PropagationBase):
                 self._diverged = True  # ends training
                 break
 
-        self.batch_losses.append(sum(losses) / self.sim_batch_size)
-        batch_grad = util.tree_mean(grads)
+        self.batch_losses.append(onp.asarray(losses / self.sim_batch_size))
+        batch_grad = tree_util.tree_map(lambda x: x / self.sim_batch_size, grads)
 
         if self._adaptive_step_size is not None:
             proposal = self._optimizer_step(batch_grad)
@@ -470,8 +445,14 @@ class Difftre(reweighting.PropagationBase):
             alpha = 1.0
 
         self._step_optimizer(batch_grad, alpha=alpha)
-        self.gradient_norm_history.append(util.tree_norm(batch_grad))
-        self.step_size_history.append(alpha)
+
+        batch_norm = util.tree_norm(batch_grad)
+        self.gradient_norm_history.append(onp.asarray(batch_norm))
+        self.step_size_history.append(onp.asarray(alpha))
+
+        del grads, loss_val
+        gc.collect()
+
 
     def init_step_size_adaption(self,
                                 allowed_reduction: ArrayLike = 0.5,
@@ -514,6 +495,11 @@ class Difftre(reweighting.PropagationBase):
             Returns the interpolation coefficient :math:`\\alpha`.
 
         """
+
+        # TODO: Makes this more general to work on an arbitrary measure,
+        #       not only the effective sample size.
+        #       Then, it is possible to move out the step size adaption
+        #       into a more general trainer.
 
         iterations = int(onp.ceil(-onp.log(step_size_scale) / onp.log(interior_points + 1)))
         print(f"[Step size] Use {iterations} iterations for {interior_points} interior points.")
@@ -637,7 +623,7 @@ class Difftre(reweighting.PropagationBase):
         self.early_stop.move_to_device()
 
 
-class DifftreActive(util.TrainerInterface):
+class DifftreActive(tt.TrainerInterface):
     """Active learning of state-transferable potentials from experimental data
     via DiffTRe.
 
@@ -686,7 +672,7 @@ class DifftreActive(util.TrainerInterface):
         self.trainer.params = loaded_params
 
 
-class RelativeEntropy(reweighting.PropagationBase):
+class RelativeEntropy(tt.PropagationBase):
     """Trainer for relative entropy minimization."""
     def __init__(self, init_params, optimizer,
                  reweight_ratio=0.9, sim_batch_size=1, energy_fn_template=None,
@@ -738,8 +724,8 @@ class RelativeEntropy(reweighting.PropagationBase):
         # track of dataloader states for reference snapshots
         self.data_states = {}
 
-        self.early_stop = max_likelihood.EarlyStopping(self.params,
-                                                       convergence_criterion)
+        self.early_stop = EarlyStopping(self.params,
+                                        convergence_criterion)
 
     def _set_dataset(self, key, reference_data, reference_batch_size,
                      batch_cache=1):
@@ -819,7 +805,7 @@ class RelativeEntropy(reweighting.PropagationBase):
                                                  reference_batch_size,
                                                  batch_cache)
 
-        grad_fn = reweighting.init_rel_entropy_gradient(
+        grad_fn = chemtrain.learn.differentiable_reweighting.init_rel_entropy_gradient(
             energy_fn_template, weights_fn, kbt, vmap_batch)
 
         def propagation_and_grad(params, traj_state, batch_state):
@@ -861,7 +847,7 @@ class RelativeEntropy(reweighting.PropagationBase):
                                                          save_best_params=False)
 
 
-class SGMCForceMatching(probabilistic.ProbabilisticFMTrainerTemplate):
+class SGMCForceMatching(tt.ProbabilisticFMTrainerTemplate):
     """Trainer for stochastic gradient Markov-chain Monte Carlo training
     based on force-matching.
 
@@ -912,7 +898,7 @@ class SGMCForceMatching(probabilistic.ProbabilisticFMTrainerTemplate):
 
 
 # TODO adjust to new blackjax interface, then allow newer version
-class NUTSForceMatching(probabilistic.MCMCForceMatchingTemplate):
+class NUTSForceMatching(tt.MCMCForceMatchingTemplate):
     """Trainer that samples from the posterior distribution of energy_params via
     the No-U-Turn Sampler (NUTS), based on a force-matching formulation.
     """
@@ -943,7 +929,7 @@ class NUTSForceMatching(probabilistic.MCMCForceMatchingTemplate):
                          ref_energy_fn_template)
 
 
-class EnsembleOfModels(probabilistic.ProbabilisticFMTrainerTemplate):
+class EnsembleOfModels(tt.ProbabilisticFMTrainerTemplate):
     """Train an ensemble of models by starting optimization from different
     initial parameter sets, for use in uncertainty quantification applications.
     """
@@ -977,7 +963,7 @@ class EnsembleOfModels(probabilistic.ProbabilisticFMTrainerTemplate):
         return params
 
 
-class InterleaveTrainers(util.TrainerInterface):
+class InterleaveTrainers(tt.TrainerInterface):
     """Interleaves updates to train models using multiple algorithms.
 
     This special trainer allows to train models simultaneously with different

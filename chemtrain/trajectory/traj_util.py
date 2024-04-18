@@ -17,17 +17,19 @@ single snapshots.
 """
 import functools
 from functools import partial
-from typing import Any, Dict, Callable, Mapping
+from typing import Any, Dict, Callable, Mapping, Tuple
 
 import numpy as onp
 
 import chex
-from jax import lax, jit, vmap, numpy as jnp, random
+
+from jax import lax, jit, vmap, numpy as jnp, random, tree_util
+
 from jax_md import simulate, util as jax_md_util
+from jax_md.partition import NeighborList
 
 from chemtrain import util
 from chemtrain.jax_md_mod import custom_quantity
-from jax_md.partition import NeighborList
 
 Array = jax_md_util.Array
 
@@ -37,13 +39,13 @@ class TimingClass:
     """A dataclass containing run-times for the simulation.
 
     Attributes:
-    t_equilib_start: Starting time of all printouts that will be dumped
-                     for equilibration
-    t_production_start: Starting time of all runs that result in a printout
-    t_production_end: Generation time of all printouts
-    timesteps_per_printout: Number of simulation timesteps to run forward
-                            from each starting time
-    time_step: Simulation time step
+        t_equilib_start: Starting time of all printouts that will be dumped
+            for equilibration
+        t_production_start: Starting time of all runs that result in a printout
+        t_production_end: Generation time of all printouts
+        timesteps_per_printout: Number of simulation timesteps to run forward
+            from each starting time
+        time_step: Simulation time step
     """
     t_equilib_start: Array
     t_production_start: Array
@@ -57,20 +59,26 @@ class TrajectoryState:
     """A dataclass storing information of a generated trajectory.
 
     Attributes:
-    sim_state: Last simulation state, a tuple of last state and nbrs
-    trajectory: Generated trajectory
-    overflow: True if neighbor list overflowed during trajectory generation
-    thermostat_kbT: Target thermostat kbT at time of respective snapshots
-    barostat_press: Target barostat pressure at time of respective snapshots
-    aux: Dict of auxilary per-snapshot quantities as defined by quantities
-         in trajectory generator.
+        sim_state: Last simulation state, a tuple of last state and nbrs
+        trajectory: Generated trajectory
+        overflow: True if neighbor list overflowed during trajectory generation
+        thermostat_kbt: Target thermostat kbT at time of respective snapshots
+        barostat_press: Target barostat pressure at time of respective snapshots
+        aux: Dict of auxilary per-snapshot quantities as defined by quantities
+            in trajectory generator.
+        key: PRNGKey of the trajectory state.
+        energy_params: Energy parameters used to generate the trajectory.
+        entropy_diff: Entropy difference estimated for the trajectory, e.g.,
+            via DiffTRe optimization
+        free_energy_diff: Free energy difference estimated for the trajectory,
+            e.g., via DiffTRe optimization
     """
-    sim_state: Any
+    sim_state: Tuple[Any, Any]
     trajectory: Any
     overflow: Array = False
     thermostat_kbt: Array = None
     barostat_press: Array = None
-    aux: Dict = None
+    aux: Dict[str, Any] = None
     key: Array = None
     energy_params: Any = None
     entropy_diff: Array = 0.0
@@ -89,7 +97,7 @@ def process_printouts(time_step, total_time, t_equilib, print_every, t_start=0):
         t_equilib: Equilibration run length
         print_every: Time after which a state is saved
         t_start: Starting time. Only relevant for time-dependent
-                 thermostat/barostat.
+            thermostat/barostat.
 
     Returns:
         A class containing information for the simulator
@@ -362,14 +370,62 @@ def trajectory_generator_init(simulator_template, energy_fn_template,
 def quantity_traj(traj_state, quantities, energy_params=None, batch_size=1):
     """Computes quantities of interest for all states in a trajectory.
 
-    Arbitrary quantity functions can be provided via the quantities dict.
-    The quantities dict should provide each quantity function via its own
-    key that contains another dict containing the function under the
-    'compute_fn' key. The resulting quantity trajectory will be saved in
+    Arbitrary quantity functions can be provided via the quantities-dict.
+    The quantities dict provides the function to compute the quantity on
+    a single snapshot. The resulting quantity trajectory will be saved in
     a dict under the same key as the input quantity function.
 
+    Example usage:
+        .. code-block:: python
+
+            def custom_compute_fn(state, neighbor=None, **kwargs):
+                ...
+                return quantity_snapshot
+
+
+            quantities = {
+                'energy': custom_quantity.energy_wrapper(energy_template_fn),
+                'custom_quantity': custom_compute_fn
+            }
+
+            quantity_trajs = quantity_traj(traj_state, quantities, energy_params)
+            custom_quantity = quantity_trajs['custom_quantity']
+
+
     Args:
-        traj_state: TrajectoryState as output from trajectory generator
+        traj_states: TrajectoryStates as output from trajectory generator
+        quantities: The quantity dict containing for each target quantity
+            the snapshot compute function
+        energy_params: Energy params for energy_fn_template to initialize
+            the current energy_fn
+        batch_size: Number of batches for vmap
+
+    Returns:
+        A dict of quantity trajectories saved under the same key as the
+        input quantity function.
+    """
+    return quantity_traj_multimap(
+        traj_state, quantities=quantities,
+        energy_params=energy_params, batch_size=batch_size)
+
+
+def quantity_traj_multimap(*traj_states, quantities=None, energy_params=None, batch_size=1):
+    """Computes quantities of interest for all states in a trajectory.
+
+    This function extends :func:`quantity_traj`
+    to quantities with respect to multiple reference states.
+    Therefore, the quantity function signature changes to
+
+    .. code-block:: python
+
+            def quantity_fn(*states, neighbor=None, energy_params=None, **kwargs):
+                ...
+
+    The keywords arguments, i.e. the neighbor list, are with respect to the
+    first state of `*states`.
+
+    Args:
+        *traj_states: TrajectoryStates as output from trajectory generator
         quantities: The quantity dict containing for each target quantity
                     the snapshot compute function
         energy_params: Energy params for energy_fn_template to initialize
@@ -380,36 +436,61 @@ def quantity_traj(traj_state, quantities, energy_params=None, batch_size=1):
         A dict of quantity trajectories saved under the same key as the
         input quantity function.
     """
-    if traj_state.sim_state[0].position.ndim > 2:
+    # Check that all states have the same format
+    assert len(traj_states) > 0, 'Need at least one trajectory state.'
+    ref_leaves, ref_struct = tree_util.tree_flatten(traj_states[0])
+    for state in traj_states:
+        assert ref_struct == tree_util.tree_structure(state), (
+            "All trajectory states must have the same tree structure."
+        )
+        assert onp.all([
+            jnp.shape(l) == jnp.shape(r)
+            for r, l in zip(ref_leaves, tree_util.tree_leaves(state))
+        ]), "All trajectory state leaves must be of identical shape."
+
+
+    if traj_states[0].sim_state[0].position.ndim > 2:
         last_state, fixed_reference_nbrs = util.tree_get_single(
-            traj_state.sim_state)
+            traj_states[0].sim_state)
     else:
-        last_state, fixed_reference_nbrs = traj_state.sim_state
+        last_state, fixed_reference_nbrs = traj_states[0].sim_state
     npt_ensemble = util.is_npt_ensemble(last_state)
 
     @jit
     def single_state_quantities(single_snapshot):
-        state, kbt = single_snapshot
-        nbrs = util.neighbor_update(fixed_reference_nbrs, state)
+        states, kbt = single_snapshot
+        nbrs = util.neighbor_update(fixed_reference_nbrs, states[0])
         kwargs = {'neighbor': nbrs, 'energy_params': energy_params, 'kT': kbt}
         if npt_ensemble:
-            box = simulate.npt_box(state)
+            box = simulate.npt_box(states[0])
             kwargs['box'] = box
 
-        computed_quantities = {
-            quantity_fn_key: quantities[quantity_fn_key](state, **kwargs)
-            for quantity_fn_key in quantities
-        }
+        print(states)
+
+        if len(states) == 1:
+            computed_quantities = {
+                quantity_fn_key: quantities[quantity_fn_key](states[0], **kwargs)
+                for quantity_fn_key in quantities
+            }
+        else:
+            computed_quantities = {
+                quantity_fn_key: quantities[quantity_fn_key](*states, **kwargs)
+                for quantity_fn_key in quantities
+            }
         return computed_quantities
 
-    batched_traj = util.tree_vmap_split(traj_state.trajectory, batch_size)
-    if traj_state.thermostat_kbt is not None:
-        thermo_kbt = traj_state.thermostat_kbt.reshape((-1, batch_size))
+    batched_trajs = [
+        util.tree_vmap_split(state.trajectory, batch_size)
+        for state in traj_states
+    ]
+
+    if traj_states[0].thermostat_kbt is not None:
+        thermo_kbt = traj_states[0].thermostat_kbt.reshape((-1, batch_size))
     else:
-        thermo_kbt = traj_state.thermostat_kbt
+        thermo_kbt = traj_states[0].thermostat_kbt
 
     bachted_quantity_trajs = lax.map(
-        vmap(single_state_quantities), (batched_traj, thermo_kbt)
+        vmap(single_state_quantities), (batched_trajs, thermo_kbt)
     )
     quantity_trajs = util.tree_combine(bachted_quantity_trajs)
     return quantity_trajs

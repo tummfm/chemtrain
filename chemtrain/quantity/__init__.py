@@ -12,7 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from chemtrain.quantity.constants import *
-from chemtrain.quantity.util import TargetBuilder
+from .constants import *
 
-from chemtrain.quantity import structure, thermodynamics, observables
+from .util import TargetBuilder
+
+from . import (
+    structure,
+    thermodynamics,
+    observables
+)

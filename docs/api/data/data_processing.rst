@@ -16,6 +16,8 @@ Preprocess Data
 
 .. autofunction:: scale_dataset_fractional
 
+.. autofunction:: map_dataset
+
 
 Create Splits and Dataloaders
 ------------------------------

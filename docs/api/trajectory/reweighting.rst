@@ -22,13 +22,6 @@ ____________________________________
 
 .. autofunction:: init_bar
 
-
-Loss Functions
----------------
-
-.. autofunction:: init_default_loss_fn
-
-
 Utilities
 ----------
 

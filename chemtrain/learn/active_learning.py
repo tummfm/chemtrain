@@ -16,6 +16,7 @@
 
 from jax import jit, numpy as jnp
 
+import chemtrain.learn.difftre
 from chemtrain.trajectory import reweighting, traj_util
 
 
@@ -37,7 +38,7 @@ def _forward_prod_times(old_timings, t_production):
 def init_estimate_uncertainty(quantities, statepoint_grid, uncertainty_fn=None):
 
     if uncertainty_fn is None:
-        uncertainty_fn = reweighting.init_default_loss_fn
+        uncertainty_fn = chemtrain.learn.differentiable_reweighting.init_default_loss_fn
 
     def statepoint_uncertainty(traj, quantity_traj, target_kbt, target_press):
         weights = reweighting.reweight_trajectory(traj, kT=target_kbt,

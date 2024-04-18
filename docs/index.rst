@@ -31,8 +31,10 @@ These extensions are gathered in the
    :caption: Algorithms
 
    algorithms/getting_started
-   algorithms/trainers
    algorithms/difftre
+   algorithms/force_matching
+   algorithms/relative_entropy
+   algorithms/prior_simulation
 
 
 .. toctree::
@@ -41,6 +43,7 @@ These extensions are gathered in the
    :caption: Examples
 
    examples/CG_water_difftre
+   examples/FM_alanine_dipeptide
 
 
 .. toctree::

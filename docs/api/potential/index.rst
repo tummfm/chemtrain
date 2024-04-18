@@ -4,6 +4,8 @@
 
 .. toctree::
    :caption: Potential Models
+   :titlesonly:
+
 
    prior
    layers

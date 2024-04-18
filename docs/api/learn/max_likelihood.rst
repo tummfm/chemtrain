@@ -22,15 +22,3 @@ Dataset Predictions
 
 .. autofunction:: init_val_loss_fn
 
-
-Trainer Base Classes
----------------------
-
-.. autoclass:: MLETrainerTemplate
-   :members:
-
-.. autoclass:: EarlyStopping
-  :members:
-
-.. autoclass:: DataParallelTrainer
-   :members:

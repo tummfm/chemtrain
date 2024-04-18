@@ -64,6 +64,7 @@ dynamic = ["version"]
     "sphinx-autodoc-typehints == 1.11.1",
     "myst-nb",
     "matplotlib",
+    "sphinx-remove-toctrees"
 ]
 "stable" = [
     "jax == 0.3.25",

@@ -58,9 +58,14 @@ Examples:
 
 """
 
+import functools
 
 import numpy as onp
+
+import jax
 from jax import lax, tree_util
+import jax.numpy as jnp
+
 from jax_sgmc.data import numpy_loader
 
 from chemtrain.jax_md_mod import custom_space
@@ -210,3 +215,75 @@ def scale_dataset_fractional(traj, box):
     _, scale_fn = custom_space.init_fractional_coordinates(box)
     scaled_traj = lax.map(scale_fn, traj)
     return scaled_traj
+
+
+def map_dataset(position_dataset, force_dataset, c, d, displacement_fn, shift_fn):
+    """Maps fine-scaled positions and forces to a coarser scale.
+
+    Uses the linear mapping from [Noid2008]_ to map fine-scaled positions and
+    forces to coarse grained positions and forces via the relations:
+
+    .. math::
+
+        \\mathbf R_I = \\sum_{i \\in \\mathcal I_I} c_{Ii} \\mathbf r_i,\\quad \\text{and}
+
+        \\mathbf{F}_I = \\sum_{i \\in \\mathcal I_I} \\frac{d_{Ii}}{c_{Ii}} \\mathbf f_i.
+
+
+    Args:
+        position_dataset: Dataset of fine-scaled positions.
+        force_dataset: Dataset of fine-scaled forces.
+        c: Matrix $c_{Ii}$ defining the linear mapping of positions.
+        d: Matrix $d_{Ii}$ defining the linear mapping of forces in combination
+            with $c_{Ii}$.
+        displacement_fn: Function to compute the displacement between two
+            sets of coordinates. Necessary to handle boundary conditions.
+        shift_fn: Ensures that the produced coordinates remain in the
+            box.
+
+    Returns:
+        Returns a tuple of the coarse-grained positions and forces.
+
+    References:
+        .. [Noid2008] W. G. Noid, Jhih-Wei Chu, Gary S. Ayton, Vinod Krishna,
+           Sergei Izvekov, Gregory A. Voth, Avisek Das, Hans C. Andersen;
+           *The multiscale coarse-graining method. I. A rigorous bridge between
+           atomistic and coarse-grained models*. J. Chem. Phys. 28 June 2008;
+           128 (24): 244114. https://doi-org.eaccess.tum.edu/10.1063/1.2938860
+
+
+    """
+    # Compute the mapping via displacements to take care of periodic
+    # boundary conditions
+
+    disp_fn = jax.vmap(displacement_fn, in_axes=(None, 0))
+
+    ref_positions = jnp.zeros_like(position_dataset[0, 0, :])
+    displacements = lax.map(
+        functools.partial(disp_fn, ref_positions),
+        position_dataset
+    )
+
+    c /= jnp.sum(c, axis=1, keepdims=True)
+    d /= jnp.sum(d, axis=1, keepdims=True)
+
+    cg_dislacements = lax.map(
+        functools.partial(jnp.einsum, 'Ii..., id->Id', c),
+        -displacements
+    )
+
+    cg_positions = lax.map(
+        functools.partial(jax.vmap(shift_fn, in_axes=(None, 0)), ref_positions),
+        cg_dislacements
+    )
+
+    # Avoid division by zero.
+    mask = (c > 0.0)
+    safe_c = jnp.where(mask, c, 1.0)
+
+    cg_forces = lax.map(
+        functools.partial(jnp.einsum, 'Ii..., id->Id', mask * d / safe_c),
+        force_dataset
+    )
+
+    return cg_positions, cg_forces

@@ -61,10 +61,11 @@ class ForceField:
         # Parse the contents using numpy
         non_bonded = onp.genfromtxt(
             StringIO(ff["nonbonded"]["atomtypes"]),
-            dtype=None, delimiter=","
+            dtype=None, delimiter=",", encoding="UTF-8"
         )
+
         mapping = {
-            name.decode('UTF-8').strip(): index for name, index, *_ in
+            name: index for name, index, *_ in
             non_bonded
         }
 
@@ -77,7 +78,7 @@ class ForceField:
         nonbonded_data = onp.zeros((num_species, 3))
         for idx, particle in enumerate(non_bonded):
             i, _, *params = particle
-            s = mapping[i.decode('UTF-8').strip()]
+            s = mapping[i]
             nonbonded_lookup[s] = idx
             nonbonded_data[idx, :] = onp.asarray(params)
 
@@ -86,8 +87,8 @@ class ForceField:
 
         bonds = onp.genfromtxt(
             StringIO(ff["bonded"]["bondtypes"]),
-            dtype=None, delimiter=","
-        )
+            dtype=None, delimiter=",", encoding="UTF-8", autostrip=True
+        ).reshape((-1,))
 
         # Fill up to indicate which bonds are not provided by the force field
         bond_lookup = onp.full(
@@ -95,8 +96,8 @@ class ForceField:
         bond_data = onp.zeros((max([len(bonds), 1]), 2))
         for idx, bond in enumerate(bonds):
             i, j, *params = bond
-            s1 = mapping[i.decode('UTF-8').strip()]
-            s2 = mapping[j.decode('UTF-8').strip()]
+            s1 = mapping[i]
+            s2 = mapping[j]
 
             bond_lookup[s1, s2] = idx
             bond_lookup[s2, s1] = idx
@@ -107,17 +108,17 @@ class ForceField:
 
         angles = onp.genfromtxt(
             StringIO(ff["bonded"]["angletypes"]),
-            dtype=None, delimiter=","
-        )
+            dtype=None, delimiter=",", encoding="UTF-8", autostrip=True
+        ).reshape((-1,))
 
         angle_lookup = onp.full(
             (num_species, num_species, num_species), -1, dtype=int)
         angle_data = onp.zeros((max([len(angles), 1]), 2))
         for idx, angle in enumerate(angles):
             i, j, k, *params = angle
-            s1 = mapping[i.decode('UTF-8').strip()]
-            s2 = mapping[j.decode('UTF-8').strip()]
-            s3 = mapping[k.decode('UTF-8').strip()]
+            s1 = mapping[i]
+            s2 = mapping[j]
+            s3 = mapping[k]
 
             angle_lookup[s1, s2, s3] = idx
             angle_lookup[s3, s2, s1] = idx
@@ -130,18 +131,18 @@ class ForceField:
         max_terms = 4
         dihedrals = onp.genfromtxt(
             StringIO(ff["bonded"]["dihedraltypes"]),
-            dtype=None, delimiter=","
-        )
+            dtype=None, delimiter=",", encoding="UTF-8", autostrip=True
+        ).reshape((-1,))
 
         dihedrals_lookup = onp.full(
             (num_species, num_species, num_species, num_species, max_terms), -1, dtype=int)
         dihedral_data = onp.zeros((max([len(dihedrals), 1]), 1))
         for idx, dihedral in enumerate(dihedrals):
             i, j, k, l, phase, kd, nd = dihedral
-            s1 = mapping[i.decode('UTF-8').strip()]
-            s2 = mapping[j.decode('UTF-8').strip()]
-            s3 = mapping[k.decode('UTF-8').strip()]
-            s4 = mapping[l.decode('UTF-8').strip()]
+            s1 = mapping[i]
+            s2 = mapping[j]
+            s3 = mapping[k]
+            s4 = mapping[l]
 
             dihedrals_lookup[s1, s2, s3, s4, nd - 1] = idx
             dihedrals_lookup[s4, s3, s2, s1, nd - 1] = idx
@@ -749,7 +750,7 @@ def init_nonbonded_potential(displacement_fn,
         return custom_energy.truncated_lennard_jones_neighborlist(
             displacement_fn, **kwargs)
     if nonbonded_type == "lennard_jones":
-        return custom_energy.lennard_jones_neighborlist(
+        return custom_energy.customn_lennard_jones_neighbor_list(
             displacement_fn, **kwargs)
 
     raise NotImplementedError(

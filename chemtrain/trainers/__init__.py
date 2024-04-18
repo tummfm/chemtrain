@@ -13,9 +13,17 @@
 # limitations under the License.
 
 from . import (
-    active_learning,
-    force_matching,
-    ibi,
-    max_likelihood,
-    probabilistic
+    base,
+)
+
+from .trainers import (
+    PropertyPrediction,
+    ForceMatching,
+    Difftre,
+    DifftreActive,
+    RelativeEntropy,
+    SGMCForceMatching,
+    NUTSForceMatching,
+    EnsembleOfModels,
+    InterleaveTrainers
 )

@@ -38,8 +38,19 @@ extensions = [
     'sphinx.ext.napoleon',
     'sphinx.ext.viewcode',
     'sphinx_autodoc_typehints',
+    'sphinx_remove_toctrees',
     'myst_nb'
 ]
+
+autosummary_generate = True
+
+# Remove unnecessarily deep tocs for trainers
+
+remove_from_toctrees = [
+    "algorithms/_autosummary/_autosummary/*",
+]
+
+templates_path = "_templates"
 
 autodoc_mock_imports = [
     'e3nn_jax'
@@ -72,6 +83,8 @@ nb_execution_excludepatterns = [
   # Require long computations
   'examples/*',
 ]
+
+myst_footnote_transition = False
 
 # -- MathJax ------------------------------------------------------------------
 

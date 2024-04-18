@@ -17,8 +17,6 @@
 Allows re-using existing trajectories.
 p(S) = ...
 """
-from abc import abstractmethod
-import functools
 
 import time
 import warnings
@@ -26,17 +24,14 @@ import warnings
 import numpy as onp
 
 import jax_sgmc.util
-from jax import (checkpoint, lax, random, grad, tree_util, vmap, debug,
-                 numpy as jnp)
+from jax import (checkpoint, lax, random, tree_util, vmap, numpy as jnp, jit)
 
 import jax_md.util
 from jax_md import util as jax_md_util
 
 from chemtrain import util
 from chemtrain.trajectory import traj_util
-from chemtrain.learn import max_likelihood
 from chemtrain.jax_md_mod import custom_quantity
-from chemtrain.pickle_jit import jit
 from chemtrain.quantity import constants
 
 from typing import Dict, Any, Union, Callable, Tuple
@@ -45,7 +40,7 @@ try:
 except:
     ArrayLike = Any
 from jax_md.partition import NeighborFn
-from chemtrain.typing import EnergyFnTemplate, TargetDict
+from chemtrain.typing import EnergyFnTemplate
 from chemtrain.trajectory.traj_util import TrajectoryState
 
 def checkpoint_quantities(compute_fns):
@@ -660,144 +655,6 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
         return init_first_traj, compute_weights, propagate, safe_propagate
 
 
-def init_default_loss_fn(targets: TargetDict, l_H = 0.0, l_RE = None):
-    """Initializes the default loss function, where MSE errors of
-    destinct quantities are added.
-
-    First, observables are computed via the reweighting scheme.
-    These observables can be ndarray valued, e.g. vectors for RDF
-    / ADF or matrices for stress. For each observable, the element-wise
-    MSE error is computed wrt. the target provided in
-    "quantities[quantity_key]['target']". This per-quantity loss
-    is multiplied by gamma in "quantities[quantity_key]['gamma']".
-    The final loss is then the sum over all of these weighted
-    per-quantity MSE losses. This function allows both observables that
-    are simply ensemble averages of instantaneously fluctuating quantities
-    and observables that are more complex functions of one or more quantity
-    trajectories. The function computing the observable from trajectories of
-    instantaneous fluctuating quantities needs to be provided via in
-    "quantities[quantity_key]['traj_fn']". For the simple, but common case of
-    an average of a single quantity trajectory, 'traj_fn' is given by
-    traj_quantity.init_traj_mean_fn.
-
-    Alternatively, a custom loss_fn can be defined. The custom
-    loss_fn needs to have the same input-output signuture as the loss_fn
-    implemented here.
-
-    Args:
-        targets: The target dict with 'gamma', 'target' and 'traj_fn'
-            for each observable defined in 'quantities'.
-        l_H: Coefficient of the maximum entropy penalty
-        l_RE: Interpolation coefficient between relative entropy and difftre
-            loss.
-
-    Returns:
-        The loss_fn taking trajectories of fluctuating properties,
-        computing ensemble averages via the reweighting scheme and
-        outputs the loss and predicted observables.
-    """
-    # Interpolate between the default loss and the relative entropy loss
-    if l_RE is None:
-        alpha = 1.0
-        beta = 1.0
-    else:
-        alpha = l_RE
-        beta = 1.0 - l_RE
-
-    def loss_fn(quantity_trajs, weights):
-        loss = 0.
-        predictions = {
-            key: target['traj_fn'](quantity_trajs, weights=weights)
-            for key, target in targets.items()
-        }
-
-        # Maximize the entropy (minimize the negative entropy)
-        loss -= l_H * quantity_trajs.get('entropy', 0.0)
-        loss -= alpha * predictions.get('relative_entropy', 0.0) * targets.pop('relative_entropy', {}).get('gamma', 0.0)
-
-        # MSE loss for the remaining targets
-        for target_key, target in targets.items():
-            loss += beta * target['gamma'] * max_likelihood.mse_loss(
-                predictions[target_key], target['target'])
-
-        return loss, predictions
-    return loss_fn
-
-
-def init_rel_entropy_gradient(energy_fn_template, compute_weights, kbt,
-                              vmap_batch_size=10):
-    """Initializes a function that computes the relative entropy gradient.
-
-    The computation of the gradient is batched to increase computational
-    efficiency.
-
-    Args:
-        energy_fn_template: Energy function template
-        compute_weights: compute_weights function as initialized from
-                         init_pot_reweight_propagation_fns.
-        kbt: KbT
-        vmap_batch_size: Batch size for
-
-    Returns:
-        A function rel_entropy_gradient(params, traj_state, reference_batch),
-        which returns the relative entropy gradient of 'params' given a
-        generated trajectory saved in 'traj_state' and a reference trajectory
-        'reference_batch'.
-    """
-    beta = 1 / kbt
-
-    @jit
-    def rel_entropy_gradient(params, traj_state, reference_batch):
-        if traj_state.sim_state[0].position.ndim > 2:
-            nbrs_init = util.tree_get_single(traj_state.sim_state[1])
-        else:
-            nbrs_init = traj_state.sim_state[1]
-
-        def energy(params, position):
-            energy_fn = energy_fn_template(params)
-            # Note: nbrs update requires constant box, i.e. not yet
-            # applicable to npt ensemble
-            nbrs = nbrs_init.update(position)
-            return energy_fn(position, neighbor=nbrs)
-
-        def weighted_gradient(map_input):
-            position, weight = map_input
-            snapshot_grad = grad(energy)(params, position)  # dudtheta
-            weight_gradient = lambda new_grad: weight * new_grad
-            weighted_grad_snapshot = tree_util.tree_map(weight_gradient,
-                                                        snapshot_grad)
-            return weighted_grad_snapshot
-
-        def add_gradient(map_input):
-            batch_gradient = vmap(weighted_gradient)(map_input)
-            return util.tree_sum(batch_gradient, axis=0)
-
-        weights, _ = compute_weights(params, traj_state)
-
-        # reshape for batched computations
-        batch_weights = weights.reshape((-1, vmap_batch_size))
-        traj_shape = traj_state.trajectory.position.shape
-        batchwise_gen_traj = traj_state.trajectory.position.reshape(
-            (-1, vmap_batch_size, traj_shape[-2], traj_shape[-1]))
-        ref_shape = reference_batch.shape
-        reference_batches = reference_batch.reshape(
-            (-1, vmap_batch_size, ref_shape[-2], ref_shape[-1]))
-
-        # no reweighting for reference data: weights = 1 / N
-        ref_weights = jnp.ones(reference_batches.shape[:2]) / (ref_shape[0])
-
-        ref_grad = lax.map(add_gradient, (reference_batches, ref_weights))
-        mean_ref_grad = util.tree_sum(ref_grad, axis=0)
-        gen_traj_grad = lax.map(add_gradient, (batchwise_gen_traj,
-                                               batch_weights))
-        mean_gen_grad = util.tree_sum(gen_traj_grad, axis=0)
-
-        combine_grads = lambda x, y: beta * (x - y)
-        dtheta = tree_util.tree_map(combine_grads, mean_ref_grad, mean_gen_grad)
-        return dtheta
-    return rel_entropy_gradient
-
-
 def init_bar(energy_fn_template: EnergyFnTemplate,
              ref_kbt: ArrayLike,
              energy_batch_size: int = 10,
@@ -1023,141 +880,3 @@ def init_bar(energy_fn_template: EnergyFnTemplate,
         return dfe, ds
 
     return bennett_free_energy
-
-
-class PropagationBase(max_likelihood.MLETrainerTemplate):
-    """Trainer base class for shared functionality whenever (multiple)
-    simulations are run during training. Can be used as a template to
-    build other trainers. Currently used for DiffTRe and relative entropy.
-
-    We only save the latest generated trajectory for each state point.
-    While accumulating trajectories would enable more frequent reweighting,
-    this effect is likely minor as past trajectories become exponentially
-    less useful with changing potential. Additionally, saving long trajectories
-    for each statepoint would increase memory requirements over the course of
-    the optimization.
-    """
-    def __init__(self, init_trainer_state, optimizer, checkpoint_path,
-                 reweight_ratio=0.9, sim_batch_size=1, energy_fn_template=None,
-                 full_checkpoint=True, key=None):
-        super().__init__(optimizer, init_trainer_state, checkpoint_path,
-                         full_checkpoint, energy_fn_template)
-        self.sim_batch_size = sim_batch_size
-        self.reweight_ratio = reweight_ratio
-
-        if key is None:
-            self.key = random.PRNGKey(0)
-
-        # store for each state point corresponding traj_state and grad_fn
-        # save in distinct dicts as grad_fns need to be deleted for checkpoint
-        self.grad_fns, self.trajectory_states, self.statepoints = {}, {}, {}
-        self.n_statepoints = 0
-        self.shuffle_key = random.PRNGKey(0)
-
-    def _init_statepoint(self, reference_state, energy_fn_template,
-                         simulator_template, neighbor_fn, timings, kbt,
-                         set_key=None, energy_batch_size=10,
-                         initialize_traj=True, ref_press=None,
-                         safe_propagation=True, entropy_approximation=False,
-                         replica_kbt=None, num_chains=None):
-        """Initializes the simulation and reweighting functions as well
-        as the initial trajectory for a statepoint."""
-        # TODO ref pressure only used in print and to have barostat values.
-        #  Reevaluate this parameter of barostat values not used in reweighting
-        # TODO document ref_press accordingly
-
-        if set_key is not None:
-            key = set_key
-            if set_key not in self.statepoints.keys():
-                self.n_statepoints += 1
-        else:
-            key = self.n_statepoints
-            self.n_statepoints += 1
-        self.statepoints[key] = {'kbT': kbt}
-        npt_ensemble = util.is_npt_ensemble(reference_state[0])
-        if npt_ensemble: self.statepoints[key]['pressure'] = ref_press
-
-        if replica_kbt is not None:
-            assert reference_state[0].position.ndim > 2, (
-                "Replica exchange requires multiple simulator states")
-
-        gen_init_traj, *reweight_fns = init_pot_reweight_propagation_fns(
-            energy_fn_template, simulator_template, neighbor_fn, timings,
-            kbt, ref_press, self.reweight_ratio, npt_ensemble,
-            energy_batch_size, safe_propagation=safe_propagation,
-            entropy_approximation=entropy_approximation,
-            replica_kbt=replica_kbt, num_chains=num_chains
-        )
-        if initialize_traj:
-            self.key, split = random.split(self.key)
-            init_traj, runtime = gen_init_traj(
-                split, self.params, reference_state)
-            print(f'Time for trajectory initialization {key}: {runtime} mins')
-            self.trajectory_states[key] = init_traj
-        else:
-            print('Not initializing the initial trajectory is only valid if '
-                  'a checkpoint is loaded. In this case, please be use to add '
-                  'state points in the same sequence, otherwise loaded '
-                  'trajectories will not match its respective simulations.')
-
-        return key, *reweight_fns
-
-    @abstractmethod
-    def add_statepoint(self, *args, **kwargs):
-        """User interface to add additional state point to train model on."""
-        raise NotImplementedError()
-
-    @property
-    def params(self):
-        return self.state.params
-
-    @params.setter
-    def params(self, loaded_params):
-        self.state = self.state.replace(params=loaded_params)
-
-    def get_sim_state(self, key):
-        return self.trajectory_states[key].sim_state
-
-    def _get_batch(self):
-        """Helper function to re-shuffle simulations and split into batches."""
-        self.shuffle_key, used_key = random.split(self.shuffle_key, 2)
-        shuffled_indices = random.permutation(used_key, self.n_statepoints)
-        if self.sim_batch_size == 1:
-            batch_list = jnp.split(shuffled_indices, shuffled_indices.size)
-        elif self.sim_batch_size == -1:
-            batch_list = jnp.split(shuffled_indices, 1)
-        else:
-            raise NotImplementedError('Only batch_size = 1 or -1 implemented.')
-
-        return (batch.tolist() for batch in batch_list)
-
-    def _print_measured_statepoint(self):
-        """Print meausured kbT (and pressure for npt ensemble) for all
-        statepoints to ensure the simulation is indeed carried out at the
-        prescribed state point.
-        """
-        for sim_key, traj in self.trajectory_states.items():
-            print(f'[Statepoint {sim_key}]')
-            statepoint = self.statepoints[sim_key]
-            measured_kbt = jnp.mean(traj.aux['kbT'])
-            if 'pressure' in statepoint:  # NPT
-                measured_press = jnp.mean(traj.aux['pressure'])
-                press_print = (f'\n\tpress = {measured_press:.2f} ref_press = '
-                               f'{statepoint["pressure"]:.2f}')
-            else:
-                press_print = ''
-            print(f'\tkbT = {measured_kbt:.3f} ref_kbt = '
-                  f'{statepoint["kbT"]:.3f}' + press_print)
-
-    def train(self, max_epochs, thresh=None, checkpoint_freq=None):
-        assert self.n_statepoints > 0, ('Add at least 1 state point via '
-                                        '"add_statepoint" to start training.')
-        super().train(max_epochs, thresh=thresh,
-                      checkpoint_freq=checkpoint_freq)
-
-    @abstractmethod
-    def _update(self, batch):
-        """Implementation of gradient computation, stepping of the optimizer
-        and logging of auxiliary results. Takes batch of simulation indices
-        as input.
-        """

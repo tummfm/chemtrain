@@ -3,6 +3,8 @@
 
 .. toctree::
    :caption: Quantities
+   :titlesonly:
+
 
    targets
    observables
