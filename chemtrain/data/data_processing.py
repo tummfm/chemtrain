@@ -217,7 +217,12 @@ def scale_dataset_fractional(traj, box):
     return scaled_traj
 
 
-def map_dataset(position_dataset, force_dataset, c, d, displacement_fn, shift_fn):
+def map_dataset(position_dataset,
+                displacement_fn,
+                shift_fn,
+                c_map,
+                d_map=None,
+                force_dataset = None):
     """Maps fine-scaled positions and forces to a coarser scale.
 
     Uses the linear mapping from [Noid2008]_ to map fine-scaled positions and
@@ -232,17 +237,18 @@ def map_dataset(position_dataset, force_dataset, c, d, displacement_fn, shift_fn
 
     Args:
         position_dataset: Dataset of fine-scaled positions.
-        force_dataset: Dataset of fine-scaled forces.
-        c: Matrix $c_{Ii}$ defining the linear mapping of positions.
-        d: Matrix $d_{Ii}$ defining the linear mapping of forces in combination
-            with $c_{Ii}$.
         displacement_fn: Function to compute the displacement between two
             sets of coordinates. Necessary to handle boundary conditions.
         shift_fn: Ensures that the produced coordinates remain in the
             box.
+        c_map: Matrix $c_{Ii}$ defining the linear mapping of positions.
+        d_map: Matrix $d_{Ii}$ defining the linear mapping of forces in combination
+            with $c_{Ii}$.
+        force_dataset: Dataset of fine-scaled forces.
 
     Returns:
-        Returns a tuple of the coarse-grained positions and forces.
+        Returns the coarse-grained positions and, if provided, coarse-grained
+        forces.
 
     References:
         .. [Noid2008] W. G. Noid, Jhih-Wei Chu, Gary S. Ayton, Vinod Krishna,
@@ -264,11 +270,10 @@ def map_dataset(position_dataset, force_dataset, c, d, displacement_fn, shift_fn
         position_dataset
     )
 
-    c /= jnp.sum(c, axis=1, keepdims=True)
-    d /= jnp.sum(d, axis=1, keepdims=True)
+    c_map /= jnp.sum(c_map, axis=1, keepdims=True)
 
     cg_dislacements = lax.map(
-        functools.partial(jnp.einsum, 'Ii..., id->Id', c),
+        functools.partial(jnp.einsum, 'Ii..., id->Id', c_map),
         -displacements
     )
 
@@ -277,12 +282,19 @@ def map_dataset(position_dataset, force_dataset, c, d, displacement_fn, shift_fn
         cg_dislacements
     )
 
+    # Map forces if provided
+
+    if force_dataset is None:
+        return cg_positions
+
+    d_map /= jnp.sum(d_map, axis=1, keepdims=True)
+
     # Avoid division by zero.
-    mask = (c > 0.0)
-    safe_c = jnp.where(mask, c, 1.0)
+    mask = (c_map > 0.0)
+    safe_c = jnp.where(mask, c_map, 1.0)
 
     cg_forces = lax.map(
-        functools.partial(jnp.einsum, 'Ii..., id->Id', mask * d / safe_c),
+        functools.partial(jnp.einsum, 'Ii..., id->Id', mask * d_map / safe_c),
         force_dataset
     )
 

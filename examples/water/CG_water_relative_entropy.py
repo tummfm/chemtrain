@@ -20,7 +20,7 @@ if len(sys.argv) > 1:
     visible_device = str(sys.argv[1])
 else:
     visible_device = 2
-os.environ['CUDA_VISIBLE_DEVICES'] = str(visible_device)
+os.environ['CUDA_VISIBLE_DEVICES'] = str(-1)
 
 from pathlib import Path
 
@@ -38,13 +38,13 @@ Path('output/figures').mkdir(parents=True, exist_ok=True)
 Path('output/rel_entropy').mkdir(parents=True, exist_ok=True)
 
 # dataset
-configuration_str = '../../../../Datasets/TIP4P/conf_COM_10k.npy'
-box_str = '../../../../Datasets/TIP4P/box.npy'
+configuration_str = '../../../Datasets/TIP4P/conf_COM_10k.npy'
+box_str = '../../../Datasets/TIP4P/box.npy'
 
 training_name = 'RE'
 save_path = f'output/rel_entropy/trained_model_{training_name}.pkl'
 save_param_path = f'output/rel_entropy/trained_params_{training_name}.pkl'
-used_dataset_size = 1000
+used_dataset_size = 15
 
 # saved_params_path = 'output/force_matching/trained_params_water.pkl'
 saved_params_path = None
@@ -61,8 +61,8 @@ total_time = 75.
 t_equilib = 5.
 print_every = 0.1
 
-model = 'CGDimeNet'
-# model = 'Tabulated'
+# model = 'CGDimeNet'
+model = 'Tabulated'
 
 # checkpoint = 'output/rel_entropy/Checkpoints/epoch2.pkl'
 checkpoint = None

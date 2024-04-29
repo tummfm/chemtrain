@@ -106,9 +106,8 @@ weights = jnp.asarray([
 ])
 
 position_dataset, force_dataset = data_processing.map_dataset(
-    position_dataset, all_forces, weights, weights ** 2, displacement_fn, shift_fn
+    position_dataset, displacement_fn, shift_fn, weights, weights, all_forces 
 )
-
 ```
 
 ## Setup Model
@@ -261,7 +260,8 @@ plt.xlabel("Epoch")
 plt.ylabel("Force Error")
 ```
 
-Finally, we compare the 
+Finally, we compare the values obtained from a least-squares fit to those
+obtained from force-matching.
 
 ```{code-cell}
 pred_parameters = tree_util.tree_map(jnp.exp, force_matching.params)
@@ -278,7 +278,7 @@ print(f"Absolute error in b0 is {b0_err:.3f} nm and in kb is {kb_err:.1f} kJ/mol
 
 ### Examples
 
-- [Alanine Dipeptide in Implicit Water](../examples/FM_alanine_dipeptide.md)
+- [Alanine Dipeptide in Implicit Water](../examples/CG_alanine_dipeptide.ipynb)
 
 ### Publications
 

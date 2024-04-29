@@ -409,7 +409,6 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
         # Choose new initial positions from the reweighted probability
         # distribution.
         key, split1, split2 = random.split(traj_state.key, 3)
-        print(f"Weights have shape {weights.shape}, sample count is {num_samples} ")
         new_position_idx = random.choice(
             split1, jnp.arange(num_samples), shape=(num_chains,),
             replace=True, p=weights
@@ -427,8 +426,6 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
         new_traj_state = traj_state.replace(
             sim_state=(new_sim_state, nbrs), key=key
         )
-
-        print(tree_util.tree_map(jnp.shape, new_sim_state))
 
         return new_traj_state
 
@@ -552,11 +549,13 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
                     returns = None
 
                 if recompute:
-                    print(f"Forces recomputation")
+                    print(f"[Safe Propagate] Forced recomputation.")
                     traj_state = recompute_trajectory(
                         (params, traj_state))
 
                 if traj_state.overflow:
+                    print(f"[Safe Propagate] Overflow detected, recompute "
+                          f"trajectory with increased neighbor list size.")
                     last_state, _ = traj_state.sim_state
                     if last_state.position.ndim > 2:
                         single_enlarged_nbrs = util.neighbor_allocate(
@@ -610,16 +609,11 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
         of each trajectory. If this is still not sufficient, the simulation
         should equilibrate over the course of subsequent updates.
         """
-        print(f"Before")
-        print(tree_util.tree_map(jnp.shape, reference_state[0]))
-
         if reference_state[0].position.ndim == 2 and num_chains is not None:
+
             reference_state = tree_util.tree_map(
                 lambda x: jnp.tile(x, [num_chains] + [1] * x.ndim), reference_state
             )
-
-        print(f"After")
-        print(tree_util.tree_map(jnp.shape, reference_state[0]))
 
         dump_traj = trajectory_generator(params, reference_state,
                                          kT=replica_kbt, pressure=ref_press)

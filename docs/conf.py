@@ -32,6 +32,7 @@ release = '0.1.0'
 extensions = [
     'sphinx.ext.autodoc',
     'sphinx.ext.autosummary',
+    'sphinx.ext.coverage',
     'sphinx.ext.doctest',
     'sphinx.ext.intersphinx',
     'sphinx.ext.mathjax',
@@ -50,14 +51,11 @@ remove_from_toctrees = [
     "algorithms/_autosummary/_autosummary/*",
 ]
 
-templates_path = "_templates"
+templates_path = ["_templates"]
 
 autodoc_mock_imports = [
     'e3nn_jax'
 ]
-
-# Add any paths that contain templates here, relative to this directory.
-templates_path = ['_templates']
 
 source_suffix = ['.rst', '.ipynb']
 

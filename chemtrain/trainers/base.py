@@ -91,7 +91,7 @@ class TrainerInterface(metaclass=abc.ABCMeta):
 
         if format == '.pkl':
             with open(save_path, 'wb') as pickle_file:
-                pickle.dump(data, pickle_file)
+                pickle.dump(tree_map(onp.asarray, data), pickle_file)
         elif format == 'none':
             return data
 
@@ -106,7 +106,7 @@ class TrainerInterface(metaclass=abc.ABCMeta):
             #         file[leaf_name] = value
         elif save_format == '.pkl':
             with open(file_path, 'wb') as pickle_file:
-                pickle.dump(self.params, pickle_file)
+                pickle.dump(tree_map(onp.asarray, self.params), pickle_file)
         else:
             format_not_recognized_error(save_format)
 

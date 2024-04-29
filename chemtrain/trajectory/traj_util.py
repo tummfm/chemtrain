@@ -449,6 +449,9 @@ def quantity_traj_multimap(*traj_states, quantities=None, energy_params=None, ba
         ]), "All trajectory state leaves must be of identical shape."
 
 
+    print(f"Traj states in beginning of multimap")
+    print(tree_util.tree_map(jnp.shape, traj_states))
+
     if traj_states[0].sim_state[0].position.ndim > 2:
         last_state, fixed_reference_nbrs = util.tree_get_single(
             traj_states[0].sim_state)
@@ -488,6 +491,9 @@ def quantity_traj_multimap(*traj_states, quantities=None, energy_params=None, ba
         thermo_kbt = traj_states[0].thermostat_kbt.reshape((-1, batch_size))
     else:
         thermo_kbt = traj_states[0].thermostat_kbt
+
+    print(f"Batched traj states")
+    print(tree_util.tree_map(jnp.shape, (batched_trajs, thermo_kbt)))
 
     bachted_quantity_trajs = lax.map(
         vmap(single_state_quantities), (batched_trajs, thermo_kbt)

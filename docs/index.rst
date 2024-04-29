@@ -43,7 +43,7 @@ These extensions are gathered in the
    :caption: Examples
 
    examples/CG_water_difftre
-   examples/FM_alanine_dipeptide
+   examples/CG_alanine_dipeptide
 
 
 .. toctree::

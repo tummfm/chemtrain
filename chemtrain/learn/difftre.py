@@ -15,16 +15,18 @@
 """Utility functions for active learning applications."""
 
 import functools
+from typing import Dict, Any, Callable
 
 import jax
 from jax import jit, grad, tree_util, vmap, numpy as jnp, lax
+from jax.typing import ArrayLike
 
-from chemtrain import util
-from chemtrain.learn import max_likelihood
+import numpy as onp
+
+from chemtrain.learn import max_likelihood, force_matching
 from chemtrain.typing import TargetDict
 from chemtrain.jax_md_mod import custom_quantity
 from chemtrain.trajectory import reweighting, traj_util
-
 
 def init_default_loss_fn(targets: TargetDict, l_H = 0.0, l_RE = None):
     """Initializes the default loss function, where MSE errors of
@@ -141,75 +143,244 @@ def init_difftre_gradient_and_propagation(reweight_fns, loss_fn, quantities, ene
     return difftre_grad_and_propagation
 
 
-def init_rel_entropy_gradient(energy_fn_template, compute_weights, kbt,
-                              vmap_batch_size=10):
-    """Initializes a function that computes the relative entropy gradient.
+def init_rel_entropy_loss_fn(energy_fn_template, compute_weights, kbt, vmap_batch_size=10):
+    """Initializes a function that computes the relative entropy loss.
 
-    The computation of the gradient is batched to increase computational
-    efficiency.
+    The relative entropy between an atomistic system and a consistently
+    coarse-grained reference system depends on the free energies difference
+    between the systems.
+    This free energy difference is not simple to compute.
+    However, all contributions to the relative entropy that depend on the
+    model parameters are simple to estimate up to a constant.
+    Thus, only considering these terms, we can create a loss function that
+    has the same gradients with respect to the model parameters as the
+    relative entropy.
 
     Args:
         energy_fn_template: Energy function template
         compute_weights: compute_weights function as initialized from
                          init_pot_reweight_propagation_fns.
-        kbt: KbT
-        vmap_batch_size: Batch size for
+        kbt: Temperature of the statepoint.
+        vmap_batch_size: Batch size for computing the potential energies on
+            the reference positions.
 
     Returns:
-        A function rel_entropy_gradient(params, traj_state, reference_batch),
-        which returns the relative entropy gradient of 'params' given a
-        generated trajectory saved in 'traj_state' and a reference trajectory
-        'reference_batch'.
+        A function that returns the relative entropy loss, i.e., the
+        contributions to the relative entropy that depend on the parameters
+        of the model.
+
     """
-    beta = 1 / kbt
+
+    ref_quantities = {
+        "ref_energy": custom_quantity.energy_wrapper(energy_fn_template)
+    }
+
+    reweighting.checkpoint_quantities(ref_quantities)
+
+    def loss_fn(params, traj_state, reference_batch):
+        # Compute the free energy difference with respect to the initial state
+        *_, free_energy = compute_weights(
+            params, traj_state, entropy_and_free_energy=True)
+        free_energy += traj_state.free_energy_diff
+
+        # Compute the potential predictions on the reference data
+        ref_pos_traj_state = traj_state.replace(
+            trajectory=force_matching.State(position=reference_batch['R'])
+        )
+
+        ref_energies = traj_util.quantity_traj(
+            ref_pos_traj_state, ref_quantities, params, vmap_batch_size
+        )["ref_energy"]
+
+        return (jnp.mean(ref_energies) - free_energy) / kbt
+
+    return loss_fn
+
+
+def init_rel_entropy_gradient_and_propagation(reference_dataloader,
+                                              reweight_fns,
+                                              energy_fn_template,
+                                              kbt,
+                                              vmap_batch_size=10):
+    """Initialize function to compute the relative entropy gradients.
+
+    The computation of the gradient is batched to increase computational
+    efficiency.
+
+    Args:
+        reference_dataloader: Dataloader containing the mapped atomistic
+            reference positions.
+        reweight_fns: Tuple of functions to perform potential reweighting.
+        energy_fn_template: Energy function template
+        kbt: Temperature of the statepoint
+        vmap_batch_size: Batch for computing the potential energies on the
+            reference positions.
+
+    Returns:
+        Returns the gradient and propagation function for the relative entropy
+        minimization algorithm.
+
+    """
+
+    weights_fn, propagate_fn, safe_propagate = reweight_fns
+
+    rel_entropy_loss = init_rel_entropy_loss_fn(
+        energy_fn_template, weights_fn, kbt, vmap_batch_size)
+
+    value_and_grad = jax.value_and_grad(rel_entropy_loss, argnums=0)
+
+    @safe_propagate
+    @jax.jit
+    def safe_propagation_and_grad(params, traj_state, reference_batch):
+        """Propagates the trajectory, if necessary, and computes the
+        gradient via the relative entropy formalism.
+        """
+        traj_state = propagate_fn(params, traj_state)
+
+        loss, grad = value_and_grad(params, traj_state, reference_batch)
+        return traj_state, loss, grad
+
+    def propagation_and_grad(params, traj_state, batch_state):
+        new_batch_state, reference_batch = reference_dataloader(batch_state)
+        outs = safe_propagation_and_grad(params, traj_state, reference_batch)
+        return *outs, new_batch_state
+
+    return propagation_and_grad
+
+
+def init_step_size_adaption(weight_fns: Dict[Any, Callable],
+                            allowed_reduction: ArrayLike = 0.5,
+                            interior_points: int = 10,
+                            step_size_scale: float = 1e-7
+                            ) -> Callable:
+    """Initializes a line search to tune the step size in each iteration.
+
+    This method interpolates linearly between the old parameters
+    :math:`\\theta^{(i)}` and the paremeters :math:`\\tilde\\theta`
+    proposed by the optimizer to find the optimal update
+
+    .. math ::
+        \\theta^{(i + 1)} = (1 - \\alpha) \\theta^{(i)} + \\alpha\\tilde\\theta
+
+    that reduces the effective sample size to a predefined constant
+
+    .. math ::
+        N_\\text{eff}(\\theta^{(i+1)}) = r\cdot N_\\text{eff}(\\theta^{(i)}).
+
+    This method uses a vectorized bisection algorithm with fixed number of
+    iterations. At each iteration, the algorithm computes the effective
+    sample size for a predefined number of interior points and updates the
+    search interval boundaries to include the two closest points bisecting
+    the residual.
+
+    The number of required iterations computes from the number of interior
+    points :math:`n_i` and the desired accuracy :math:`a` via
+
+    .. math ::
+        N = \\left\\lceil -\\log(a) / \\log(n_i + 1)\\right\\rceil.
+
+    Args:
+        allowed_reduction: Target reduction of the effective sample size
+        interior_points: Number of interiour points
+        step_size_scale: Accuracy of the found optimal interpolation
+            coefficient
+
+    Returns:
+        Returns the interpolation coefficient :math:`\\alpha`.
+
+    """
+
+    # TODO: Makes this more general to work on an arbitrary measure,
+    #       not only the effective sample size.
+    #       Then, it is possible to move out the step size adaption
+    #       into a more general trainer.
+
+    iterations = int(onp.ceil(-onp.log(step_size_scale) / onp.log(interior_points + 1)))
+    print(f"[Step size] Use {iterations} iterations for {interior_points} interior points.")
+
+    def _initialize_search(params, traj_states):
+        N_effs = {
+            sim_key: weight_fn(params, traj_states[sim_key])[1]
+            for sim_key, weight_fn in weight_fns.items()
+        }
+        return N_effs
+
+    @functools.partial(jax.vmap, in_axes=(0, None, None, None, None, None))
+    def _residual(alpha, params, N_effs, batch_grad, proposal, traj_states):
+        # Find the biggest reduction among the statepoints
+
+        new_params = jax.tree_util.tree_map(
+            lambda old, new: old * (1 - alpha) + new * alpha,
+            params, proposal
+        )
+
+        reductions = []
+        for sim_key, weight_fn in weight_fns.items():
+            # Calculate the expected effective number of weights
+            _, N_eff_new = weight_fn(
+                new_params, traj_states[sim_key]
+            )
+
+            reductions.append(jnp.log(N_eff_new) - jnp.log(N_effs[sim_key]))
+
+        min_reduction = jnp.min(jnp.array(reductions))
+        # Allow a reduction of the current effective sample size
+        # The minimum reduction must still be larger than the allowed reduction
+        # i.e. the residual of the final alpha must be greater than zero
+        return min_reduction - jnp.log(allowed_reduction)
+
+    def _step(state, _, params=None, N_effs=None, batch_grad=None, proposal=None, traj_states=None):
+        a, b, res_a, res_b = state
+
+        # Do not re-evaluate the residual for the already computed interval
+        # boundaries
+        c = jnp.reshape(jnp.linspace(a, b, interior_points + 2)[1:-1], (-1,))
+        res_c = _residual(c, params, N_effs, batch_grad, proposal, traj_states)
+
+        # debug.print("[Step Size] Residuals are {res}", res=res_c)
+
+        # Add bondary points to the possible candidates
+        c = jnp.concatenate((jnp.asarray([a, b]), c))
+        res_c = jnp.concatenate((jnp.asarray([res_a, res_b]), res_c))
+
+        # Find the smallest point bigger than zero and the biggest point
+        # smaller than zero
+        all_positive = jnp.where(res_c < 0, jnp.max(res_c), res_c)
+        all_negative = jnp.where(res_c > 0, jnp.min(res_c), res_c)
+        a_idx = jnp.argmin(all_positive)
+        b_idx = jnp.argmax(all_negative)
+        a, res_a = c[a_idx], res_c[a_idx]
+        b, res_b = c[b_idx], res_c[b_idx]
+
+        # debug.print("[Step Size] Search interval [{a}, {b}] with residual in [{res_a}, {res_b}]", a=a, b=b, res_a=res_a, res_b=res_b)
+
+        return (a, b, res_a, res_b), None
 
     @jit
-    def rel_entropy_gradient(params, traj_state, reference_batch):
-        if traj_state.sim_state[0].position.ndim > 2:
-            nbrs_init = util.tree_get_single(traj_state.sim_state[1])
-        else:
-            nbrs_init = traj_state.sim_state[1]
+    def _adaptive_step_size(params, batch_grad, proposal, traj_states):
+        N_effs = _initialize_search(params, traj_states)
+        a, b = 1.0e-5, 1.0
+        res_a, res_b = _residual(
+            jnp.asarray([a, b]),
+            params, N_effs, batch_grad, proposal, traj_states)
 
-        def energy(params, position):
-            energy_fn = energy_fn_template(params)
-            # Note: nbrs update requires constant box, i.e. not yet
-            # applicable to npt ensemble
-            nbrs = nbrs_init.update(position)
-            return energy_fn(position, neighbor=nbrs)
+        # Check that minimum step size is sufficiently small, else just keep
+        # the minimum step size
+        b = jnp.where(res_a <= 0, a, b)
 
-        def weighted_gradient(map_input):
-            position, weight = map_input
-            snapshot_grad = grad(energy)(params, position)  # dudtheta
-            weight_gradient = lambda new_grad: weight * new_grad
-            weighted_grad_snapshot = tree_util.tree_map(weight_gradient,
-                                                        snapshot_grad)
-            return weighted_grad_snapshot
+        # Check whether full step does not reduce the effective step size
+        # below the threshold. If this is the case do the full step
+        a = jnp.where(jnp.logical_and(res_a > 0, res_b > 0), b, a)
 
-        def add_gradient(map_input):
-            batch_gradient = vmap(weighted_gradient)(map_input)
-            return util.tree_sum(batch_gradient, axis=0)
+        # In the other case, do the bisection with the unchanged initial
+        # values of a and b
+        _step_fn = functools.partial(
+            _step, N_effs=N_effs, batch_grad=batch_grad, proposal=proposal,
+            traj_states=traj_states, params=params)
+        (a, b, res_a, _), _ = lax.scan(
+            _step_fn,
+            (a, b, res_a, res_b), onp.arange(iterations)
+        )
+        return a, res_a
 
-        weights, _ = compute_weights(params, traj_state)
-
-        # reshape for batched computations
-        batch_weights = weights.reshape((-1, vmap_batch_size))
-        traj_shape = traj_state.trajectory.position.shape
-        batchwise_gen_traj = traj_state.trajectory.position.reshape(
-            (-1, vmap_batch_size, traj_shape[-2], traj_shape[-1]))
-        ref_shape = reference_batch.shape
-        reference_batches = reference_batch.reshape(
-            (-1, vmap_batch_size, ref_shape[-2], ref_shape[-1]))
-
-        # no reweighting for reference data: weights = 1 / N
-        ref_weights = jnp.ones(reference_batches.shape[:2]) / (ref_shape[0])
-
-        ref_grad = lax.map(add_gradient, (reference_batches, ref_weights))
-        mean_ref_grad = util.tree_sum(ref_grad, axis=0)
-        gen_traj_grad = lax.map(add_gradient, (batchwise_gen_traj,
-                                               batch_weights))
-        mean_gen_grad = util.tree_sum(gen_traj_grad, axis=0)
-
-        combine_grads = lambda x, y: beta * (x - y)
-        dtheta = tree_util.tree_map(combine_grads, mean_ref_grad, mean_gen_grad)
-        return dtheta
-    return rel_entropy_gradient
+    return _adaptive_step_size

@@ -1,3 +1,0 @@
-# Force Matching: Alanine Dipeptide in Implicit Water
-
-In progress...

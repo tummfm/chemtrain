@@ -48,7 +48,6 @@ class State(NamedTuple):
     position: ArrayLike = None
 
 
-
 class AtomisticDataset(TypedDict, total=False):
     """Atomistic data for force-matching.
 

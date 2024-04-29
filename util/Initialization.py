@@ -892,9 +892,9 @@ def initialize_simulation(init_class, model, target_dict=None, x_vals=None,
         return state, nbrs_update  # store together
 
     if multi_trajectory:
-        batch_size = 20  # initialize 10 simulations in parallel; avoid OOM
+        # batch_size = 20  # initialize 10 simulations in parallel; avoid OOM
         n_inits = r_inits.shape[0]
-        batch_size = min(batch_size, n_inits)
+        batch_size = n_inits
         init_keys = random.split(simulation_init_key, n_inits)
         batched_init_keys = chem_util.tree_vmap_split(init_keys, batch_size)
         batched_r_inits = chem_util.tree_vmap_split(r_inits, batch_size)

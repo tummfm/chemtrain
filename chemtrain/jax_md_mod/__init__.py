@@ -36,7 +36,6 @@ def uncache(exclude):
 
 
 def is_box_valid(box: Array) -> bool:
-  print(f"Used patched box check")
   if jnp.isscalar(box) or box.ndim == 0 or box.ndim == 1:
     return True
   if box.ndim == 2:

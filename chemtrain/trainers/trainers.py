@@ -259,7 +259,6 @@ class Difftre(tt.PropagationBase):
         self.step_size_history = self.checkpoint("step_size_history", [])
         self.gradient_norm_history = self.checkpoint("gradient_norm_history", [])
         self.predictions = self.checkpoint("predictions", {})
-        self.lagrange_multipliers: Dict[str, Any] = self.checkpoint("lagrange_multipliers", {})
 
         self.early_stop = tt.EarlyStopping(self.params,
                                         convergence_criterion)
@@ -496,101 +495,9 @@ class Difftre(tt.PropagationBase):
 
         """
 
-        # TODO: Makes this more general to work on an arbitrary measure,
-        #       not only the effective sample size.
-        #       Then, it is possible to move out the step size adaption
-        #       into a more general trainer.
-
-        iterations = int(onp.ceil(-onp.log(step_size_scale) / onp.log(interior_points + 1)))
-        print(f"[Step size] Use {iterations} iterations for {interior_points} interior points.")
-
-        def _initialize_search(params, traj_states):
-            N_effs = {
-                sim_key: self.weights_fn[sim_key](
-                    params, traj_states[sim_key])[1]
-                for sim_key in self.statepoints
-            }
-            return N_effs
-
-        @functools.partial(jax.vmap, in_axes=(0, None, None, None, None, None))
-        def _residual(alpha, params, N_effs, batch_grad, proposal, traj_states):
-            # Find the biggest reduction among the statepoints
-
-            new_params = jax.tree_util.tree_map(
-                lambda old, new: old * (1 - alpha) + new * alpha,
-                params, proposal
-            )
-
-            reductions = []
-            for sim_key in self.statepoints:
-                # Calculate the expected effective number of weights
-                _, N_eff_new = self.weights_fn[sim_key](
-                    new_params, traj_states[sim_key]
-                )
-
-                reductions.append(jnp.log(N_eff_new) - jnp.log(N_effs[sim_key]))
-
-            min_reduction = jnp.min(jnp.array(reductions))
-            # Allow a reduction of the current effective sample size
-            # The minimum reduction must still be larger than the allowed reduction
-            # i.e. the residual of the final alpha must be greater than zero
-            return min_reduction - jnp.log(allowed_reduction)
-
-        def _step(state, _, params=None, N_effs=None, batch_grad=None, proposal=None, traj_states=None):
-            a, b, res_a, res_b = state
-
-            # Do not re-evaluate the residual for the already computed interval
-            # boundaries
-            c = jnp.reshape(jnp.linspace(a, b, interior_points + 2)[1:-1], (-1,))
-            res_c = _residual(c, params, N_effs, batch_grad, proposal, traj_states)
-
-            # debug.print("[Step Size] Residuals are {res}", res=res_c)
-
-            # Add bondary points to the possible candidates
-            c = jnp.concatenate((jnp.asarray([a, b]), c))
-            res_c = jnp.concatenate((jnp.asarray([res_a, res_b]), res_c))
-
-            # Find the smallest point bigger than zero and the biggest point
-            # smaller than zero
-            all_positive = jnp.where(res_c < 0, jnp.max(res_c), res_c)
-            all_negative = jnp.where(res_c > 0, jnp.min(res_c), res_c)
-            a_idx = jnp.argmin(all_positive)
-            b_idx = jnp.argmax(all_negative)
-            a, res_a = c[a_idx], res_c[a_idx]
-            b, res_b = c[b_idx], res_c[b_idx]
-
-            # debug.print("[Step Size] Search interval [{a}, {b}] with residual in [{res_a}, {res_b}]", a=a, b=b, res_a=res_a, res_b=res_b)
-
-            return (a, b, res_a, res_b), None
-
-        @jit
-        def _adaptive_step_size(params, batch_grad, proposal, traj_states):
-            N_effs = _initialize_search(params, traj_states)
-            a, b = 1.0e-5, 1.0
-            res_a, res_b = _residual(
-                jnp.asarray([a, b]),
-                params, N_effs, batch_grad, proposal, traj_states)
-
-            # Check that minimum step size is sufficiently small, else just keep
-            # the minimum step size
-            b = jnp.where(res_a <= 0, a, b)
-
-            # Check whether full step does not reduce the effective step size
-            # below the threshold. If this is the case do the full step
-            a = jnp.where(jnp.logical_and(res_a > 0, res_b > 0), b, a)
-
-            # In the other case, do the bisection with the unchanged initial
-            # values of a and b
-            _step_fn = functools.partial(
-                _step, N_effs=N_effs, batch_grad=batch_grad, proposal=proposal,
-                traj_states=traj_states, params=params)
-            (a, b, res_a, _), _ = lax.scan(
-                _step_fn,
-                (a, b, res_a, res_b), onp.arange(iterations)
-            )
-            return a, res_a
-
-        self._adaptive_step_size = _adaptive_step_size
+        self._adaptive_step_size = difftre.init_step_size_adaption(
+            self.weights_fn, allowed_reduction, interior_points, step_size_scale
+        )
 
     def _evaluate_convergence(self, duration, thresh):
         last_losses = jnp.array(self.batch_losses[-self.sim_batch_size:])
@@ -674,10 +581,15 @@ class DifftreActive(tt.TrainerInterface):
 
 class RelativeEntropy(tt.PropagationBase):
     """Trainer for relative entropy minimization."""
-    def __init__(self, init_params, optimizer,
-                 reweight_ratio=0.9, sim_batch_size=1, energy_fn_template=None,
+    def __init__(self,
+                 init_params,
+                 optimizer,
+                 reweight_ratio=0.9,
+                 sim_batch_size=1,
+                 energy_fn_template=None,
                  convergence_criterion='window_median',
-                 checkpoint_folder='Checkpoints'):
+                 checkpoint_folder='Checkpoints',
+                 full_checkpoint: bool = False):
         """
         Initializes a relative entropy trainer instance.
 
@@ -712,20 +624,29 @@ class RelativeEntropy(tt.PropagationBase):
                                    standard deviation 'std' might be implemented
                                    in the future.
             checkpoint_folder: Name of folders to store ckeckpoints in.
+            full_checkpoint: Save the whole trainer instead of only the
+                inference data.
         """
 
         checkpoint_path = 'output/rel_entropy/' + str(checkpoint_folder)
         init_trainer_state = util.TrainerState(
             params=init_params, opt_state=optimizer.init(init_params))
         super().__init__(init_trainer_state, optimizer, checkpoint_path,
-                         reweight_ratio, sim_batch_size, energy_fn_template)
+                         reweight_ratio, sim_batch_size, energy_fn_template,
+                         full_checkpoint)
 
         # in addition to the standard trajectory state, we also need to keep
         # track of dataloader states for reference snapshots
         self.data_states = {}
+        self.delta_re = self.checkpoint("delta_re", {})
+        self.step_size_history = self.checkpoint("step_size_history", [])
+        self.gradient_norm_history = self.checkpoint("gradient_norm_history", [])
 
-        self.early_stop = EarlyStopping(self.params,
-                                        convergence_criterion)
+        self.weight_fn = {}
+        self.early_stop = tt.EarlyStopping(self.params, convergence_criterion)
+
+        self._adaptive_step_size = None
+
 
     def _set_dataset(self, key, reference_data, reference_batch_size,
                      batch_cache=1):
@@ -742,7 +663,7 @@ class RelativeEntropy(tt.PropagationBase):
                        simulator_template, neighbor_fn, timings, kbt,
                        reference_state, reference_batch_size=None,
                        batch_cache=1, initialize_traj=True, set_key=None,
-                       vmap_batch=10):
+                       vmap_batch=10, num_chains=None):
         """
         Adds a state point to the pool of simulations.
 
@@ -755,34 +676,34 @@ class RelativeEntropy(tt.PropagationBase):
         Args:
             reference_data: De-correlated reference trajectory
             energy_fn_template: Function that takes energy parameters and
-                                initializes an new energy function.
+                initializes an new energy function.
             simulator_template: Function that takes an energy function and
-                                returns a simulator function.
+                returns a simulator function.
             neighbor_fn: Neighbor function
             timings: Instance of TimingClass containing information
-                     about the trajectory length and which states to retain
+                about the trajectory length and which states to retain
             kbt: Temperature in kbT
             reference_state: Tuple of initial simulation state and neighbor list
             reference_batch_size: Batch size of dataloader for reference
-                                  trajectory. If None, will use the same number
-                                  of snapshots as generated via the optimizer.
+                trajectory. If None, will use the same number of snapshots as
+                generated via the optimizer.
             batch_cache: Number of reference batches to cache in order to
-                         minimize host-device communication. Make sure the
-                         cached data size does not exceed the full dataset size.
+                minimize host-device communication. Make sure the cached data
+                size does not exceed the full dataset size.
             initialize_traj: True, if an initial trajectory should be generated.
-                             Should only be set to False if a checkpoint is
-                             loaded before starting any training.
+                Should only be set to False if a checkpoint is loaded before
+                starting any training.
             set_key: Specify a key in order to restart from same statepoint.
-                     By default, uses the index of the sequance statepoints are
-                     added, i.e. self.trajectory_states[0] for the first added
-                     statepoint. Can be used for changing the timings of the
-                     simulation during training.
+                By default, uses the index of the sequance statepoints are
+                added, i.e. self.trajectory_states[0] for the first added
+                statepoint. Can be used for changing the timings of the
+                simulation during training.
             vmap_batch: Batch size of vmapping of per-snapshot energy and
-                        gradient calculation.
+                gradient calculation.
         """
         if reference_batch_size is None:
-            print('No reference batch size provided. Using number of generated'
-                  ' CG snapshots by default.')
+            print('No reference batch size provided. Using number of generated '
+                  'CG snapshots by default.')
             states_per_traj = jnp.size(timings.t_production_start)
             if reference_state[0].position.ndim > 2:
                 n_trajctories = reference_state[0].position.shape[0]
@@ -790,35 +711,77 @@ class RelativeEntropy(tt.PropagationBase):
             else:
                 reference_batch_size = states_per_traj
 
-        key, weights_fn, propagate = self._init_statepoint(reference_state,
-                                                           energy_fn_template,
-                                                           simulator_template,
-                                                           neighbor_fn,
-                                                           timings,
-                                                           kbt,
-                                                           set_key,
-                                                           vmap_batch,
-                                                           initialize_traj)
+        (key, *reweight_fns) = self._init_statepoint(reference_state,
+                                                     energy_fn_template,
+                                                     simulator_template,
+                                                     neighbor_fn,
+                                                     timings,
+                                                     kbt,
+                                                     set_key,
+                                                     vmap_batch,
+                                                     initialize_traj,
+                                                     num_chains=num_chains,
+                                                     safe_propagation=False)
 
         reference_dataloader = self._set_dataset(key,
                                                  reference_data,
                                                  reference_batch_size,
                                                  batch_cache)
 
-        grad_fn = chemtrain.learn.differentiable_reweighting.init_rel_entropy_gradient(
-            energy_fn_template, weights_fn, kbt, vmap_batch)
-
-        def propagation_and_grad(params, traj_state, batch_state):
-            """Propagates the trajectory, if necessary, and computes the
-            gradient via the relative entropy formalism.
-            """
-            traj_state = propagate(params, traj_state)
-            new_batch_state, reference_batch = reference_dataloader(batch_state)
-            reference_positions = reference_batch['R']
-            grad = grad_fn(params, traj_state, reference_positions)
-            return traj_state, grad, new_batch_state
+        propagation_and_grad = difftre.init_rel_entropy_gradient_and_propagation(
+            reference_dataloader, reweight_fns, energy_fn_template,
+            kbt, vmap_batch
+        )
 
         self.grad_fns[key] = propagation_and_grad
+        self.delta_re[key] = []
+        self.weight_fn[key] = jax.jit(reweight_fns[0])
+
+    def init_step_size_adaption(self,
+                                allowed_reduction: ArrayLike = 0.5,
+                                interior_points: int = 10,
+                                step_size_scale: float = 1e-7
+                                ) -> None:
+        """Initializes a line search to tune the step size in each iteration.
+
+        This method interpolates linearly between the old parameters
+        :math:`\\theta^{(i)}` and the paremeters :math:`\\tilde\\theta`
+        proposed by the optimizer to find the optimal update
+
+        .. math ::
+            \\theta^{(i + 1)} = (1 - \\alpha) \\theta^{(i)} + \\alpha\\tilde\\theta
+
+        that reduces the effective sample size to a predefined constant
+
+        .. math ::
+            N_\\text{eff}(\\theta^{(i+1)}) = r\cdot N_\\text{eff}(\\theta^{(i)}).
+
+        This method uses a vectorized bisection algorithm with fixed number of
+        iterations. At each iteration, the algorithm computes the effective
+        sample size for a predefined number of interior points and updates the
+        search interval boundaries to include the two closest points bisecting
+        the residual.
+
+        The number of required iterations computes from the number of interior
+        points :math:`n_i` and the desired accuracy :math:`a` via
+
+        .. math ::
+            N = \\left\\lceil -\\log(a) / \\log(n_i + 1)\\right\\rceil.
+
+        Args:
+            allowed_reduction: Target reduction of the effective sample size
+            interior_points: Number of interiour points
+            step_size_scale: Accuracy of the found optimal interpolation
+                coefficient
+
+        Returns:
+            Returns the interpolation coefficient :math:`\\alpha`.
+
+        """
+
+        self._adaptive_step_size = difftre.init_step_size_adaption(
+            self.weight_fn, allowed_reduction, interior_points, step_size_scale
+        )
 
     def _update(self, batch):
         """Updates the potential using the gradient from relative entropy."""
@@ -826,20 +789,45 @@ class RelativeEntropy(tt.PropagationBase):
         for sim_key in batch:
             grad_fn = self.grad_fns[sim_key]
 
-            self.trajectory_states[sim_key], curr_grad, \
+            self.trajectory_states[sim_key], delta_re, curr_grad, \
             self.data_states[sim_key] = grad_fn(self.params,
                                                 self.trajectory_states[sim_key],
                                                 self.data_states[sim_key])
             grads.append(curr_grad)
+            self.delta_re[sim_key].append(delta_re)
+
 
         batch_grad = util.tree_mean(grads)
-        self._step_optimizer(batch_grad)
-        self.gradient_norm_history.append(util.tree_norm(batch_grad))
+
+        if self._adaptive_step_size is not None:
+            proposal = self._optimizer_step(batch_grad)
+            alpha, residual = self._adaptive_step_size(
+                self.params, batch_grad, proposal, self.trajectory_states)
+            print(f"[Step Size] Found optimal step size {alpha} with residual "
+                  f"{residual}", flush=True)
+        else:
+            alpha = 1.0
+
+        self._step_optimizer(batch_grad, alpha=alpha)
+
+        batch_norm = util.tree_norm(batch_grad)
+        self.gradient_norm_history.append(onp.asarray(batch_norm))
+        self.step_size_history.append(onp.asarray(alpha))
+        del grads
+        gc.collect()
 
     def _evaluate_convergence(self, duration, thresh):
         curr_grad_norm = self.gradient_norm_history[-1]
-        print(f'\nEpoch {self._epoch}: Gradient norm: '
-              f'{curr_grad_norm}, Elapsed time = {duration:.3f} min')
+        # Mean loss from last simbatch
+        mean_delta_re = onp.mean(
+            [delta_re[-1] for delta_re in self.delta_re.values()]
+        )
+
+        print(
+            f'\n[RE] Epoch {self._epoch}'
+            f'\n\tMean Delta RE loss = {mean_delta_re:.5f}'
+            f'\n\tGradient norm: {curr_grad_norm}'
+            f'\n\tElapsed time = {duration:.3f} min')
 
         self._print_measured_statepoint()
 

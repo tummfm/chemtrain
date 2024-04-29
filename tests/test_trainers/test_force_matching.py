@@ -47,8 +47,8 @@ class TestForceMatching:
         ])
 
         position_dataset, force_dataset = data_processing.map_dataset(
-            position_dataset, all_forces, weights, weights ** 2,
-            displacement_fn, shift_fn
+            position_dataset, displacement_fn, shift_fn, weights, weights,
+            all_forces,
         )
 
         # Setup Model #########
