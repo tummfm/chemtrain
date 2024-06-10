@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""This module provides utilities for setting up probabilistic trainers,
- such as trainers.SGMC"""
+"""This module contains methods for training and evaluation of uncertainty-aware
+ neural network potentials trained bottom-up via energy / force matching."""
 from functools import partial
 
 from jax import (lax, vmap, pmap, checkpoint, random, device_count,
@@ -46,26 +46,8 @@ def uniform_prior(sample):
     return 0.
 
 
-def init_gaussian_prior(prior_std):
-    """Returns a Gaussian prior function over energy params.
-
-    Args:
-        prior_std: Gaussian std of prior.
-
-    Returns:
-        A Gaussian prior on energy params.
-    """
-    gaussian = partial(jscipy.stats.norm.logpdf, loc=0., scale=prior_std)
-
-    def gaussian_prior(params):
-        prior_params = [arr for ((name, _), arr) in tree.flatten_with_path(
-            params) if 'BesselRadial' not in name]
-        priors = tree_util.tree_map(gaussian, prior_params)
-        return sum(util.tree_sum(priors))
-    return gaussian_prior
-
-
-def init_elementwise_prior_fn(scale, distribution=jscipy.stats.norm.logpdf,
+def init_elementwise_prior_fn(scale,
+                              distribution=jscipy.stats.norm.logpdf,
                               loc=0.):
     """Initializes a prior distribution that acts on all parameters
     independently.
@@ -87,8 +69,12 @@ def init_elementwise_prior_fn(scale, distribution=jscipy.stats.norm.logpdf,
     return prior_fn
 
 
-def init_likelihood(energy_fn_template, nbrs_init, energy_scale=1.,
-                    force_scale=1., virial_scale=1., virial_fn=None,
+def init_likelihood(energy_fn_template,
+                    nbrs_init,
+                    energy_scale=1.,
+                    force_scale=1.,
+                    virial_scale=1.,
+                    virial_fn=None,
                     distribution=jscipy.stats.norm.logpdf):
     """Returns the likelihood function for Bayesian potential optimization
     based on a force-matching formulation.
@@ -103,10 +89,9 @@ def init_likelihood(energy_fn_template, nbrs_init, energy_scale=1.,
         force_scale: Prior scale of force components.
         virial_scale: Prior scale of virial components.
         virial_fn: Virial function compatible ẃith virial data type,
-                   e.g. initialized via force_matching.init_virial_fn.
+            e.g. initialized via force_matching.init_virial_fn.
         distribution: Likelihood distribution. Defaults to a Gaussian logpdf,
-                      but any jax.scipy logpdf with the same signature can
-                      be provided.
+            but any jax.scipy logpdf with the same signature can be provided.
     """
     single_prediction = force_matching.init_model(
         nbrs_init, energy_fn_template, virial_fn)
@@ -169,43 +154,41 @@ def init_force_matching(
 
     Note that scale = 1 / lambda for the common parametrization of the
     exponential  distribution via the rate parameter lambda.
-    See the scipy.stats.expon documentation for more details.
+    See the :class:`scipy.stats.expon` documentation for more details.
 
     Args:
         energy_param_prior: Prior function for , e.g. as generated from
-                            'init_elementwise_prior_fn'.
+            ``'init_elementwise_prior_fn'``.
         energy_fn_template: Energy function template
         nbrs_init: Initial neighbor list
         init_params: Initial energy params
         position_data: (N_snapshots x N_particles x dim) array of particle
-                       positions
+            positions
         energy_data: (N_snapshots,) array of corresponding energy values,
-                     if applicable
+            if applicable
         energy_scale: Prior scale of energy data.
         force_data: (N_snapshots x N_particles x dim) array of corresponding
-                    forces acting on particles, if applicable.
+            forces acting on particles, if applicable.
         force_scale: Prior scale of force components.
         virial_data: (N_snapshots,) or (N_snapshots, dim, dim) array of
-                     corresponding virial (tensor) values (without kinetic
-                     contribution), if applicable.
+            corresponding virial (tensor) values (without kinetic contribution),
+            if applicable.
         virial_scale: Prior scale of virial components.
         kt_data: Temperature corresponding to each data point. For learning
-                 temperature-dependent (coarse-graned) models.
+            temperature-dependent (coarse-graned) models.
         box_tensor: Box tensor, only needed if virial_data used.
         train_ratio: Ratio of dataset to be used for training. The remaining
-                     data can be used for validation.
+            data can be used for validation.
         val_ratio: Ratio of dataset to be used for validation. The remaining
-                   data will be used for testing.
+            data will be used for testing.
         likelihood_distribution: Log-likelihood distribution, defaults to
-                                 Gaussian log-likelihood.
+            Gaussian log-likelihood.
         prior_scale_distribution: Log-prior distribution of the likelihood scale
-                                  parameter. Defaults to exponential
-                                  distribution.
+            parameter. Defaults to exponential distribution.
         prior_scale_init_multiple: Initial value of prior scale multiple. Can be
-                                   used to initialize prior scales larger or
-                                   smaller than prior mean or to cunteract the
-                                   smaller scale in the gamma distribution
-                                   compared to the mean.
+            used to initialize prior scales larger or smaller than prior mean or
+            to cunteract the smaller scale in the gamma distribution compared to
+            the mean.
         shuffle: Whether to shuffle data before splitting into train-val-test.
 
     Returns:
@@ -303,7 +286,7 @@ def init_dropout_uq_fwd(batched_model, meta_params, n_dropout_samples=8):
 
     Args:
         batched_model: A model with signature model(params, batch), which
-                       was trained using dropout.
+            was trained using dropout.
         meta_params: Final trained meta_params
         n_dropout_samples: Number of predictions to run
 
@@ -345,17 +328,17 @@ def dropout_uq_predictions(batched_model, meta_params, val_loader,
 
     Args:
         batched_model: A model with signature model(params, batch), which
-                       was trained using dropout.
+             was trained using dropout.
         meta_params: Final trained meta_params
         val_loader: Validation data loader
         init_rng_key: Initial PRNGKey to use for sampling dropout configurations
         n_dropout_samples: Number of predictions with different dropout
-                           configurations for each data observation.
+            configurations for each data observation.
         batch_size: Number of input observations to vectorize. n_dropout_samples
-                    are already vmapped over.
+            are already vmapped over.
         batch_cache: Number of input observations cached in GPU memory.
         include_without_dropout: Whether to also output prediction with Dropout
-                                 disabled.
+            disabled.
 
     Returns:
         A tuple (uncertainties, no_dropout_predictions) containing for each data
@@ -393,7 +376,7 @@ def uq_calibration(uq_samples, targets, mask=None):
         uq_samples: A (n_samples, n_uq_estimates, *) array of UQ predictions
         targets: A (n_samples, *) array of target labels
         mask: : A boolean (n_samples, *) mask array such that padded predictions
-                are treated correctly.
+            are treated correctly.
     """
     m = uq_samples.shape[1]
     predicted_mean = jnp.mean(uq_samples, axis=1)
@@ -410,78 +393,6 @@ def uq_calibration(uq_samples, targets, mask=None):
     return jnp.sqrt(alpha_sq)
 
 
-def init_force_uq(energy_fn_template, n_splits=16, vmap_batch_size=1):
-    n_devies = device_count()
-    util.assert_distributable(n_splits, n_devies, vmap_batch_size)
-
-    @jit
-    def forces(keys, energy_params, sim_state):
-
-        def single_force(key):
-            state, nbrs = sim_state  # assumes state and nbrs to be in sync
-            dropout_params = dropout.build_dropout_params(energy_params, key)
-            energy_fn = energy_fn_template(dropout_params)
-            force_fn = quantity.canonicalize_force(energy_fn)
-            return force_fn(state.position, neighbor=nbrs)
-
-        # map in case not all necessary samples per device fit memory for vmap
-        mapped_force = lax.map(single_force, keys)
-        return mapped_force
-
-    def force_uq(meta_params, sim_state):
-        energy_params, key = dropout.split_dropout_params(meta_params)
-        keys = random.split(key, n_splits)
-        keys = keys.reshape((vmap_batch_size, -1, 2))  # 2 values per key
-        # TODO add pmap
-        # keys = keys.reshape((n_devies, vmap_batch_size, -1, 2))
-        vmap_forces = vmap(forces, (0, None, None))
-        batched_forces = vmap_forces(keys, energy_params, sim_state)
-        shape = batched_forces.shape
-        # reshape such that all sampled force predictions are along axis 0
-        lined_forces = batched_forces.reshape((-1, shape[-2], shape[-1]))
-        # TODO check that std and forces are correct
-        f_std_per_atom = jnp.std(lined_forces, axis=0)
-        mean_std = jnp.mean(f_std_per_atom)
-        return mean_std
-
-    return force_uq
-
-
-def infer_output_uncertainty(param_sets, init_state, trajectory_generator,
-                             quantities, total_samples, kt_schedule=None,
-                             vmap_simulations_per_device=1):
-    # Check whether dropout was used or not
-    dropout_active = dropout.dropout_is_used(param_sets)
-    # TODO add vmap
-    # TODO add pmap
-
-    if dropout_active:  # map over keys
-        energy_params, key = dropout.split_dropout_params(param_sets)
-        param_sets = random.split(key, total_samples)
-
-    def single_prediction(mapped_param):
-        if dropout_active:  # param == key and we extract new parameter set
-            param_set = dropout.build_dropout_params(energy_params,
-                                                     mapped_param)
-        else:
-            param_set = mapped_param
-
-        traj_state = trajectory_generator(param_set, init_state,
-                                          kT=kt_schedule)
-        quantity_traj = traj_util.quantity_traj(traj_state, quantities,
-                                                param_set)
-        # TODO replace with new interface of DiffTRe:
-        predictions = {}
-        for quantity_key in quantities:
-            quantity_snapshots = quantity_traj[quantity_key]
-            predictions[quantity_key] = jnp.mean(quantity_snapshots, axis=0)
-        return predictions
-
-    # accumulates predictions in axis 0 of leaves of prediction_dict
-    predictions = lax.map(single_prediction, param_sets)
-    return predictions
-
-
 def uq_trajectories(param_sets, init_state, trajectory_generator,
                     vmap_simulations=1, kt_schedule=None, n_dropout=16):
     """Compute multiple trajectories in parallel for evaluation of parameter
@@ -489,15 +400,15 @@ def uq_trajectories(param_sets, init_state, trajectory_generator,
 
     Args:
         param_sets: Energy_params stacked along axis 0.
-                    For Dropout only a single parameter set.
+            For Dropout only a single parameter set.
         init_state: Either a single sim_state (compatible with the
-                    trajectory_generator) or sim_states stacked along axis 0 to
-                    start each energy_param set from a different sim_state.
+            trajectory_generator) or sim_states stacked along axis 0 to
+            start each energy_param set from a different sim_state.
         trajectory_generator: Trajectory generator as initialized from
-                              trajectory_generator_init.
+            trajectory_generator_init.
         vmap_simulations: Number of simulations to run vectorized.
         kt_schedule: kbT schedule for simulations. If None, uses encoded
-                     temperature in simulator_template.
+            temperature in simulator_template.
         n_dropout: Number of Dropout samples to evaluate.
 
     Returns:

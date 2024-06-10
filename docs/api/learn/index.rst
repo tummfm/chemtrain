@@ -33,6 +33,5 @@ Learning Tools
 .. toctree::
    :titlesonly:
 
-   active_learning
    probabilistic
    max_likelihood

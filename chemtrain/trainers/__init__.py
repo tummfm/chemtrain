@@ -23,7 +23,6 @@ from .trainers import (
     DifftreActive,
     RelativeEntropy,
     SGMCForceMatching,
-    NUTSForceMatching,
     EnsembleOfModels,
     InterleaveTrainers
 )

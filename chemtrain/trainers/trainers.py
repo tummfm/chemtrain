@@ -885,41 +885,22 @@ class SGMCForceMatching(tt.ProbabilisticFMTrainerTemplate):
                                   ' for SGMCMC.')
 
 
-# TODO adjust to new blackjax interface, then allow newer version
-class NUTSForceMatching(tt.MCMCForceMatchingTemplate):
-    """Trainer that samples from the posterior distribution of energy_params via
-    the No-U-Turn Sampler (NUTS), based on a force-matching formulation.
-    """
-    def __init__(self, prior, likelihood, train_loader, init_sample,
-                 batch_cache=1, batch_size=1, val_loader=None,
-                 warmup_steps=1000, step_size=None,
-                 inv_mass_matrix=None, checkpoint_folder='Checkpoints',
-                 ref_energy_fn_template=None, init_prng_key=random.PRNGKey(0)):
-        checkpoint_path = 'output/NUTS/' + str(checkpoint_folder)
-
-        log_posterior_fn = probabilistic.init_log_posterior_fn(
-            likelihood, prior, train_loader, batch_size, batch_cache
-        )
-        init_state = nuts.new_state(init_sample, log_posterior_fn)
-
-        if step_size is None or inv_mass_matrix is None:
-            def warmup_gen_fn(step, inverse_mass_matrix):
-                return nuts.kernel(log_posterior_fn, step,
-                                   inverse_mass_matrix)
-
-            init_state, (step_size, inv_mass_matrix), info = stan_warmup.run(
-                init_prng_key, warmup_gen_fn, init_state, warmup_steps)
-            print('Finished warmup.\n', info)
-
-        kernel = nuts.kernel(log_posterior_fn, step_size,
-                             inv_mass_matrix)
-        super().__init__(init_state, kernel, checkpoint_path, val_loader,
-                         ref_energy_fn_template)
-
-
 class EnsembleOfModels(tt.ProbabilisticFMTrainerTemplate):
     """Train an ensemble of models by starting optimization from different
     initial parameter sets, for use in uncertainty quantification applications.
+
+    Usage:
+
+        .. code-block:: python
+
+           trainer_list = []
+           for i in range(4):
+               trainer_list.append(trainers.ForceMatching(...))
+           trainer_ensemble = trainers.EnsembleOfModels(trainer_list)
+
+           trainer_ensemble.train(*args, **kwargs)
+           trained_params = trainer_ensemble.list_of_params
+
     """
     def __init__(self, trainers, ref_energy_fn_template=None):
         super().__init__(None, ref_energy_fn_template)

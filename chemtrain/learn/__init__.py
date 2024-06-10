@@ -13,7 +13,6 @@
 # limitations under the License.
 
 from . import (
-    active_learning,
     force_matching,
     ibi,
     max_likelihood,

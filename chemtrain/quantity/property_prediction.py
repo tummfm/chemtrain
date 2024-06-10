@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Molecular property prediction."""
+"""This module contains methods for molecular property prediction, which build
+on the neural network architectures used for potential energy prediction.
+"""
 from functools import wraps
 from typing import ClassVar, Tuple, Callable, Any
 
@@ -24,14 +26,14 @@ from chemtrain.potential import neural_networks, dropout, sparse_graph
 
 
 def build_dataset(targets, graph_dataset):
-    """Builds dataset in format that is used for dataloading and throughout
+    """Builds dataset in format that is used for data loading and throughout
     property predictions.
 
     Args:
         targets: Dict containing all targets to be predicted. Can be retrieved
-                 in error_fn under the respective key.
+            in error_fn under the respective key.
         graph_dataset: Dataset of graphs, e.g. as obtained from
-                       sparse_graph.convert_dataset_to_graphs.
+            :func:`chemtrain.potential.sparse_graph.convert_dataset_to_graphs`.
 
     Returns:
         A dictionary containing the combined dataset and a list of target keys
@@ -53,14 +55,16 @@ def init_model(prediction_model):
 def init_loss_fn(error_fn):
     """Returns a loss function to optimize model parameters.
 
-    Signature of error_fn:
-    error = error_fn(predictions, batch, mask) ,
+    Signature of error_fn::
+
+       error = error_fn(predictions, batch, mask)
+
     where mask has the same shape as species to mask padded particles.
 
     Args:
         model: Molecular property prediction model (Haiku apply_fn).
-        error_fn: Error model quantifying the discrepancy between preditions
-                  and respective targets.
+        error_fn: Error model quantifying the discrepancy between predictions
+            and respective targets.
     """
     def loss_fn(predictions, batch):
         mask = jnp.ones_like(predictions) * batch['species_mask']
@@ -94,13 +98,13 @@ def per_species_results(species, per_atom_quantities, species_idxs):
 
 
 def per_species_box_errors(dataset, per_atom_errors):
-    """Computes for each snapshot in the provided graph dataset,
-    the per-species error.
+    """Computes for each snapshot in the provided graph dataset, the per-species
+    error.
 
     Args:
-        dataset: Graph dataset cantaining the snapshots of interest.
+        dataset: Graph dataset containing the snapshots of interest.
         per_atom_errors: Per-atom error for each atom in the dataset.
-         Has same shape as dataset['species'].
+            Has same shape as ``dataset['species']``.
 
     Returns:
         Mean per-species error for each snapshot in the dataset.
@@ -126,7 +130,7 @@ def molecular_property_predictor(model, n_per_atom=0):
     Args:
         model: Initialized model predicting per-atom quantities, e.g. DimeNetPP.
         n_per_atom: Number of per-atom quantities to predict. Remaining
-                    predictions are assumed to be global.
+            predictions are assumed to be global.
 
     Returns:
         A tuple (global_properties, per_atom_properties) being a (n_globals,)
@@ -154,9 +158,9 @@ def partial_charge_prediction(
     Args:
         r_cutoff: Radial cut-off distance of DimeNetPP and the neighbor list
         n_species: Number of different atom species the network is supposed
-                   to process.
+            to process.
         model_class: Haiku model class that predicts per-atom quantities.
-                     By default, DimeNetPP.
+            By default, DimeNetPP.
         **model_kwargs: Kwargs to change the default structure of model_class.
 
     Returns:
