@@ -20,6 +20,7 @@ import pathlib
 import time
 from abc import abstractmethod
 from os import PathLike
+import inspect
 
 import cloudpickle as pickle
 import numpy as onp
@@ -64,7 +65,7 @@ class TrainerInterface(metaclass=abc.ABCMeta):
                              'initialization.')
         return self.reference_energy_fn_template(self.params)
 
-    def _dump_checkpoint_occasionally(self, frequency=None):
+    def _dump_checkpoint_occasionally(self, *args, frequency=None, **kwargs):
         """Dumps a checkpoint during training, from which training can
         be resumed.
         """
@@ -192,13 +193,107 @@ class MLETrainerTemplate(TrainerInterface):
         self.gradient_norm_history = []
         self._converged = False
         self._diverged = False
-        self._dropout = dropout.dropout_is_used(self.params)
+
+        self._tasks = {}
+
+        # Add standard tasks
+        self.add_task("pre_epoch", self._update_times_start)
+        self.add_task("post_epoch", self._update_times_end)
+        self.add_task("post_epoch", self._dump_checkpoint_occasionally)
+        self.add_task("post_epoch", self._evaluate_convergence)
+
+        # Dropout only if params indicate necessity
+        if dropout.dropout_is_used(self.params):
+            self.add_task("post_batch", self._update_dropout)
+
         # Note: make sure not to use such a construct during training as an
         # if-statement based on params forces the python part to wait for the
         # completion of the batch, hence losing the advantage of asynchronous
         # dispatch, which can become the bottleneck in high-throughput learning.
 
         self.release_fns = []
+
+    def add_task(self, trigger, fn_or_method):
+        """Adds a tasks to perform regularly during training."""
+
+        valid_triggers = [
+            "pre_training",
+            "pre_epoch",
+            "pre_batch",
+            "post_batch",
+            "post_epoch",
+            "post_training"
+        ]
+
+        assert trigger in valid_triggers, (
+            f"Provided trigger {trigger} is invalid, can only be "
+            f"{valid_triggers}."
+        )
+
+        if trigger not in self._tasks:
+            self._tasks[trigger] = []
+
+        self._tasks[trigger].append(fn_or_method)
+
+        return fn_or_method
+
+    def _execute_tasks(self, trigger, *args, **kwargs):
+        """Executes a dynamical set of tasks."""
+        if trigger not in self._tasks.keys():
+            return
+
+        for fn_or_method in self._tasks[trigger]:
+            if inspect.ismethod(fn_or_method):
+                fn_or_method(*args, **kwargs)
+            else:
+                fn_or_method(self, *args, **kwargs)
+
+    def print_training_tasks(self):
+        """Prints the tasks performed by the trainer."""
+
+        print("Preparation:")
+        if "pre_training" in self._tasks:
+            for task in self._tasks["pre_training"]:
+                print(f" - {task}")
+        else:
+            print("<no preparation tasks>")
+
+        print("\nFor every EPOCH\n===============")
+        if "pre_epoch" in self._tasks:
+            for task in self._tasks["pre_epoch"]:
+                print(f" - {task}")
+        else:
+            print("<no pre-epoch tasks>")
+
+        print(f"\n\tFor every BATCH in EPOCH\n\t----------------")
+        if "pre_batch" in self._tasks:
+            for task in self._tasks["pre_batch"]:
+                print(f"\t - {task}")
+        else:
+            print("\t<no pre-batch tasks>")
+
+        print(f"\n\tUPDATE\n")
+
+        if "post_batch" in self._tasks:
+            for task in self._tasks["post_batch"]:
+                print(f" - {task}")
+        else:
+            print("\t<no post-batch tasks>")
+
+        print("")
+
+        if "post_epoch" in self._tasks:
+            for task in self._tasks["post_epoch"]:
+                print(f" - {task}")
+        else:
+            print("<no post_epoch tasks>")
+
+        print("\nPostprocessing:")
+        if "post_training" in self._tasks:
+            for task in self._tasks["post_training"]:
+                print(f" - {task}")
+        else:
+            print("<no postprocessing tasks>")
 
     def _optimizer_step(self, curr_grad):
         """Wrapper around step_optimizer that is useful whenever the
@@ -257,15 +352,18 @@ class MLETrainerTemplate(TrainerInterface):
         self._converged = False
         start_epoch = self._epoch
         end_epoch = start_epoch + max_epochs
+
+        self._execute_tasks("pre_training")
         for _ in range(start_epoch, end_epoch):
-            start_time = time.time()
             try:
+                self._execute_tasks("pre_epoch")
                 for batch in self._get_batch():
-                    self._update_with_dropout(batch)
-                self._dump_checkpoint_occasionally(frequency=checkpoint_freq)
-                duration = (time.time() - start_time) / 60.
-                self.update_times.append(duration)
-                self._evaluate_convergence(duration, thresh)
+                    self._execute_tasks("pre_batch", batch)
+                    self._update(batch)
+                    self._execute_tasks("post_batch", batch)
+                self._execute_tasks("post_epoch",
+                                    checkpoint_freq=checkpoint_freq,
+                                    convergence_thresh=thresh)
                 self._epoch += 1
             except RuntimeError as err:
                 # In case the simulation diverges, break the optimization
@@ -280,25 +378,30 @@ class MLETrainerTemplate(TrainerInterface):
                       f' error: {err}')
                 break
 
-
             if self._converged:
                 break
         else:
             if thresh is not None:
                 print('Maximum number of epochs reached without convergence.')
+        self._execute_tasks("post_training")
 
-    def _update_with_dropout(self, batch):
+    def _update_dropout(self, batch):
         """Updates params, while keeping track of Dropout."""
-        self._update(batch)
-        if self._dropout:
-            # TODO refactor this as this needs to wait for when
-            #  params will again be available, slowing down re-loading
-            #  of batches. We could set dropout key as kwarg and keep
-            #  track of keys in this class. Also refactor dropout in
-            #  DimeNet taking advantage of haiku RNG key management and
-            #  built-in dropout in MLP
-            params = dropout.next_dropout_params(self.params)
-            self.params = params
+        # TODO refactor this as this needs to wait for when
+        #  params will again be available, slowing down re-loading
+        #  of batches. We could set dropout key as kwarg and keep
+        #  track of keys in this class. Also refactor dropout in
+        #  DimeNet taking advantage of haiku RNG key management and
+        #  built-in dropout in MLP
+        params = dropout.next_dropout_params(self.params)
+        self.params = params
+
+    def _update_times_start(self, *args, **kwargs):
+        self.update_times.append(time.time())
+
+    def _update_times_end(self, *args, **kwargs):
+        self.update_times[self._epoch] -= time.time()
+        self.update_times[self._epoch] /= -60.
 
     @abc.abstractmethod
     def _get_batch(self):
@@ -316,7 +419,7 @@ class MLETrainerTemplate(TrainerInterface):
         """
 
     @abc.abstractmethod
-    def _evaluate_convergence(self, duration, thresh):
+    def _evaluate_convergence(self, duration, thresh, *args, **kwargs):
         """Checks whether a convergence criterion has been met. Can also be
         used to print callbacks, such as time per epoch and loss vales.
         """
@@ -593,19 +696,20 @@ class DataParallelTrainer(MLETrainerTemplate):
 
         self.gradient_norm_history.append(util.tree_norm(curr_grad))
 
-    def _evaluate_convergence(self, duration, thresh):
+    def _evaluate_convergence(self, *args, thresh=None, **kwargs):
         """Prints progress, saves best obtained params and signals converged if
         validation loss improvement over the last epoch is less than the thesh.
         """
         mean_train_loss = sum(self.train_batch_losses[-self._batches_per_epoch:]
                               ) / self._batches_per_epoch
         self.train_losses.append(mean_train_loss)
+        duration = self.update_times[self._epoch]
 
         if self.val_loader is not None:
             val_loss = self._val_loss_fn(self.state.params)
             self.val_losses.append(val_loss)
-            self._converged = self._early_stop.early_stopping(val_loss, thresh,
-                                                              self.params)
+            self._converged = self._early_stop.early_stopping(
+                val_loss, thresh, self.params)
         else:
             val_loss = None
         print(f'Epoch {self._epoch}: Average train loss: {mean_train_loss:.5f} '

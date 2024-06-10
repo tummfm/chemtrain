@@ -499,10 +499,12 @@ class Difftre(tt.PropagationBase):
             self.weights_fn, allowed_reduction, interior_points, step_size_scale
         )
 
-    def _evaluate_convergence(self, duration, thresh):
+    def _evaluate_convergence(self, *args, thresh=None, **kwargs):
         last_losses = jnp.array(self.batch_losses[-self.sim_batch_size:])
         epoch_loss = jnp.mean(last_losses)
+        duration = self.update_times[self._epoch]
         self.epoch_losses.append(epoch_loss)
+
         print(
             f'\n[DiffTRe] Epoch {self._epoch}'
             f'\n\tEpoch loss = {epoch_loss:.5f}'
@@ -518,8 +520,8 @@ class Difftre(tt.PropagationBase):
                 if value.ndim == 0:
                     print(f'\tPredicted {quantity}: {value}')
 
-        self._converged = self.early_stop.early_stopping(epoch_loss, thresh,
-                                                         self.params)
+        self._converged = self.early_stop.early_stopping(
+            epoch_loss, thresh, self.params)
 
     @property
     def best_params(self):
@@ -816,12 +818,13 @@ class RelativeEntropy(tt.PropagationBase):
         del grads
         gc.collect()
 
-    def _evaluate_convergence(self, duration, thresh):
+    def _evaluate_convergence(self, *args, thresh=None, **kwargs):
         curr_grad_norm = self.gradient_norm_history[-1]
         # Mean loss from last simbatch
         mean_delta_re = onp.mean(
             [delta_re[-1] for delta_re in self.delta_re.values()]
         )
+        duration = self.update_times[self._epoch]
 
         print(
             f'\n[RE] Epoch {self._epoch}'
@@ -831,8 +834,8 @@ class RelativeEntropy(tt.PropagationBase):
 
         self._print_measured_statepoint()
 
-        self._converged = self.early_stop.early_stopping(curr_grad_norm, thresh,
-                                                         save_best_params=False)
+        self._converged = self.early_stop.early_stopping(
+            curr_grad_norm, thresh, save_best_params=False)
 
 
 class SGMCForceMatching(tt.ProbabilisticFMTrainerTemplate):
