@@ -36,8 +36,8 @@ trainer = trainers.Difftre(init_params,
                            optimizer)
 
 trainer.add_statepoint(energy_fn_template, simulator_template,
-                       neighbor_fn, timings, kbt, compute_fns, reference_state,
-                       targets)
+                       neighbor_fn, timings, state_kwargs, compute_fns,
+                       reference_state, targets)
 trainer.train(num_updates)
 ```
 

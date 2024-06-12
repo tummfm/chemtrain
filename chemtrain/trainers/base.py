@@ -18,6 +18,7 @@ import abc
 import copy
 import pathlib
 import time
+import warnings
 from abc import abstractmethod
 from os import PathLike
 import inspect
@@ -33,6 +34,7 @@ from chemtrain.learn.max_likelihood import pmap_update_fn, \
     init_val_loss_fn, step_optimizer, shmap_update_fn
 from chemtrain.potential import dropout
 from chemtrain.trajectory.reweighting import init_pot_reweight_propagation_fns
+from chemtrain.trajectory import traj_util
 from chemtrain.typing import EnergyFnTemplate
 from chemtrain.util import format_not_recognized_error
 
@@ -463,16 +465,32 @@ class PropagationBase(MLETrainerTemplate):
         self.shuffle_key = random.PRNGKey(0)
 
     def _init_statepoint(self, reference_state, energy_fn_template,
-                         simulator_template, neighbor_fn, timings, kbt,
+                         simulator_template, neighbor_fn, timings, state_kwargs,
                          set_key=None, energy_batch_size=10,
-                         initialize_traj=True, ref_press=None,
+                         initialize_traj=True,
                          safe_propagation=True, entropy_approximation=False,
-                         replica_kbt=None, num_chains=None):
+                         replica_kbt=None, resample_simstates=False):
         """Initializes the simulation and reweighting functions as well
         as the initial trajectory for a statepoint."""
         # TODO ref pressure only used in print and to have barostat values.
         #  Reevaluate this parameter of barostat values not used in reweighting
         # TODO document ref_press accordingly
+
+        assert 'kT' in state_kwargs, (
+            "Reweighting requires at least the temperature to be specified in "
+            "the state_kwargs. "
+        )
+
+        # Backwards compatibility
+        if isinstance(reference_state, tuple):
+            warnings.warn(
+                "Passing the reference state as tuple of simulator state and "
+                "neighbors is deprecated. "
+                "Use trajectory.traj_util.SimulatorState instead.",
+                DeprecationWarning
+            )
+            reference_state = traj_util.SimulatorState(
+                sim_state=reference_state[0], nbrs=reference_state[1])
 
         if set_key is not None:
             key = set_key
@@ -481,20 +499,25 @@ class PropagationBase(MLETrainerTemplate):
         else:
             key = self.n_statepoints
             self.n_statepoints += 1
-        self.statepoints[key] = {'kbT': kbt}
-        npt_ensemble = util.is_npt_ensemble(reference_state[0])
-        if npt_ensemble: self.statepoints[key]['pressure'] = ref_press
+
+        self.statepoints[key] = state_kwargs
+        npt_ensemble = util.is_npt_ensemble(reference_state.sim_state)
+        if npt_ensemble:
+            assert 'pressure' in state_kwargs, (
+                "Reweighting in the NPT ensemble requires the pressure to be "
+                "defined in the state_kwargs."
+            )
 
         if replica_kbt is not None:
-            assert reference_state[0].position.ndim > 2, (
+            assert reference_state.sim_state.position.ndim > 2, (
                 "Replica exchange requires multiple simulator states")
 
         gen_init_traj, *reweight_fns = init_pot_reweight_propagation_fns(
             energy_fn_template, simulator_template, neighbor_fn, timings,
-            kbt, ref_press, self.reweight_ratio, npt_ensemble,
+            state_kwargs, self.reweight_ratio, npt_ensemble,
             energy_batch_size, safe_propagation=safe_propagation,
             entropy_approximation=entropy_approximation,
-            replica_kbt=replica_kbt, num_chains=num_chains
+            replica_kbt=replica_kbt, resample_simstates=resample_simstates
         )
         if initialize_traj:
             self.key, split = random.split(self.key)
@@ -554,8 +577,8 @@ class PropagationBase(MLETrainerTemplate):
                                f'{statepoint["pressure"]:.2f}')
             else:
                 press_print = ''
-            print(f'\tkbT = {measured_kbt:.3f} ref_kbt = '
-                  f'{statepoint["kbT"]:.3f}' + press_print)
+            print(f'\tkT = {measured_kbt:.3f} ref_kT = '
+                  f'{statepoint["kT"]:.3f}' + press_print)
 
     def train(self, max_epochs, thresh=None, checkpoint_freq=None):
         assert self.n_statepoints > 0, ('Add at least 1 state point via '

@@ -252,7 +252,7 @@ def volumes(traj_state):
     Args:
         traj_state: TrajectoryState containing the NPT trajectory
     """
-    dim = traj_state.sim_state[0].position.shape[-1]
+    dim = traj_state.sim_state.sim_state.position.shape[-1]
     boxes = vmap(simulate.npt_box)(traj_state.trajectory)
     return vmap(quantity.volume, (None, 0))(dim, boxes)
 

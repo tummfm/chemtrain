@@ -87,7 +87,8 @@ class ForceField:
 
         bonds = onp.genfromtxt(
             StringIO(ff["bonded"]["bondtypes"]),
-            dtype=None, delimiter=",", encoding="UTF-8", autostrip=True
+            dtype=None, delimiter=",", encoding="UTF-8", autostrip=True,
+            comments="#"
         ).reshape((-1,))
 
         # Fill up to indicate which bonds are not provided by the force field
@@ -518,6 +519,9 @@ class Topology:
     def get_bonds(self):
         """Returns the indices, species and mask for all angles."""
         idxs = self._bond_idx
+        if idxs.ndim == 1:
+            return None, None, None
+
         species = jnp.stack(
             (
                 self.get_atom_species(idxs[:, 0]),
@@ -530,6 +534,9 @@ class Topology:
     def get_angles(self):
         """Returns the indices, species and mask for all angles."""
         idxs = self._angle_idx
+        if idxs.ndim == 1:
+            return None, None, None
+
         species = jnp.stack(
             (
                 self.get_atom_species(idxs[:, 0]),
@@ -543,6 +550,9 @@ class Topology:
     def get_dihedrals(self):
         """Returns the indices, species and mask for all angles."""
         idxs = self._dihedral_idx
+        if idxs.ndim == 1:
+            return None, None, None
+
         species = jnp.stack(
             (
                 self.get_atom_species(idxs[:, 0]),
@@ -665,8 +675,10 @@ class Topology:
                         dihedrals.append([a.index for a in path])
 
         return cls(
-            len(species), species=jnp.asarray(species),
-            bond_idx=jnp.asarray(bonds), angle_idx=jnp.asarray(angles),
+            len(species),
+            species=jnp.asarray(species),
+            bond_idx=jnp.asarray(bonds),
+            angle_idx=jnp.asarray(angles),
             dihedral_idx=jnp.asarray(dihedrals)
         )
 
@@ -674,12 +686,17 @@ class Topology:
 # Functions to read out potential parameters for all bonds, angles, etc. of the
 # system
 
-
 def init_bond_potential(displacement_fn, topology, force_field):
     """Initializes all bond-potentials for the given topology. """
     bond_idx, bond_species, bond_mask = topology.get_bonds()
+    if bond_idx is None:
+        return None, None
+
     bond_params, mask = force_field.get_bond_params(
         bond_species[:, 0], bond_species[:, 1])
+
+    print(mask)
+
     # Mask out bonds by setting their energy to zero
     b0 = bond_params[:, 0]
     kb = jnp.where(
@@ -693,6 +710,9 @@ def init_bond_potential(displacement_fn, topology, force_field):
 def init_angle_potential(displacement_fn, topology, force_field):
     """Initializes all angle-potentials for the given topology. """
     angle_idx, angle_species, angle_mask = topology.get_angles()
+    if angle_idx is None:
+        return None, None
+
     angle_params, mask = force_field.get_angle_params(
         angle_species[:, 0], angle_species[:, 1], angle_species[:, 2])
     # Mask out bonds by setting their energy to zero
@@ -708,6 +728,9 @@ def init_angle_potential(displacement_fn, topology, force_field):
 def init_dihedral_potential(displacement_fn, topology, force_field):
     """Initializes all dihedral-potentials for the given topology. """
     dihedral_idx, dihedral_species, dihedral_mask = topology.get_dihedrals()
+    if dihedral_idx is None:
+        return None, None
+
     data, mask, mult = force_field.get_dihedral_params(
         dihedral_species[:, 0], dihedral_species[:, 1], dihedral_species[:, 2],
         dihedral_species[:, 3]
@@ -731,7 +754,8 @@ def init_dihedral_potential(displacement_fn, topology, force_field):
 def init_nonbonded_potential(displacement_fn,
                              topology,
                              force_field: ForceField,
-                             nonbonded_type = "repulsion"):
+                             nonbonded_type = "repulsion",
+                             r_onset=0.45, r_cutoff=0.5):
     """Initializes the non-bonded interactions for the given topology. """
     species = topology.get_atom_species()
     nonbonded_params, mask = force_field.get_nonbonded_params(species)
@@ -743,15 +767,19 @@ def init_nonbonded_potential(displacement_fn,
         sigma=(lambda s1, s2: 0.5 * (s1 + s2), nonbonded_params[:, 1]),
         epsilon=(lambda e1, e2: jnp.sqrt(e1 * e2), mask * nonbonded_params[:, 2])
     )
+
+    # TODO: Provide onset and cutoff arguments
+
     if nonbonded_type == "repulsion":
         return custom_energy.generic_repulsion_neighborlist(
-            displacement_fn, **kwargs)
+            displacement_fn, **kwargs, r_onset=r_onset, r_cutoff=r_cutoff)
     if nonbonded_type == "truncated_lennard_jones":
+        # No additional truncation necessary
         return custom_energy.truncated_lennard_jones_neighborlist(
             displacement_fn, **kwargs)
     if nonbonded_type == "lennard_jones":
         return custom_energy.customn_lennard_jones_neighbor_list(
-            displacement_fn, **kwargs)
+            displacement_fn, **kwargs, r_onset=r_onset, r_cutoff=r_cutoff)
 
     raise NotImplementedError(
         f"Nonbonded type {nonbonded_type} is not a valid choice. Choose from"
@@ -761,7 +789,9 @@ def init_nonbonded_potential(displacement_fn,
 
 def init_prior_potential(displacement_fn,
                          mask_bonded: bool = True,
-                         nonbonded_type: str = "repulsion"):
+                         nonbonded_type: str = "repulsion",
+                         r_onset: float = 0.45,
+                         r_cutoff: float = 0.5):
     """Initializes the prior template.
 
     Args:
@@ -771,11 +801,8 @@ def init_prior_potential(displacement_fn,
             number of bonds is very large.
         nonbonded_type: Type of the nonbonded interactions. Possible values are
             ``"repulsion"``, ``"lennard_jones"``, ``"truncated_lennard_jones"``.
-
-    Returns:
-        Returns a function that, given a topology and force field, creates a
-        potential function. This potential function then predicts energies
-        for different conformations of the system.
+        r_onset: Distance to start smoothing the nonbonded interactions to 0.
+        r_cutoff: Cutoff distance of the neighbor list.
 
     """
     def prior_potential_template(topology: Topology, force_field: ForceField):
@@ -789,13 +816,19 @@ def init_prior_potential(displacement_fn,
 
         # Nonbonded
         nonbonded_potential_fn = init_nonbonded_potential(
-            displacement_fn, topology, force_field, nonbonded_type)
+            displacement_fn, topology, force_field, nonbonded_type,
+            r_onset=r_onset, r_cutoff=r_cutoff
+        )
 
         def potential_fn(position, neighbor=None, **kwargs):
             pot = 0.0
-            pot += bond_potential(position)
-            pot += angle_potential(position)
-            pot += dihedral_potential(position)
+
+            if bond_potential is not None:
+                pot += bond_potential(position)
+            if angle_potential is not None:
+                pot += angle_potential(position)
+            if dihedral_potential is not None:
+                pot += dihedral_potential(position)
 
             if mask_bonded:
                 # Exclude pairs connected via bonds and angles from the

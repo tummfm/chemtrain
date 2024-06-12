@@ -5,23 +5,50 @@
 
 .. automodule:: chemtrain.trajectory.traj_util
 
-Simulating
+Initialize Simulation
+---------------------
+
+.. autosummary::
+   :toctree: _autosummary
+
+    process_printouts
+    initialize_simulator_template
+
+
+Run Simulation
+---------------
+
+.. autosummary::
+   :toctree: _autosummary
+
+   trajectory_generator_init
+
+The following states are necessary in the scope of the module:
+
+.. autosummary::
+   :toctree: _autosummary
+
+   TimingClass
+   SimulatorState
+   TrajectoryState
+
+Compute Quantities
+------------------
+
+.. autosummary::
+   :toctree: _autosummary
+
+   quantity_traj
+   quantity_map
+   quantity_multimap
+
+
+Utilities
 ----------
 
-.. autoclass:: TimingClass
-    :members:
+.. autosummary::
+   :toctree: _autosummary
 
-.. autoclass:: TrajectoryState
-
-.. autofunction:: initialize_simulator_template
-
-.. autofunction:: process_printouts
-
-.. autofunction:: trajectory_generator_init
-
-Computing Quantities
---------------------
-
-.. autofunction:: quantity_traj
-
-.. autofunction:: quantity_traj_multimap
+   canonicalize_state_kwargs
+   init_simulation_fn
+   run_to_next_printout_neighbors

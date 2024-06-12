@@ -199,6 +199,9 @@ def tree_vmap_split(tree, batch_size):
     """Splits the first axis of a 'tree' with leaf sizes (N, X)`into
     (n_batches, batch_size, X) to allow straightforward vmapping over axis0.
     """
+    if len(tree_util.tree_leaves(tree)) == 0:
+        return tree
+
     assert tree_util.tree_leaves(tree)[0].shape[0] % batch_size == 0, \
         'First dimension of tree needs to be splittable by batch_size' \
         ' without remainder.'

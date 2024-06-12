@@ -18,6 +18,7 @@ from scipy import interpolate
 from jax_md import util
 import jax.numpy as jnp
 
+from typing import Union, List
 
 from chemtrain.quantity.util import target_quantity, TargetInit
 from chemtrain.jax_md_mod import custom_quantity
@@ -25,11 +26,12 @@ from chemtrain.typing import ArrayLike
 from chemtrain.quantity import observables
 
 
-def init_radial_distribution_target(target: ArrayLike,
+def init_radial_distribution_target(target: Union[ArrayLike, List[ArrayLike]],
                                     rdf_start: float = 0.0,
                                     rdf_cut: float = 1.5,
                                     nbins: int = 300,
                                     gamma: float = 1.0,
+                                    rdf_species: ArrayLike = None,
                                     ) -> TargetInit:
     """Initializes a RDF target.
 
@@ -39,13 +41,26 @@ def init_radial_distribution_target(target: ArrayLike,
         rdf_cut: End of the target distribution.
         nbins: Number of bins of the target distribution.
         gamma: Scaling factor of the loss contribution.
+        rdf_species: Compute the RDF between selected species
     """
 
     bin_cent, bin_bound, sigma = custom_quantity.rdf_discretization(
         rdf_cut, nbins, rdf_start)
-    rdf_spline = interpolate.interp1d(
-        target[:, 0], target[:, 1], kind='cubic')
-    reference_rdf = util.f32(rdf_spline(bin_cent))
+
+    if rdf_species is None:
+        rdf_spline = interpolate.interp1d(
+            target[..., 0], target[..., 1], kind='cubic')
+        reference_rdf = util.f32(rdf_spline(bin_cent))
+    else:
+        # Load multiple targets but transfer them to the same format
+        reference_rdf = jnp.zeros((len(target), bin_cent.size))
+        for idx in range(len(target)):
+            rdf_spline = interpolate.interp1d(
+                target[idx][:, 0], target[idx][:, 1], kind='cubic')
+            reference_rdf = reference_rdf.at[idx, :].set(
+                util.f32(rdf_spline(bin_cent))
+            )
+
     rdf_struct = custom_quantity.RDFParams(
         reference_rdf, bin_cent, bin_bound, sigma)
 
@@ -53,7 +68,7 @@ def init_radial_distribution_target(target: ArrayLike,
     def initialize(key, compute_fns, init_args):
 
         compute_fn = custom_quantity.init_rdf(
-            rdf_params=rdf_struct, **init_args
+            rdf_params=rdf_struct, **init_args, rdf_species=rdf_species
         )
 
         target_dict = {
@@ -66,11 +81,12 @@ def init_radial_distribution_target(target: ArrayLike,
     return initialize
 
 
-def init_angular_distribution_target(target: ArrayLike,
+def init_angular_distribution_target(target: Union[ArrayLike, List[ArrayLike]],
                                      r_outer: float = 0.318,
                                      r_inner: float = 0.0,
                                      nbins: int = 150,
                                      gamma: float = 1.0,
+                                     adf_species: ArrayLike = None,
                                      ) -> TargetInit:
     """Initializes an ADF target.
 
@@ -84,12 +100,25 @@ def init_angular_distribution_target(target: ArrayLike,
         r_inner: Minimum pairwise distance between particles of a triplet.
         nbins: Number of bins of the target distribution.
         gamma: Scaling factor of the loss contribution.
+        adf_species: Compute the ADF for triplets with different species
     """
 
     adf_bin_centers, sigma_adf = custom_quantity.adf_discretization(nbins)
-    adf_spline = interpolate.interp1d(
-        target[:, 0], target[:, 1], kind='cubic')
-    reference_adf = util.f32(adf_spline(adf_bin_centers))
+
+    if adf_species is None:
+        adf_spline = interpolate.interp1d(
+            target[:, 0], target[:, 1], kind='cubic')
+        reference_adf = util.f32(adf_spline(adf_bin_centers))
+    else:
+        # Load multiple targets but transfer them to the same format
+        reference_adf = jnp.zeros((len(target), adf_bin_centers.size))
+        for idx in range(len(target)):
+            adf_spline = interpolate.interp1d(
+                target[idx][:, 0], target[idx][:, 1], kind='cubic')
+            reference_adf = reference_adf.at[idx, :].set(
+                util.f32(adf_spline(adf_bin_centers))
+            )
+
     adf_struct = custom_quantity.ADFParams(
         reference_adf, adf_bin_centers, sigma_adf, r_outer, r_inner)
 
@@ -98,7 +127,8 @@ def init_angular_distribution_target(target: ArrayLike,
         del compute_fns
 
         compute_fn = custom_quantity.init_adf_nbrs(
-            adf_params=adf_struct, smoothing_dr=sigma_adf, **init_args
+            adf_params=adf_struct, smoothing_dr=sigma_adf, **init_args,
+            adf_species=adf_species
         )
 
         target_dict = {

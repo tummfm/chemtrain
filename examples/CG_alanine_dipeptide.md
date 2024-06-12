@@ -75,6 +75,7 @@ Additionally, the GNN does not explicitly consider water and should thus implici
 # Set random key and thermodynamic statepoint (300 K)
 key = random.PRNGKey(21)
 kT = 300. * quantity.kb
+state_kwargs = {'kT': kT}
 ```
 
 Before defining the potential model, we set up the space in which it acts.
@@ -327,7 +328,7 @@ relative_entropy = trainers.RelativeEntropy(
 relative_entropy.add_statepoint(
     position_dataset[:re_used_dataset_size, ...],
     energy_fn_template, sim_template, neighbor_fn,
-    re_timings, kT, reference_state,
+    re_timings, state_kwargs, reference_state,
     reference_batch_size=re_used_dataset_size,
     vmap_batch=n_chains, num_chains=n_chains)
 
@@ -439,7 +440,7 @@ trajectory_generator = traj_util.trajectory_generator_init(
 
 ```{code-cell} ipython
 t_start = time.time()
-re_traj_state = trajectory_generator(relative_entropy.params, reference_state, kT=kT)
+re_traj_state = trajectory_generator(relative_entropy.params, reference_state, **state_kwargs)
 t_end = time.time() - t_start
 print('total runtime:', t_end)
 
@@ -451,7 +452,7 @@ assert not re_traj_state.overflow, (
 
 ```{code-cell} ipython
 t_start = time.time()
-fm_traj_state = trajectory_generator(force_matching.best_inference_params, reference_state, kT=kT)
+fm_traj_state = trajectory_generator(force_matching.best_inference_params, reference_state, **state_kwargs)
 t_end = time.time() - t_start
 print('total runtime:', t_end)
 

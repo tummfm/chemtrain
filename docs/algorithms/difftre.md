@@ -168,6 +168,9 @@ simulator_init, _ = simulator_template(energy_fn_template(init_params))
 simulator_init_state = simulator_init(jax.random.PRNGKey(0), r_init)
 nbrs_init = neighbor_fn.allocate(r_init)
 
+reference_state = trajectory.traj_util.SimulatorState(
+    simulator_init_state, nbrs_init)
+
 system = {
     'displacement_fn': displacement_fn,
     'reference_box': box
@@ -213,8 +216,8 @@ trainer = trainers.Difftre(
 )
 
 trainer.add_statepoint(
-  energy_fn_template, simulator_template, neighbor_fn, timings, 2.56,
-  compute_fns, (simulator_init_state, nbrs_init), targets=targets)
+  energy_fn_template, simulator_template, neighbor_fn, timings, 
+  {'kT': 2.56}, compute_fns, reference_state, targets=targets)
 
 ```
 

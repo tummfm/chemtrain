@@ -246,6 +246,8 @@ class Difftre(tt.PropagationBase):
         # Optional: Initialized by calling trainer.init_step_size_adaption
         # after all statepoints to be considered have been set up.
         self._adaptive_step_size = None
+        self._adaptive_step_size_threshold = None
+        self._recompute = False
 
         self.weights_fn = {}
         super().__init__(
@@ -268,7 +270,7 @@ class Difftre(tt.PropagationBase):
                        simulator_template,
                        neighbor_fn: NeighborFn,
                        timings: TimingClass,
-                       kbt: ArrayLike,
+                       state_kwargs: Dict[str, ArrayLike],
                        quantities: Dict[str, Dict],
                        reference_state: TrajectoryState,
                        targets: Dict[str, Any] = None,
@@ -280,7 +282,7 @@ class Difftre(tt.PropagationBase):
                        loss_kwargs: Mapping = None,
                        entropy_approximation: bool = False,
                        replica_kbt: ArrayLike = None,
-                       num_chains: int = None):
+                       resample_simstates: bool = False):
         """
         Adds a state point to the pool of simulations with respective targets.
 
@@ -318,7 +320,8 @@ class Difftre(tt.PropagationBase):
             neighbor_fn: Neighbor function
             timings: Instance of TimingClass containing information
                 about the trajectory length and which states to retain
-            kbt: Temperature in kbT
+            state_kwargs: Properties defining the thermodynamic state. Must
+                at least contain the temperature 'kT'.
             quantities: Dict containing for each observable specified by the
                 key a corresponding function to compute it for each snapshot
                 using traj_util.quantity_traj.
@@ -343,8 +346,8 @@ class Difftre(tt.PropagationBase):
                 training.
             loss_kwargs: Keyword arguments that are passed to the initializer
                 of the loss function.
-            num_chains: Sample from vectorized simulations instead from a single
-               long one.
+            resample_simstates: Resample the sim states from all trajectories
+                instead of simulating independent chains.
 
         """
         if loss_kwargs is None:
@@ -357,15 +360,14 @@ class Difftre(tt.PropagationBase):
             simulator_template,
             neighbor_fn,
             timings,
-            kbt,
+            state_kwargs,
             set_key,
             vmap_batch,
             initialize_traj,
-            ref_press,
             safe_propagation=False,
             entropy_approximation=entropy_approximation,
             replica_kbt=replica_kbt,
-            num_chains=num_chains
+            resample_simstates=resample_simstates
         )
 
         # build loss function for current state point
@@ -411,7 +413,9 @@ class Difftre(tt.PropagationBase):
             grad_fn = self.grad_fns[sim_key]
             (new_traj_state, loss_val, curr_grad,
              state_point_predictions) = grad_fn(
-                self.params, self.trajectory_states[sim_key])
+                self.params, self.trajectory_states[sim_key],
+                recompute=self._recompute
+            )
 
             self.trajectory_states[sim_key] = new_traj_state
             self.predictions[sim_key][self._epoch] = tree_util.tree_map(
@@ -438,6 +442,9 @@ class Difftre(tt.PropagationBase):
             proposal = self._optimizer_step(batch_grad)
             alpha, residual = self._adaptive_step_size(
                 self.params, batch_grad, proposal, self.trajectory_states)
+
+            # Recompute all traj states if step size scale is too small
+            self._recompute = alpha < self._adaptive_step_size_threshold
             print(f"[Step Size] Found optimal step size {alpha} with residual "
                   f"{residual}", flush=True)
         else:
@@ -456,7 +463,8 @@ class Difftre(tt.PropagationBase):
     def init_step_size_adaption(self,
                                 allowed_reduction: ArrayLike = 0.5,
                                 interior_points: int = 10,
-                                step_size_scale: float = 1e-7
+                                step_size_scale: float = 1e-5,
+                                recompute_threshold: float = 1e-4
                                 ) -> None:
         """Initializes a line search to tune the step size in each iteration.
 
@@ -489,12 +497,15 @@ class Difftre(tt.PropagationBase):
             interior_points: Number of interiour points
             step_size_scale: Accuracy of the found optimal interpolation
                 coefficient
+            recompute_threshold: Recompute the trajectory if found step size
+                scale is below the threshold
 
         Returns:
             Returns the interpolation coefficient :math:`\\alpha`.
 
         """
 
+        self._adaptive_step_size_threshold = recompute_threshold
         self._adaptive_step_size = difftre.init_step_size_adaption(
             self.weights_fn, allowed_reduction, interior_points, step_size_scale
         )
@@ -662,10 +673,10 @@ class RelativeEntropy(tt.PropagationBase):
         return get_ref_batch
 
     def add_statepoint(self, reference_data, energy_fn_template,
-                       simulator_template, neighbor_fn, timings, kbt,
+                       simulator_template, neighbor_fn, timings, state_kwargs,
                        reference_state, reference_batch_size=None,
                        batch_cache=1, initialize_traj=True, set_key=None,
-                       vmap_batch=10, num_chains=None):
+                       vmap_batch=10, resample_simstates=False):
         """
         Adds a state point to the pool of simulations.
 
@@ -684,7 +695,8 @@ class RelativeEntropy(tt.PropagationBase):
             neighbor_fn: Neighbor function
             timings: Instance of TimingClass containing information
                 about the trajectory length and which states to retain
-            kbt: Temperature in kbT
+            state_kwargs: Properties defining the thermodynamic state. Must
+                at least contain the temperature 'kT'.
             reference_state: Tuple of initial simulation state and neighbor list
             reference_batch_size: Batch size of dataloader for reference
                 trajectory. If None, will use the same number of snapshots as
@@ -707,9 +719,9 @@ class RelativeEntropy(tt.PropagationBase):
             print('No reference batch size provided. Using number of generated '
                   'CG snapshots by default.')
             states_per_traj = jnp.size(timings.t_production_start)
-            if reference_state[0].position.ndim > 2:
-                n_trajctories = reference_state[0].position.shape[0]
-                reference_batch_size = n_trajctories * states_per_traj
+            if reference_state.sim_state.position.ndim > 2:
+                n_trajectories = reference_state.sim_state.position.shape[0]
+                reference_batch_size = n_trajectories * states_per_traj
             else:
                 reference_batch_size = states_per_traj
 
@@ -718,11 +730,11 @@ class RelativeEntropy(tt.PropagationBase):
                                                      simulator_template,
                                                      neighbor_fn,
                                                      timings,
-                                                     kbt,
+                                                     state_kwargs,
                                                      set_key,
                                                      vmap_batch,
                                                      initialize_traj,
-                                                     num_chains=num_chains,
+                                                     resample_simstates=resample_simstates,
                                                      safe_propagation=False)
 
         reference_dataloader = self._set_dataset(key,
@@ -732,7 +744,7 @@ class RelativeEntropy(tt.PropagationBase):
 
         propagation_and_grad = difftre.init_rel_entropy_gradient_and_propagation(
             reference_dataloader, reweight_fns, energy_fn_template,
-            kbt, vmap_batch
+            state_kwargs['kT'], vmap_batch
         )
 
         self.grad_fns[key] = propagation_and_grad

@@ -32,7 +32,7 @@ from jax_md import util as jax_md_util
 from chemtrain import util
 from chemtrain.trajectory import traj_util
 from chemtrain.jax_md_mod import custom_quantity
-from chemtrain.quantity import constants
+from chemtrain.quantity import constants, observables
 
 from typing import Dict, Any, Union, Callable, Tuple
 try:
@@ -117,9 +117,9 @@ def reweight_trajectory(traj, **targets):
     # values. Hence, their contribution to reweighting cancels. This should
     # even be at no additional cost under jit as XLA should easily detect the
     # zero contribution. Same applies to combinations in the NPT ensemble.
-    target_kbt = targets.get('kT', traj.thermostat_kbt)
+    target_kbt = targets.get('kT', traj.dynamic_kwargs['kT'])
     target_beta = 1. / target_kbt
-    reference_betas = 1. / traj.thermostat_kbt
+    reference_betas = 1. / traj.dynamic_kwargs['kT']
 
     # temperature reweighting
     if 'energy' not in traj.aux:
@@ -132,10 +132,10 @@ def reweight_trajectory(traj, **targets):
         assert 'kbT' in targets or 'pressure' in targets, ('At least one target'
                                                            ' needs to be given '
                                                            'for reweighting.')
-        target_press = targets.get('pressure', traj.barostat_press)
+        target_press = targets.get('pressure', traj.dynamic_kwargs['pressure'])
         target_beta_p = target_beta * target_press
-        ref_beta_p = reference_betas * traj.barostat_press
-        volumes = traj_quantity.volumes(traj)
+        ref_beta_p = reference_betas * traj.dynamic_kwargs['pressure']
+        volumes = observables.volumes(traj)
 
         # For constant p, reduces to -V * P_ref * (beta_target - beta_ref)
         # For constant T, reduces to -V * beta_ref * (p_target - p_ref)
@@ -222,7 +222,7 @@ def init_reference_trajectory_reweight_fns(energy_fn_template: EnergyFnTemplate,
         # by the traj_util.quantity_traj function
 
         first_frame = util.tree_get_single(reference_trajectory)
-        nbr_state = util.neighbor_allocate(
+        nbrs_state = util.neighbor_allocate(
             neighbor_fn, first_frame, extra_capacity=extra_acpacity)
 
         n_samples = reference_quantities['energy'].size
@@ -234,7 +234,9 @@ def init_reference_trajectory_reweight_fns(energy_fn_template: EnergyFnTemplate,
             barostat = None
 
         initial_state = traj_util.TrajectoryState(
-            sim_state=(first_frame, nbr_state),
+            sim_state=traj_util.SimulatorState(
+                sim_state=first_frame, nbrs=nbrs_state
+            ),
             trajectory=reference_trajectory,
             overflow=False,
             thermostat_kbt=thermostat,
@@ -353,12 +355,13 @@ def init_reference_trajectory_reweight_fns(energy_fn_template: EnergyFnTemplate,
 
 
 def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
-                                      neighbor_fn, timings, ref_kbt,
-                                      ref_press=None, reweight_ratio=0.9,
+                                      neighbor_fn, timings, state_kwargs,
+                                      reweight_ratio=0.9,
                                       npt_ensemble=False, energy_batch_size=10,
                                       entropy_approximation=False,
                                       max_iter_bar=25, safe_propagation=True,
-                                      replica_kbt=None, num_chains=None,
+                                      replica_kbt=None,
+                                      resample_simstates: bool = False,
                                       ):
     """
     Initializes all functions necessary for trajectory reweighting for
@@ -375,7 +378,7 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
 
 
     bennett_free_energy = init_bar(
-        energy_fn_template, ref_kbt, energy_batch_size, max_iter_bar)
+        energy_fn_template, state_kwargs['kT'], energy_batch_size, max_iter_bar)
 
     if npt_ensemble:
         # pressure currently only used to print pressure of generated trajectory
@@ -385,9 +388,11 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
 
     trajectory_generator = traj_util.trajectory_generator_init(
         simulator_template, energy_fn_template, timings, reweighting_quantities,
+        vmap_batch=energy_batch_size, vmap_sim_batch=energy_batch_size
     )
+    trajectory_generator = jit(trajectory_generator)
 
-    beta = 1. / ref_kbt
+    beta = 1. / state_kwargs['kT']
     checkpoint_quantities(reweighting_quantities)
 
     # TODO: The following steps would be necessary to enable a
@@ -398,8 +403,8 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
     #       4. Run vectorized simulations
 
     def resample_new_simstate(params, traj_state):
-        sim_state, nbrs = traj_state.sim_state
         momentum = traj_state.trajectory.momentum
+        n_chains = traj_state.sim_state.sim_state.position.shape[0]
 
         # Position shape ends with [n_samples, n_particles, 3]
         weights, *_ = compute_weights(params, traj_state)
@@ -410,21 +415,26 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
         # distribution.
         key, split1, split2 = random.split(traj_state.key, 3)
         new_position_idx = random.choice(
-            split1, jnp.arange(num_samples), shape=(num_chains,),
+            split1, jnp.arange(num_samples), shape=(n_chains,),
             replace=True, p=weights
         )
 
         new_sim_state = tree_util.tree_map(
             lambda x: x[new_position_idx, ...], traj_state.trajectory
         )
+        new_nbrs = tree_util.tree_map(
+            lambda x: x[new_position_idx, ...], traj_state.sim_state.nbrs
+        )
 
         # Since velocities are independent of the potential, we can simply
         # draw from the already sampled velocity distribution
-        new_momentum = random.shuffle(split2, momentum)[:num_chains, ...]
+        new_momentum = random.shuffle(split2, momentum)[:n_chains, ...]
         new_sim_state = new_sim_state.set(momentum=new_momentum)
 
         new_traj_state = traj_state.replace(
-            sim_state=(new_sim_state, nbrs), key=key
+            sim_state=traj_util.SimulatorState(
+                sim_state=new_sim_state, nbrs=new_nbrs
+            ), key=key
         )
 
         return new_traj_state
@@ -491,13 +501,11 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
         # give kT here as additional input to be handed through to energy_fn
         # for kbt-dependent potentials
 
-        print(f"[Recompute] Traj state has key {traj_state.key}")
-
-        if num_chains is not None:
+        if resample_simstates:
             traj_state = resample_new_simstate(params, traj_state)
 
-        updated_traj = trajectory_generator(params, traj_state.sim_state,
-                                            kT=replica_kbt, pressure=ref_press)
+        updated_traj = trajectory_generator(
+            params, traj_state.sim_state, **state_kwargs)
         updated_traj = updated_traj.replace(key=traj_state.key)
 
         # Apply the BAR procedure to obtain the free energy difference between
@@ -538,7 +546,6 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
         def wrapped(params, traj_state, *args, **kwargs):
             recompute = kwargs.pop("recompute", False)
 
-            last_state, _ = traj_state.sim_state
             for reset_counter in range(max_retry):
                 # When only propagating then only the trajectory is returned
                 if multiple_arguments:
@@ -556,7 +563,8 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
                 if traj_state.overflow:
                     print(f"[Safe Propagate] Overflow detected, recompute "
                           f"trajectory with increased neighbor list size.")
-                    last_state, _ = traj_state.sim_state
+
+                    last_state = traj_state.sim_state.sim_state
                     if last_state.position.ndim > 2:
                         single_enlarged_nbrs = util.neighbor_allocate(
                             neighbor_fn, util.tree_get_single(last_state))
@@ -566,7 +574,10 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
                         enlarged_nbrs = util.neighbor_allocate(
                             neighbor_fn, last_state)
                     reset_traj_state = traj_state.replace(
-                        sim_state=(last_state, enlarged_nbrs))
+                        sim_state=traj_util.SimulatorState(
+                            sim_state=last_state, nbrs=enlarged_nbrs
+                        )
+                    )
                     traj_state = recompute_trajectory(
                         (params, reset_traj_state))
                     reset_counter += 1
@@ -576,9 +587,9 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
                     else:
                         return traj_state
 
-            if jnp.any(jnp.isnan(last_state.position)):
+            if jnp.any(jnp.isnan(traj_state.sim_state.sim_state.position)):
                 raise RuntimeError(
-                    'Last state is NaN. Currently there is no recovering from '
+                    'Last state is NaN. Currently, there is no recovering from '
                     'this. Restart from the last non-overflown state might '
                     'help, but comes at the cost that the reference state is '
                     'likely not representative.')
@@ -609,18 +620,19 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
         of each trajectory. If this is still not sufficient, the simulation
         should equilibrate over the course of subsequent updates.
         """
-        if reference_state[0].position.ndim == 2 and num_chains is not None:
 
-            reference_state = tree_util.tree_map(
-                lambda x: jnp.tile(x, [num_chains] + [1] * x.ndim), reference_state
+        if resample_simstates:
+            assert reference_state.sim_state.position.ndim > 2, (
+                f"Please initialize multiple chains to resample new initial "
+                f"chain states."
             )
 
-        dump_traj = trajectory_generator(params, reference_state,
-                                         kT=replica_kbt, pressure=ref_press)
+        dump_traj = trajectory_generator(
+            params, reference_state, **state_kwargs)
 
         t_start = time.time()
-        init_traj = trajectory_generator(params, dump_traj.sim_state,
-                                         kT=replica_kbt, pressure=ref_press)
+        init_traj = trajectory_generator(
+            params, dump_traj.sim_state, **state_kwargs)
         init_traj = init_traj.replace(key=key)
         runtime = (time.time() - t_start) / 60.  # in mins
 
@@ -634,8 +646,6 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
             energy_params=params,
             key=key
         )
-
-        print(f"Trajectory state has key {init_traj.key}")
 
         return init_traj, runtime
 

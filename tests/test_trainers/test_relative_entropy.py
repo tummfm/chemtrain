@@ -127,12 +127,12 @@ class TestRelativeEntropy:
         )
 
         subsampled_dataset = position_dataset[::100, ...]
-        print(f"Dataset has shape {subsampled_dataset.shape}")
+        state_kwargs = {"kT": kT}
 
         relative_entropy.add_statepoint(
             position_dataset, energy_fn_template,
             sim_template, neighbor_fn, timings,
-            kT, reference_state,
+            state_kwargs, reference_state,
         )
 
         relative_entropy.init_step_size_adaption(0.25)

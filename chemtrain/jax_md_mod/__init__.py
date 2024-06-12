@@ -65,7 +65,7 @@ class PartitionError:
       if not jnp.any(self.code):
         return ''
     except Exception as err:
-      return f'Error code not available ({err})'
+      return f'Error code not available ({self.code})'
 
     if jnp.any(self.code & jax_md.partition.PEC.NEIGHBOR_LIST_OVERFLOW):
       return 'Partition Error: Neighbor list buffer overflow.'

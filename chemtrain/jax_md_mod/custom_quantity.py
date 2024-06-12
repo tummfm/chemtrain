@@ -23,9 +23,11 @@ import numpy as onp
 
 from jax import grad, vmap, lax, jacrev, jacfwd, numpy as jnp, jit
 from jax.scipy.stats import norm
-from jax_md import space, util, dataclasses, quantity, simulate
+
+from jax_md import space, util, dataclasses, quantity, simulate, partition
 
 from chemtrain.potential import sparse_graph
+from chemtrain.jax_md_mod import custom_partition
 
 Array = util.Array
 
@@ -316,8 +318,6 @@ def init_bond_dihedral_distribution(displacement_fn,
     _, sigma, bonds, bin_centers, bin_boundaries = dataclasses.astuple(bond_dihedral_params)
     bin_size = jnp.diff(bin_boundaries)
 
-    print(f"Initialize distribution with smoothing {sigma}")
-
     def dihedral_fn(state, neighbor, **kwargs):
 
         dihedrals = dihedral_displacement(
@@ -357,7 +357,10 @@ def _ideal_gas_density(particle_density, bin_boundaries):
     return bin_weights
 
 
-def init_rdf(displacement_fn, rdf_params, reference_box=None):
+def init_rdf(displacement_fn,
+             rdf_params,
+             reference_box=None,
+             rdf_species=None):
     """Initializes a function that computes the radial distribution function
     (RDF) for a single state.
 
@@ -365,7 +368,10 @@ def init_rdf(displacement_fn, rdf_params, reference_box=None):
         displacement_fn: Displacement function
         rdf_params: RDFParams defining the hyperparameters of the RDF
         reference_box: Simulation box. Can be provided here for constant boxes
-                       or on-the-fly as kwarg 'box', e.g. for NPT ensemble
+            or on-the-fly as kwarg 'box', e.g. for NPT ensemble
+        rdf_species: Array of species pairs for which the RDF should be
+            computed. If not provided, compute the RDF for all particles
+            irrespectively of their species.
 
     Returns:
         A function taking a simulation state and returning the instantaneous RDF
@@ -374,7 +380,7 @@ def init_rdf(displacement_fn, rdf_params, reference_box=None):
     distance_metric = space.canonicalize_displacement_or_metric(displacement_fn)
     bin_size = jnp.diff(bin_boundaries)
 
-    def pair_corr_fun(position, box):
+    def pair_corr_fun(position, box, species):
         """Returns instantaneous pair correlation function while ensuring
         each particle pair contributes exactly 1.
         """
@@ -386,106 +392,161 @@ def init_rdf(displacement_fn, rdf_params, reference_box=None):
         dr = jnp.where(dr > util.f32(1.e-7), dr, util.f32(1.e7))
 
         #  Gaussian ensures that discrete integral over distribution is 1
-        exp = jnp.exp(util.f32(-0.5) * (dr[:, :, jnp.newaxis] - bin_centers)**2
-                      / sigma**2)
-        gaussian_distances = exp * bin_size / jnp.sqrt(2 * jnp.pi * sigma**2)
-        pair_corr_per_particle = util.high_precision_sum(gaussian_distances,
-                                                         axis=1)  # sum nbrs
-        mean_pair_corr = util.high_precision_sum(pair_corr_per_particle,
-                                                 axis=0) / n_particles
+        exponent = (dr[:, :, jnp.newaxis] - bin_centers) ** 2.0
+        exponent *= -0.5 / sigma ** 2
+        exp = jnp.exp(exponent)
+
+        gdist = exp * bin_size / jnp.sqrt(2 * jnp.pi * sigma ** 2)
+
+        if rdf_species is not None:
+            # Find the species of each particle
+            is_species_i = rdf_species[:, (0,)] == species[None, :]
+            is_species_j = rdf_species[:, (1,)] == species[None, :]
+
+            mask = jnp.logical_and(
+                is_species_i[:, None, :],
+                is_species_j[:, :, None]
+            )
+
+            masked_gdist = gdist[None, ...] * mask[:, ..., None]
+            # Axes of masked_gdisk are:
+            # [rdf_idx, particle_i, particle_j, bins]
+
+            # Sum over neighbors of corresponding species
+            mean_pair_corr = util.high_precision_sum(
+                masked_gdist, axis=(1, 2)
+            )
+
+            # TODO: Improve normalization for per-species RDF
+            mean_pair_corr /= jnp.sum(is_species_i, axis=1)[:, None]
+            mean_pair_corr *= n_particles / jnp.sum(is_species_j, axis=1, keepdims=True)
+        else:
+            mean_pair_corr = util.high_precision_sum(
+                gdist, axis=(0, 1))  # sum nbrs
+            mean_pair_corr /= n_particles
         return mean_pair_corr
 
-    def rdf_compute_fun(state, **kwargs):
+    def rdf_compute_fun(state, species=None, **kwargs):
         box, _ = _dyn_box(reference_box, **kwargs)
+
         # Note: we cannot use neighbor list since RDF cutoff and
         # neighbor list cut-off don't coincide in general
         n_particles, spatial_dim = state.position.shape
         total_vol = quantity.volume(spatial_dim, box)
-        particle_density = n_particles / total_vol
-        mean_pair_corr = pair_corr_fun(state.position, box)
+        mean_pair_corr = pair_corr_fun(state.position, box, species)
+
         # RDF is defined to relate the particle densities to an ideal gas.
-        rdf = mean_pair_corr / _ideal_gas_density(particle_density,
-                                                  bin_boundaries)
+        particle_density = n_particles / total_vol
+        normalization = _ideal_gas_density(particle_density, bin_boundaries)
+        rdf = mean_pair_corr / normalization
         return rdf
     return rdf_compute_fun
 
 
-def _triplet_pairwise_displacements(position, neighbor, displacement_fn):
-    """For each triplet of particles ijk, computes the displacement vectors
-    r_kj = R_k - R_j and r_ij, i.e. the vector pointing from the central
-    particle j to the side particles i and k. Returns a tuple (r_kj, r_ij)
-    that contains the dispacement vectors for all triplets.
-    r_kj.shape = (N_triplets, 3). This sparse format simplifies capping
-    non-existant triplets that only result from the overcapacity of a dense
-    neighborlist, realiszing a computational speed-up.
+def _triplet_pairwise_displacements(position,
+                                    neighbor: partition.NeighborList,
+                                    displacement_fn,
+                                    species = None,
+                                    max_triplets: int = None,
+                                    return_mask: bool = False):
+    """Computes the displacements r_ij and r_kj between triplets of particles.
+
+    For each triplet of particles :math:`(ijk)`, the function computes the
+    displacement vectors
+
+    .. math::
+
+        r_{kj} = R_k - R_j\\ \\text{and}\\ r_ij.
+
+    These vectors pointing from the central particle j to the side particles
+    i and k.
+
+    Returns:
+        Returns a tuple (r_kj, r_ij) that contains the displacement vectors for
+        all triplets. The displacement arrays have the shape
+        ``r_kj.shape = (N_triplets, 3)``.
+
     """
-    # TODO unification with sparse neighborlist format would simplify this.
-    neighbor_displacement_fn = space.map_neighbor(displacement_fn)
-    n_particles, max_neighbors = neighbor.idx.shape
-    r_neigh = position[neighbor.idx]
-    neighbor_displacement = neighbor_displacement_fn(position, r_neigh)
-    neighbor_displacement_flat = jnp.reshape(
-        neighbor_displacement, (n_particles * max_neighbors, 3))
-    r_kj = jnp.repeat(neighbor_displacement_flat, max_neighbors, axis=0)
-    r_ij = jnp.tile(neighbor_displacement, (1, max_neighbors, 1)).reshape(
-        [n_particles * max_neighbors**2, 3])
-    return r_kj, r_ij
+
+    # Compute the indices of the triplet edges
+    ij, kj, mask = custom_partition.get_triplet_indices(neighbor)
+
+    if max_triplets is not None:
+        ij = ij[:max_triplets, ...]
+        kj = kj[:max_triplets, ...]
+        mask = mask[:max_triplets]
+
+    # Compute the displacements
+    r_ij = vmap(displacement_fn)(position[ij[:, 0]], position[ij[:, 1]])
+    r_kj = vmap(displacement_fn)(position[kj[:, 0]], position[kj[:, 1]])
+
+    if return_mask:
+        return r_kj, r_ij, mask
+    else:
+        return r_kj, r_ij
 
 
-def _angle_neighbor_mask(neighbor):
-    """Returns a boolean (N_triplets,) array. Each entry corresponds to a
-    triplet stored in the sparse displacement vectors. For each triplet, masks
-    the cases of non-existing neighbors and both neighbors being the same
-    particle. The cases j=k and j=i is already excluded by the neighbor list
-    construction. For more details on the sparse triplet structure, see
-    _triplet_pairwise_displacements.
-    """
-    n_particles, max_neighbors = neighbor.idx.shape
-    edge_idx_flat = jnp.ravel(neighbor.idx)
-    idx_k = jnp.repeat(edge_idx_flat, max_neighbors)
-    idx_i = jnp.tile(neighbor.idx, (1, max_neighbors)).ravel()
-    neighbor_mask = neighbor.idx != n_particles
-    neighbor_mask_flat = jnp.ravel(neighbor_mask)
-    mask_k = jnp.repeat(neighbor_mask_flat, max_neighbors)
-    mask_i = jnp.tile(neighbor_mask, (1, max_neighbors)).ravel()
-    # Note: mask structure is known a priori: precompute likely more efficient
-    mask_i_eq_k = idx_i != idx_k
-    mask = mask_k * mask_i * mask_i_eq_k
-    mask = jnp.expand_dims(mask, axis=-1)
-    return mask
+def _triplet_species(neighbor,
+                     species,
+                     max_triplets = None,
+                     return_mask: bool = False):
+    """Compute the species of triplets."""
+    ij, kj, mask = custom_partition.get_triplet_indices(neighbor)
+    if max_triplets is not None:
+        ij = ij[:max_triplets]
+        kj = kj[:max_triplets]
+        mask = mask[:max_triplets]
+
+    si = species[ij[:, 0]]
+    sj = species[ij[:, 1]]
+    sk = species[kj[:, 0]]
+
+    if return_mask:
+        return si, sj, sk, mask
+    else:
+        return si, sj, sk
 
 
-def init_adf_nbrs(displacement_fn, adf_params, smoothing_dr=0.01, r_init=None,
-                  nbrs_init=None, max_weight_multiplier=2.):
-    """Initializes a function that computes the angular distribution function
-    (ADF) for a single state.
+def init_adf_nbrs(displacement_fn,
+                  adf_params: ADFParams,
+                  adf_species: Array = None,
+                  smoothing_dr: float = 0.01,
+                  r_init: Array = None,
+                  nbrs_init: partition.NeighborList = None,
+                  max_weight_multiplier: float = 2.):
+    """Initializes a function to computes the angular distribution function (ADF).
 
-    Angles are smoothed in radial direction via a Gaussian kernel (compare RDF
-    function). In radial direction, triplets are weighted according to a
+    Smoothens the histogram in radial direction via a Gaussian kernel
+    (compare RDF function).
+    In radial direction, triplets are weighted according to a
     Gaussian cumulative distribution function, such that triplets with both
     radii inside the cut-off band are weighted approximately 1 and the weights
-    of triplets towards the band edges are soomthly reduced to 0.
-    For computational speed-up and reduced memory needs, r_init and nbrs_init
-    can be provided to estmate the maximum number of triplets - similarly to
-    the maximum capacity of neighbors in the neighbor list.
+    of triplets towards the band edges are smoothly reduced to 0.
 
-    Caution: currrently the user does not receive information whether overflow
-    occured. This function assumes that r_outer is smaller than the neighbor
-    list cut-off. If this is not the case, a function computing all pairwise
-    distances is necessary.
+    For computational speed-up and reduced memory needs, ``r_init`` and
+    ``nbrs_init`` can be provided to estimate the maximum number of triplets.
+
+    Warning:
+        Currently, the user does not receive information whether overflow
+        occurred.
+
+    Note:
+        This function assumes that r_outer is smaller than the neighbor
+        list cut-off. If this is not the case, a function computing all pairwise
+        distances is necessary.
 
     Args:
         displacement_fn: Displacement function
-        adf_params: ADFParams defining the hyperparameters of the ADF
+        adf_params: Hyperparameters of the ADF
         smoothing_dr: Standard deviation of Gaussian smoothing in radial
-                      direction
-        r_init: Initial position to estimate maximum number of triplets
+            direction
+        r_init: Initial positions to estimate maximum number of triplets
         nbrs_init: Initial neighborlist to estimate maximum number of triplets
-        max_weight_multiplier: Multiplier for estimate of number of triplets
+        max_weight_multiplier: Multiplier to increase maximum number of triplets
 
     Returns:
-        A function that takes a simulation state with neighborlist and returns
-        the instantaneous adf.
+        Returns a function that takes a simulation state with neighborlist and
+        computes the instantaneous adf.
     """
 
     _, bin_centers, sigma_theta, r_outer, r_inner = dataclasses.astuple(
@@ -493,7 +554,7 @@ def init_adf_nbrs(displacement_fn, adf_params, smoothing_dr=0.01, r_init=None,
     sigma_theta = util.f32(sigma_theta)
     bin_centers = util.f32(bin_centers)
 
-    def cut_off_weights(r_kj, r_ij):
+    def cut_off_weights(r_kj, r_ij, mask):
         """Smoothly constraints triplets to a radial band such that both
         distances are between r_inner and r_outer. The Gaussian cdf is used for
         smoothing. The smoothing width can be controlled by the gaussian
@@ -508,8 +569,9 @@ def init_adf_nbrs(displacement_fn, adf_params, smoothing_dr=0.01, r_init=None,
                                 scale=smoothing_dr**2)
         outer_weight = 1 - norm.cdf(pair_dist[:, 1], loc=r_outer,
                                     scale=smoothing_dr**2)
-        weights = jnp.expand_dims(outer_weight * inner_weight, axis=-1)
-        return weights
+
+        weights = outer_weight * inner_weight
+        return weights * mask
 
     def weighted_adf(angles, weights):
         """Compute weighted ADF contribution of each triplet. For
@@ -518,62 +580,107 @@ def init_adf_nbrs(displacement_fn, adf_params, smoothing_dr=0.01, r_init=None,
         exp = jnp.exp(util.f32(-0.5) * (angles[:, jnp.newaxis] - bin_centers)**2
                       / sigma_theta**2)
         gaussians = exp / jnp.sqrt(2 * jnp.pi * sigma_theta**2)
-        gaussians *= weights
+        gaussians *= weights[:, jnp.newaxis]
+
         unnormed_adf = util.high_precision_sum(gaussians, axis=0)
         adf = unnormed_adf / jnp.trapz(unnormed_adf, bin_centers)
+
         return adf
 
-    # we use initial configuration to estimate the maximum number of non-zero
-    # weights for speedup and reduced memory cost
+    # We use initial configuration to estimate the maximum number of triplets
+    # inside the cutoff radii.
+    #
     if r_init is not None:
         if nbrs_init is None:
-            raise ValueError('If we estimate the maximum number of triplets, '
-                             'the initial neighbor list is a necessary input.')
-        mask = _angle_neighbor_mask(nbrs_init)
-        r_kj, r_ij = _triplet_pairwise_displacements(r_init, nbrs_init,
-                                                     displacement_fn)
-        weights = cut_off_weights(r_kj, r_ij)
-        weights *= mask  # combine radial cut-off with neighborlist mask
-        max_weights = int(
-            jnp.count_nonzero(weights > 1.e-6) * max_weight_multiplier)
+            raise ValueError(
+                'If we estimate the maximum number of triplets, the initial '
+                'neighbor list is a necessary input.'
+            )
 
-    def adf_fn(state, neighbor, **kwargs):
+        r_ij, r_kj, mask = _triplet_pairwise_displacements(
+            r_init, nbrs_init, displacement_fn, return_mask=True)
+
+        weights = cut_off_weights(r_kj, r_ij, mask)
+
+        max_weights = min([
+            int(jnp.sum(weights > 1.e-6) * max_weight_multiplier),
+            mask.size
+        ])
+        max_triplets = min([
+            int(jnp.sum(mask) * max_weight_multiplier),
+            mask.size
+        ])
+
+        print(f"[ADF] Estimates {max_triplets} max. triplets in neighbor list "
+              f"and {max_weights} max. triplets in cutoff-shell.")
+
+    else:
+        max_weights = None
+        max_triplets = None
+
+    def adf_fn(state, neighbor, species=None, **kwargs):
         """Returns ADF for a single snapshot. Allows changing the box
         on-the-fly via the 'box' kwarg.
         """
         dyn_displacement = partial(displacement_fn, **kwargs)  # box kwarg
-        mask = _angle_neighbor_mask(neighbor)
-        r_kj, r_ij = _triplet_pairwise_displacements(
-            state.position, neighbor, dyn_displacement)
-        weights = cut_off_weights(r_kj, r_ij)
-        weights *= mask  # combine radial cut-off with neighborlist mask
 
-        if r_init is not None:  # prune triplets
+        r_kj, r_ij, mask = _triplet_pairwise_displacements(
+            state.position, neighbor, dyn_displacement,
+            max_triplets=max_triplets, return_mask=True
+        )
+
+        weights = cut_off_weights(r_kj, r_ij, mask)
+
+        if species is not None:
+            # Compute a second mask depending on the species of the triplets
+            si, sj, sk = _triplet_species(neighbor, species, max_triplets)
+            selection = si[None, :] == adf_species[:, (0,)]
+            selection = jnp.logical_and(
+                selection, sj[None, :] == adf_species[:, (1,)])
+            selection = jnp.logical_and(
+                selection, sk[None, :] == adf_species[:, (2,)])
+        else:
+            selection = None
+
+        if max_triplets is not None:
+            # Prune triplets by returning the most important weights
             non_zero_weights = weights > 1.e-6
-            _, sorting_idxs = lax.top_k(non_zero_weights[:, 0], max_weights)
+            _, sorting_idxs = lax.top_k(weights, max_weights)
+
             weights = weights[sorting_idxs]
             r_ij = r_ij[sorting_idxs]
             r_kj = r_kj[sorting_idxs]
             mask = mask[sorting_idxs]
-            num_non_zero = jnp.sum(non_zero_weights)
-            del num_non_zero
-            # TODO check if num_non_zero > max_weights. if yes, send an error
-            #  message to the user to increase max_weights_multiplier
+
+            if selection is not None:
+                selection = selection[:, sorting_idxs]
+
+            # TODO check for overflow
+
+        if selection is not None:
+            weights = jnp.einsum('sn,n->sn', selection, weights)
+            _adf_fn = vmap(weighted_adf, in_axes=(None, 0))
+        else:
+            _adf_fn = weighted_adf
 
         # ensure differentiability of tanh
         r_ij_safe, r_kj_safe = sparse_graph.safe_angle_mask(r_ij, r_kj, mask)
         angles = vmap(sparse_graph.angle)(r_ij_safe, r_kj_safe)
-        adf = weighted_adf(angles, weights)
-        return adf
+
+        return _adf_fn(angles, weights)
     return adf_fn
 
 
-def init_tcf_nbrs(displacement_fn, tcf_params,  reference_box=None,
-                  nbrs_init=None, batch_size=1000, max_weight_multiplier=1.2):
-    """Initializes a function that computes the triplet correlation function
-    (TCF) for a single state.
+def init_tcf_nbrs(displacement_fn,
+                  tcf_params: TCFParams,
+                  reference_box: Array = None,
+                  nbrs_init: partition.NeighborList = None,
+                  batch_size: int = 1000,
+                  max_weight_multiplier: float = 1.2,
+                  tcf_species: Array = None):
+    """Initializes a function to compute the triplet correlation function (TCF).
 
-    This function assumes that the neighbor list curoff matches the tcf_cutoff.
+    This function assumes that the neighbor list cutoff matches the TCF cutoff.
 
     Args:
         displacement_fn: Displacement function
@@ -582,25 +689,33 @@ def init_tcf_nbrs(displacement_fn, tcf_params,  reference_box=None,
         max_weight_multiplier: Multiplier for estimate of number of triplets
         batch_size: Batch size for more efficient binning of triplets
         reference_box: Simulation box. Can be provided here for constant boxes
-                       or on-the-fly as kwarg 'box', e.g. for NPT ensemble
+            or on-the-fly as kwarg ``'box'``, e.g., for NPT ensemble
 
     Returns:
         A function that takes a simulation state with neighborlist and returns
         the instantaneous tcf.
     """
+    if tcf_species is not None:
+        raise NotImplementedError("Species-dependent TCF not yet implemented.")
+
     (_, sigma, volume, x_bin_centers, y_bin_centers,
      z_bin_centers) = dataclasses.astuple(tcf_params)
     nbins = x_bin_centers.shape[1]
 
-    # we use initial configuration to estimate the maximum number of non-zero
-    # weights for speedup and reduced memory cost
+    # We use the initial configuration to estimate the maximum number of
+    # non-zero weights to speed up the computation and improve the memory
+    # footprint
     if nbrs_init is None:
         raise NotImplementedError('nbrs_init currently needs to be provided.')
-    mask = _angle_neighbor_mask(nbrs_init)
+
+    r_ij, r_kj, mask = _triplet_pairwise_displacements(
+        nbrs_init.reference_position, nbrs_init, displacement_fn,
+        return_mask=True
+    )
 
     max_triplets = int(jnp.count_nonzero(mask > 1.e-6) * max_weight_multiplier)
 
-    # ensure triplets can be batched
+    # Increase the maximum number of triplets to enable simple batching
     rem = jnp.remainder(max_triplets, batch_size)
     max_triplets = max_triplets + (batch_size - rem)
 
@@ -619,10 +734,13 @@ def init_tcf_nbrs(displacement_fn, tcf_params,  reference_box=None,
         exp += batch_exp
         return exp, 0
 
-    def triplet_corr_fun(r_kj, r_ij, r_ki, triplet_mask):
+    def triplet_corr_fun(r_kj, r_ij, triplet_mask):
         """Returns instantaneous triplet correlation function while ensuring
         each particle pair contributes exactly 1.
         """
+        # Close the triplet triangle
+        r_ki = r_kj - r_ij
+
         dist_kj = space.distance(r_kj)
         dist_ij = space.distance(r_ij)
         dist_ki = space.distance(r_ki)
@@ -642,35 +760,23 @@ def init_tcf_nbrs(displacement_fn, tcf_params,  reference_box=None,
         on-the-fly via the 'box' kwarg.
         """
         dyn_displacement = partial(displacement_fn, **kwargs)  # box kwarg
-        triplet_mask = _angle_neighbor_mask(neighbor)
 
-        r_kj, r_ij = _triplet_pairwise_displacements(
-            state.position, neighbor, dyn_displacement)
+        r_kj, r_ij, triplet_mask = _triplet_pairwise_displacements(
+            state.position, neighbor, dyn_displacement,
+            max_triplets=max_triplets, return_mask=True)
 
         box, _ = _dyn_box(reference_box, **kwargs)
         n_particles, spatial_dim = state.position.shape
         total_vol = quantity.volume(spatial_dim, box)
         particle_density = n_particles / total_vol
 
-        # cap at max weights
-        non_zero_weights = triplet_mask > 1.e-6
-        _, sorting_idxs = lax.top_k(non_zero_weights[:, 0], max_triplets)
-        triplet_mask = triplet_mask[sorting_idxs]
-        r_ij = r_ij[sorting_idxs]
-        r_kj = r_kj[sorting_idxs]
-        num_non_zero = jnp.sum(non_zero_weights)
-        del num_non_zero
-
-        r_ki = r_kj - r_ij
-        tcf = triplet_corr_fun(r_kj, r_ij, r_ki, triplet_mask)
-        return tcf / n_particles / particle_density**2
+        tcf = triplet_corr_fun(r_kj, r_ij, triplet_mask)
+        return tcf / n_particles / particle_density ** 2
     return tcf_fn
 
 
 def _nearest_tetrahedral_nbrs(displacement_fn, position, nbrs):
-    """Returning displacement vectors r_ij of 4 nearest neighbors to a
-    central particle.
-    """
+    """Returns the displacement vectors r_ij of the 4 nearest neighbors."""
     neighbor_displacement = space.map_neighbor(displacement_fn)
     n_particles, _ = nbrs.idx.shape
     neighbor_mask = nbrs.idx != n_particles
@@ -680,22 +786,20 @@ def _nearest_tetrahedral_nbrs(displacement_fn, position, nbrs):
     distances = space.distance(displacements)
     jnp.where(neighbor_mask, distances, 1.e7)  # mask non-existing neighbors
     _, nearest_idxs = lax.top_k(-1 * distances, 4)  # 4 nearest neighbor indices
-    nearest_displ = jnp.take_along_axis(displacements,
-                                        jnp.expand_dims(nearest_idxs, -1),
-                                        axis=1)
+    nearest_displ = jnp.take_along_axis(
+        displacements, jnp.expand_dims(nearest_idxs, -1), axis=1)
     return nearest_displ
 
 
 def init_tetrahedral_order_parameter(displacement):
-    """Initializes a function that computes the tetrahedral order parameter q
-    for a single state.
+    """Initializes the computation of the tetrahedral order parameter q.
 
     Args:
-        displacement: Displacemnet function
+        displacement: Displacement function
 
     Returns:
         A function that takes a simulation state with neighborlist and returns
-         the instantaneous q value.
+        the instantaneous q value.
     """
     @partial(vmap, in_axes=(None, 0, 0))
     def _masked_inner(nn_disp, j, k):
@@ -747,7 +851,10 @@ def init_local_structure_index(displacement_fn,
 
 
     References:
-        .. [#dobouedijon2015] E. Duboué-Dijon und D. Laage, „Characterization of the Local Structure in Liquid Water by Various Order Parameters“, J. Phys. Chem. B, Bd. 119, Nr. 26, S. 8406–8418, Juli 2015, doi: 10.1021/acs.jpcb.5b02936.
+        .. [#dobouedijon2015] E. Duboué-Dijon und D. Laage,
+           „Characterization of the Local Structure in Liquid Water by Various
+           Order Parameters“, J. Phys. Chem. B, Bd. 119, Nr. 26, S. 8406–8418,
+           Juli 2015, doi: 10.1021/acs.jpcb.5b02936.
 
     """
 
@@ -839,8 +946,13 @@ def init_rmsd(reference_positions,
         weights: Weight the rmsd, e.g., with masses of the particles.
 
     References:
-        .. [#sargsyan2017] K. Sargsyan, C. Grauffel, und C. Lim, „How Molecular Size Impacts RMSD Applications in Molecular Dynamics Simulations“, J. Chem. Theory Comput., Bd. 13, Nr. 4, S. 1518–1524, Apr. 2017, doi: 10.1021/acs.jctc.7b00028.
-        .. [#hornung2017] O. Sorkine-Hornung und M. Rabinovich, „Least-Squares Rigid Motion Using SVD“. https://igl.ethz.ch/projects/ARAP/svd_rot.pdf
+        .. [#sargsyan2017] K. Sargsyan, C. Grauffel, und C. Lim,
+           „How Molecular Size Impacts RMSD Applications in Molecular Dynamics
+           Simulations“, J. Chem. Theory Comput., Bd. 13, Nr. 4, S. 1518–1524,
+           Apr. 2017, doi: 10.1021/acs.jctc.7b00028.
+        .. [#hornung2017] O. Sorkine-Hornung und M. Rabinovich,
+           „Least-Squares Rigid Motion Using SVD“.
+           https://igl.ethz.ch/projects/ARAP/svd_rot.pdf
 
     """
     if idx is None:

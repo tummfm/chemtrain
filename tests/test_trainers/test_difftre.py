@@ -102,15 +102,18 @@ class TestDifftre:
         targets, compute_fns = target_builder.build(system)
 
         # We now created a numerical representation of the system and can run the trainer.
+        state_kwargs = {"kT": 2.56}
+        reference_state = trajectory.traj_util.SimulatorState(
+            sim_state=simulator_init_state, nbrs=nbrs_init
+        )
 
-        # +
         trainer = trainers.Difftre(
             init_params, optimizer, reweight_ratio=0.99
         )
 
         trainer.add_statepoint(
-          energy_fn_template, simulator_template, neighbor_fn, timings, 2.56,
-          compute_fns, (simulator_init_state, nbrs_init), targets=targets)
+          energy_fn_template, simulator_template, neighbor_fn, timings, state_kwargs,
+          compute_fns, reference_state, targets=targets)
 
         return trainer, radial_distribution, r_eval
 

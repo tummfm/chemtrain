@@ -280,7 +280,7 @@ print(f"Dataset has shape {subsampled_dataset.shape}")
 relative_entropy.add_statepoint(
     position_dataset, energy_fn_template,
     sim_template, neighbor_fn, timings,
-    kT, reference_state,  
+    {'kT': kT}, reference_state,  
 )
 
 relative_entropy.init_step_size_adaption(0.1)
