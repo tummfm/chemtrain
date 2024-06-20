@@ -1,16 +1,12 @@
-``chemtrain.quantity.targets``
-==============================
+:modulename:`quantity.targets`
+========================================
 
-This module creates DiffTRe targets and builds the functions computing
-predictions based on a simulated trajectory.
+This module creates DiffTRe targets, initializing the required observables
+and the computations of necessary snapshot quantities.
 
 
 Intramolecular
 --------------
-
-Bonds
-_____
-
 
 .. autofunction:: chemtrain.quantity.structure.init_dihedral_distribution_target
 

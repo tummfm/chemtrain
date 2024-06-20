@@ -241,7 +241,7 @@ def init_tetrahedral_order_coefficient(target: ArrayLike = None,
                 }
 
         compute_fns = custom_quantity.init_tetrahedral_order_parameter(
-            displacement=init_args['displacement_fn'])
+            displacement_fn=init_args['displacement_fn'])
 
         return target_dict, compute_fns
     return initialize

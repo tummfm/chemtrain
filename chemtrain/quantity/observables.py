@@ -25,7 +25,15 @@ from chemtrain.quantity import constants
 from chemtrain.typing import TrajFn
 
 def init_identity_fn(quantity_key) -> TrajFn:
-    """Initializes a 'traj_fn' that returns the quantity unchanged."""
+    """Initialize a wrapper that returns the snapshots unchanged.
+
+    Args:
+        quantity_key: Key referencing the quantity in the computed snapshots.
+
+    Returns:
+        Returns the snapshots of the quantity.
+
+    """
 
     def identity(quantity_trajs, weights=None):
         return quantity_trajs[quantity_key]
@@ -34,29 +42,26 @@ def init_identity_fn(quantity_key) -> TrajFn:
 
 
 def init_traj_mean_fn(quantity_key) -> TrajFn:
-    """Initializes the 'traj_fn' for the DiffTRe 'target' dict for simple
-    trajectory-averaged observables.
+    """Initialize the computation of a (perturbed) ensemble average.
 
-    This function builds the 'traj_fn' of the DiffTRe 'target' dict for the
+    This function builds the ``'traj_fn'`` of the DiffTRe ``target`` dict for the
     common case of target observables that simply consist of a
     trajectory-average of instantaneous quantities, such as RDF, ADF, pressure
     or density.
 
-    This function also serves as a template on how to build the 'traj_fn' for
-    observables that are a general function of one or many instantaneous
-    quantities, such as stiffness via the stress-fluctuation method or
-    fluctuation formulas in this module. The 'traj_fn' receives a dict of all
-    quantity trajectories as input under the same keys as instantaneous
-    quantities are defined in 'quantities'. The 'traj_fn' then returns the
-    ensemble-averaged quantity, possibly taking advantage of fluctuation
-    formulas defined in the traj_quantity module.
+    .. math::
+
+       a = \\left\\langle w(\\mathbf r) a(\\mathbf r)\\right\\rangle_{\\tilde U},\\quad \\text{where} \\\\
+       w(\\mathbf r) = \\frac{e^{-\\beta (U(\\mathbf r) - \\tilde U(\\mathbf r))}}{\\left\\langle e^{-\\beta (U(\\mathbf r) - \\tilde U(\\mathbf r))}\\right\\rangle}
 
     Args:
-        quantity_key: Quantity key used in 'quantities' to generate the
-                      quantity trajectory at hand, to be averaged over.
+        quantity_key: Key referencing the quantity in the computed snapshots.
 
     Returns:
-        The 'traj_fn' to be used in building the 'targets' dict for DiffTRe.
+        Returns a function to compute an ensemble average when given a
+        dictionary of snapshots.
+        Returns a perturbed ensemble average if weights are provided.
+
     """
     def traj_mean(quantity_trajs, weights=None):
         quantity_traj = quantity_trajs[quantity_key]
@@ -69,6 +74,7 @@ def _weighted_mean(quantity_traj, weights):
         weights *= weights.size
         quantity_traj = (quantity_traj.T * weights).T
     return jnp.mean(quantity_traj, axis=0)
+
 
 def _linearized_mean(quantity_traj, weights):
     # Mask out zero weights
@@ -96,19 +102,24 @@ def _traj_mean(quantity_traj, weights=None, linearized=False, **kwargs):
 
 
 def init_linear_traj_mean_fn(quantity_key) -> TrajFn:
-    """Initializes an approximate observable average.
+    """Initializes the linear approximation of an observable average.
 
     This function approximates ensemble averages of instantaneous quantities
     for a perturbed ensemble based on a cumulant expansion [#imbalzano2021]_.
 
-    .. [#imbalzano2021] Giulio Imbalzano, Yongbin Zhuang, Venkat Kapil, Kevin Rossi, Edgar A. Engel, Federico Grasselli, Michele Ceriotti; Uncertainty estimation for molecular dynamics and sampling. J. Chem. Phys. 21 February 2021; 154 (7): 074102. https://doi.org/10.1063/5.0036522
+
+    .. [#imbalzano2021] Giulio Imbalzano, Yongbin Zhuang, Venkat Kapil,
+       Kevin Rossi, Edgar A. Engel, Federico Grasselli, Michele Ceriotti;
+       _Uncertainty estimation for molecular dynamics and sampling._
+       J. Chem. Phys. 21 February 2021; 154 (7): 074102.
+       https://doi.org/10.1063/5.0036522
 
     Args:
-        quantity_key: Quantity key used in 'quantities' to generate the
-                      quantity trajectory at hand, to be averaged over.
+        quantity_key: Key referencing the quantity in the computed snapshots.
 
     Returns:
-        The 'traj_fn' to be used in building the 'targets' dict for DiffTRe.
+        Returns a function to approximate a perturbed ensemble average when
+        given a dictionary of snapshots and weights.
 
     """
 
@@ -125,7 +136,7 @@ def init_relative_entropy_traj_fn(ref_kbt, reference_key = 'ref_energy') -> Traj
     The relative entropy is given as
 
     .. math::
-        S_\text{rel} = -\int p(x)\log\frac{p(x)}{q(x)}.
+        S_\text{rel} = -\int p(x)\log\frac{p(x)}{q(x)}dx.
 
     For two canonical distributions defined by the potentials U_p and U_q,
     this relative entropy computes as
@@ -184,16 +195,19 @@ def init_relative_entropy_traj_fn(ref_kbt, reference_key = 'ref_energy') -> Traj
     return relative_entropy_traj_fn
 
 
-def init_heat_capacity_nvt(kbt, dof, **kwargs):
+def init_heat_capacity_nvt(kT, dof, **kwargs):
     """Returns the specific heat capacity of a system in the NPT ensemble via
      the fluctuation formula.
 
     Args:
-        kbt: Reference temperature
+        kT: Reference temperature
         dof: Number of degrees of freedom in the system
         kwargs: Additional arguments determining the calculation of trajectory
             averages.
 
+    Returns:
+        Returns a function to compute the (perturbed) specific heat capacity
+        based on potential energy snapshots.
 
     References:
         `<https://journals-aps-org.eaccess.tum.edu/pre/pdf/10.1103/PhysRevE.99.012139>`
@@ -212,17 +226,21 @@ def init_heat_capacity_nvt(kbt, dof, **kwargs):
     return specific_heat_capacity_traj_fn
 
 
-def init_heat_capacity_npt(kbt, dof, ref_pressure, **kwargs):
+def init_heat_capacity_npt(kT, dof, pressure, **kwargs):
     """Initializes the isobaric heat capacity of a system in the NPT ensemble.
 
     The heat capacity of the system depends on the fluctuation of the
     conformational enthalpy [#stroeker2021]_.
 
     Args:
-        kbt: Thermostat temperature
+        kT: Thermostat temperature
         dof: Number of degrees of freedom in the system
         kwargs: Extra arguments to the function computing the ensemble
             averages
+
+    Returns:
+        Returns a function to compute the (perturbed) specific heat capacity
+        based on potential energy snapshots and volume snapshots.
 
     References:
         .. [#stroeker2021] P. Ströker, R. Hellmann, und K. Meier, „Systematic formulation of thermodynamic properties in the N p T ensemble“, Phys. Rev. E, Bd. 103, Nr. 2, S. 023305, Feb. 2021, doi: 10.1103/PhysRevE.103.023305.
@@ -242,6 +260,7 @@ def init_heat_capacity_npt(kbt, dof, ref_pressure, **kwargs):
         cp = (0.5 * dof + fluctuation / kbt ** 2) * constants.kb
         return cp
     return cp_fn
+
 
 # TODO: Update the remaining compute functions (see reference above for npt
 #       formulations)

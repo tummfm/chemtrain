@@ -1,5 +1,5 @@
-``chemtrain.quantity.observables``
-==================================
+:modulename:`quantity.observables`
+============================================
 
 .. currentmodule:: chemtrain.quantity.observables
 
@@ -14,24 +14,40 @@ Ensemble Averages
 Ensemble averages of instantaneous quantities, optionally via a reweighting
 approach.
 
-.. autofunction:: init_traj_mean_fn
+.. autosummary::
+   :toctree: _autosummary
+   :template: function.rst
 
-.. autofunction:: init_linear_traj_mean_fn
+   init_traj_mean_fn
+   init_linear_traj_mean_fn
+
 
 Fluctuation Quantities
 -----------------------
 
-Comming soon...
+.. autosummary::
+   :toctree: _autosummary
+   :template: function.rst
 
+   init_heat_capacity_nvt
+   init_heat_capacity_npt
 
 State-Space Quantities
 -----------------------
 
 Quantities which are no ensemble averages.
 
-.. autofunction:: init_relative_entropy_traj_fn
+.. autosummary::
+   :toctree: _autosummary
+   :template: function.rst
+
+   init_relative_entropy_traj_fn
 
 Utility
 --------
 
-.. autofunction:: init_identity_fn
+.. autosummary::
+   :toctree: _autosummary
+   :template: function.rst
+
+   init_identity_fn

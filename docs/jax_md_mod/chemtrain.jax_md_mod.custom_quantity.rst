@@ -1,5 +1,7 @@
-jax_md_mod.custom_quantity
-==========================
+:modulename:`custom_quantity`
+========================================
+
+.. automodule:: chemtrain.jax_md_mod.custom_quantity
 
 .. currentmodule:: chemtrain.jax_md_mod.custom_quantity
 
@@ -7,11 +9,16 @@ jax_md_mod.custom_quantity
 Common Quantities
 ------------------
 
-.. autofunction:: energy_wrapper
+.. autosummary::
+   :toctree: _autosummary
+   :template: function.rst
 
-.. autofunction:: kinetic_energy_wrapper
-
-.. autofunction:: total_energy_wrapper
+   energy_wrapper
+   kinetic_energy_wrapper
+   total_energy_wrapper
+   temperature
+   volume_npt
+   density
 
 
 Structural Quantities
@@ -20,24 +27,52 @@ Structural Quantities
 Intra-Molecular
 _______________
 
-.. autofunction:: init_bond_angle_distribution
+.. autosummary::
+   :toctree: _autosummary
+   :template: function.rst
 
-.. autofunction:: init_bond_dihedral_distribution
-
-.. autofunction:: init_rmsd
-
-.. autofunction:: init_local_structure_index
-
-.. autofunction:: init_tetrahedral_order_parameter
+   init_bond_angle_distribution
+   init_bond_dihedral_distribution
+   init_rmsd
+   init_local_structure_index
+   init_bond_length
+   estimate_bond_constants
+   angular_displacement
+   dihedral_displacement
 
 
 Inter-Molecular
 ________________
 
-.. autofunction:: init_rdf
+.. autosummary::
+   :toctree: _autosummary
+   :template: function.rst
 
-.. autofunction:: init_adf_nbrs
+   init_rdf
+   init_adf_nbrs
+   init_tcf_nbrs
+   init_tetrahedral_order_parameter
+   init_velocity_autocorrelation
+   self_diffusion_green_kubo
+   kinetic_energy_tensor
+   virial_potential_part
+   init_virial_stress_tensor
+   init_pressure
+   energy_under_strain
+   init_sigma_born
+   init_stiffness_tensor_stress_fluctuation
+   stiffness_tensor_components_cubic_crystal
 
-.. autofunction:: init_tcf_nbrs
 
+States
+------
 
+.. autosummary::
+   :toctree: _autosummary
+   :template: function.rst
+
+   RDFParams
+   ADFParams
+   TCFParams
+   BondAngleParams
+   BondDihedralParams

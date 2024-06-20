@@ -122,10 +122,10 @@ class RDFParams:
     """Hyperparameters to initialize the radial distribution function (RDF).
 
     Attributes:
-    reference_rdf: The target rdf; initialize with None if no target available
-    rdf_bin_centers: The radial positions of the centers of the rdf bins
-    rdf_bin_boundaries: The radial positions of the edges of the rdf bins
-    sigma_RDF: Standard deviation of smoothing Gaussian
+        reference_rdf: The target rdf; initialize with None if no target available
+        rdf_bin_centers: The radial positions of the centers of the rdf bins
+        rdf_bin_boundaries: The radial positions of the edges of the rdf bins
+        sigma_RDF: Standard deviation of smoothing Gaussian
     """
     reference: Array
     rdf_bin_centers: Array
@@ -160,11 +160,11 @@ class ADFParams:
     """Hyperparameters to initialize a angular distribution function (ADF).
 
     Attributes:
-    reference_adf: The target adf; initialize with None if no target available
-    adf_bin_centers: The positions of the centers of the adf bins over theta
-    sigma_ADF: Standard deviation of smoothing Gaussian
-    r_outer: Outer radius beyond which particle triplets are not considered
-    r_inner: Inner radius below which particle triplets are not considered
+        reference_adf: The target adf; initialize with None if no target available
+        adf_bin_centers: The positions of the centers of the adf bins over theta
+        sigma_ADF: Standard deviation of smoothing Gaussian
+        r_outer: Outer radius beyond which particle triplets are not considered
+        r_inner: Inner radius below which particle triplets are not considered
     """
     reference: Array
     adf_bin_centers: Array
@@ -200,22 +200,25 @@ def dihedral_discretization(nbins=150):
 
 @dataclasses.dataclass
 class TCFParams:
-    """Hyperparameters to initialize a triplet correlation function (TFC)
-    for a triplet with sides x, y, z. Implementation according to
+    """Hyperparameters to initialize a triplet correlation function (TFC).
+
+    The triplet is defined via the sides x, y, z. Implementation according to
     https://aip.scitation.org/doi/10.1063/1.4898755 and
     https://aip.scitation.org/doi/10.1063/5.0048450.
 
     Attributes:
-    reference_tcf: The target tcf; initialize with None if no target available
-    sigma_TCF: Standard deviation of smoothing Gaussian
-    volume_TCF: Histogram volume element according to
-        https://journals.aps.org/pra/abstract/10.1103/PhysRevA.42.849
-    tcf_x_bin_centers: The radial positions of the centers of the tcf bins in
-                       x direction
-    tcf_x_bin_centers: The radial positions of the centers of the tcf bins in
-                       y direction
-    tcf_x_bin_centers: The radial positions of the centers of the tcf bins in
-                       z direction
+        reference_tcf: The target tcf; initialize with None if no target
+            available
+        sigma_TCF: Standard deviation of smoothing Gaussian
+        volume_TCF: Histogram volume element according to
+            https://journals.aps.org/pra/abstract/10.1103/PhysRevA.42.849
+        tcf_x_bin_centers: The radial positions of the centers of the tcf bins in
+            x direction
+        tcf_y_bin_centers: The radial positions of the centers of the tcf bins in
+            y direction
+        tcf_z_bin_centers: The radial positions of the centers of the tcf bins in
+            z direction
+
     """
     reference: Array
     sigma_tcf: Array
@@ -266,6 +269,19 @@ class BondAngleParams:
 
 
 def init_bond_angle_distribution(displacement_fn, bond_angle_params: BondAngleParams, reference_box=None):
+    """Initializes a function computing a dihedral distribution.
+
+        Args:
+            displacement_fn: Displacement to compute dihedral angles
+            bond_angle_params: Struct describing the dihedral angles and expected
+                format of the computed distribution
+            reference_box: Unused
+
+        Returns:
+            Returns a function that computes a distribution of dihedral angles
+            given a simulation state.
+
+        """
 
     _, sigma, bonds, bin_centers, bin_boundaries = dataclasses.astuple(bond_angle_params)
     bin_size = jnp.diff(bin_boundaries)
@@ -791,11 +807,12 @@ def _nearest_tetrahedral_nbrs(displacement_fn, position, nbrs):
     return nearest_displ
 
 
-def init_tetrahedral_order_parameter(displacement):
-    """Initializes the computation of the tetrahedral order parameter q.
+def init_tetrahedral_order_parameter(displacement_fn):
+    """Initializes a function that computes the tetrahedral order parameter q
+    for a single state.
 
     Args:
-        displacement: Displacement function
+        displacement_fn: Displacement function
 
     Returns:
         A function that takes a simulation state with neighborlist and returns
@@ -815,7 +832,7 @@ def init_tetrahedral_order_parameter(displacement):
 
 
     def q_fn(state, neighbor, **kwargs):
-        dyn_displacement = partial(displacement, **kwargs)
+        dyn_displacement = partial(displacement_fn, **kwargs)
         nearest_dispacements = _nearest_tetrahedral_nbrs(
             dyn_displacement, state.position, neighbor)
 
@@ -1054,13 +1071,15 @@ def self_diffusion_green_kubo(traj_state, time_step, t_cut):
     """Green-Kubo formulation to compute self-diffusion D via the velocity
     autocorrelation function (VACF).
 
-    D = \frac{1}{dim} Int_0^{t_cut} VACF(\tau) d\tau
+    .. math::
+
+       D = \\frac{1}{dim} Int_0^{t_cut} VACF(\\tau) d\\tau
 
     Args:
         traj_state: TrajectoryState containing a finely resolved trajectory.
         time_step: Time lag between 2 adjacent states in the trajetcory. The
-                   simulation time step, in the usual case where every state is
-                   retained.
+            simulation time step, in the usual case where every state is
+            retained.
         t_cut: Cut-off time: Biggest time-difference to consider in the VACF.
 
     Returns:
@@ -1248,7 +1267,7 @@ def virial_potential_part(energy_fn, state, nbrs, box_tensor, **kwargs):
     return force_contribution + box_contribution
 
 
-def init_virial_stress_tensor(energy_fn_template, ref_box_tensor=None,
+def init_virial_stress_tensor(energy_fn_template, reference_box=None,
                               include_kinetic=True, pressure_tensor=False):
     """Initializes a function that computes the virial stress tensor for a
     single state.
@@ -1265,14 +1284,13 @@ def init_virial_stress_tensor(energy_fn_template, ref_box_tensor=None,
 
     Args:
         energy_fn_template: A function that takes energy parameters as input
-                            and returns an energy function
-        ref_box_tensor: The transformation T of general periodic boundary
-                        conditions. If None, box_tensor needs to be provided as
-                        'box' during function call, e.g. for the NPT ensemble.
+            and returns an energy function
+        reference_box: The transformation T of general periodic boundary
+            conditions. If None, box_tensor needs to be provided as ``'box'``
+            during function call, e.g. for the NPT ensemble.
         include_kinetic: Whether kinetic part of stress tensor should be added.
         pressure_tensor: If False (default), returns the stress tensor. If True,
-                         returns the pressure tensor, i.e. the negative stress
-                         tensor.
+             returns the pressure tensor, i.e. the negative stress tensor.
 
     Returns:
         A function that takes a simulation state with neighbor list,
@@ -1289,10 +1307,10 @@ def init_virial_stress_tensor(energy_fn_template, ref_box_tensor=None,
         # Note: this workaround with the energy_template was needed to keep
         #       the function jitable when changing energy_params on-the-fly
         # TODO function to transform box to box-tensor
-        box, kwargs = _dyn_box(ref_box_tensor, **kwargs)
+        box, kwargs = _dyn_box(reference_box, **kwargs)
         energy_fn = energy_fn_template(energy_params)
-        virial_tensor = virial_potential_part(energy_fn, state, neighbor, box,
-                                              **kwargs)
+        virial_tensor = virial_potential_part(
+            energy_fn, state, neighbor, box, **kwargs)
         spatial_dim = state.position.shape[-1]
         volume = quantity.volume(spatial_dim, box)
         if include_kinetic:
@@ -1304,8 +1322,7 @@ def init_virial_stress_tensor(energy_fn_template, ref_box_tensor=None,
     return virial_stress_tensor_neighborlist
 
 
-def init_pressure(energy_fn_template, ref_box_tensor=None,
-                  include_kinetic=True):
+def init_pressure(energy_fn_template, reference_box=None, include_kinetic=True):
     """Initializes a function that computes the pressure for a single state.
 
     This function is applicable to arbitrary many-body interactions, even
@@ -1327,7 +1344,7 @@ def init_pressure(energy_fn_template, ref_box_tensor=None,
     """
     # pressure is negative hydrostatic stress
     stress_tensor_fn = init_virial_stress_tensor(
-        energy_fn_template, ref_box_tensor, include_kinetic=include_kinetic,
+        energy_fn_template, reference_box, include_kinetic=include_kinetic,
         pressure_tensor=True
     )
 
@@ -1351,7 +1368,7 @@ def energy_under_strain(epsilon, energy_fn, box_tensor, state, neighbor,
     return energy
 
 
-def init_sigma_born(energy_fn_template, ref_box_tensor=None):
+def init_sigma_born(energy_fn_template, reference_box=None):
     """Initialiizes a function that computes the Born contribution to the
     stress tensor.
 
@@ -1375,7 +1392,7 @@ def init_sigma_born(energy_fn_template, ref_box_tensor=None):
         Born contribution to the stress tensor.
     """
     def sigma_born(state, neighbor, energy_params, **kwargs):
-        box, kwargs = _dyn_box(ref_box_tensor, **kwargs)
+        box, kwargs = _dyn_box(reference_box, **kwargs)
         spatial_dim = box.shape[-1]
         volume = quantity.volume(spatial_dim, box)
         epsilon0 = jnp.zeros((spatial_dim, spatial_dim))
@@ -1394,12 +1411,12 @@ def init_stiffness_tensor_stress_fluctuation(energy_fn_template, box_tensor,
 
     The provided functions compute all necessary instantaneous properties
     necessary to compute the elastic stiffness tensor via the stress fluctuation
-     method. However, for compatibility with DiffTRe, (weighted) ensemble
-     averages need to be computed manually and given to the stiffness_tensor_fn
-     for final computation of the stiffness tensor. For an example usage see
-     the diamond notebook. The implementation follows the formulation derived by
-     Van Workum et al., "Isothermal stress and elasticity tensors for ions and
-     point dipoles using Ewald summations", PHYSICAL REVIEW E 71, 061102 (2005).
+    method. However, for compatibility with DiffTRe, (weighted) ensemble
+    averages need to be computed manually and given to the stiffness_tensor_fn
+    for final computation of the stiffness tensor. For an example usage see
+    the diamond notebook. The implementation follows the formulation derived by
+    Van Workum et al., "Isothermal stress and elasticity tensors for ions and
+    point dipoles using Ewald summations", PHYSICAL REVIEW E 71, 061102 (2005).
 
      # TODO provide sample usage
 

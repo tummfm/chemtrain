@@ -1,3 +1,49 @@
+# Copyright 2023 Multiscale Modeling of Fluid Materials, TU Munich
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""This module provides a simple classical force-field with pairwise non-bonded
+interactions and bonded, angular, and dihedral interactions.
+
+Creating a force field consists of three simple steps. First, the force field
+parameters are read from a TOML file:
+
+.. code:: python
+
+   force_field = prior.ForceField.load_ff(ff_path)
+
+Then, the force field is combined with a topology. This topoly can be infered
+from a graph, e.g., provided by the package `mdtraj`:
+
+.. code:: python
+
+   top = mdtraj.load_topology(top_path)
+   topology = prior.Topology.from_mdtraj(top, mapping=force_field.mapping(by_name=True))
+
+Finally, topology and force field parameters are combined to create a potential:
+
+.. code:: python
+
+   prior_energy_fn_template = prior.init_prior_potential(
+       displacement_fn, nonbonded_type="lennard_jones"
+   )
+   energy_fn = energy_fn_template(force_field, topology)
+
+For a more detailed example, see the :doc:`/algorithms/prior_simulation`
+example.
+
+"""
+
 import functools
 import importlib
 import re
@@ -15,7 +61,6 @@ from jax_md import energy
 from chemtrain.potential import sparse_graph
 from chemtrain.jax_md_mod import custom_energy
 
-
 @tree_util.register_pytree_node_class
 class ForceField:
     """Parameter set for classical molecular dynamics potentials.
@@ -23,6 +68,9 @@ class ForceField:
     This class simplifies access to classical molecular dynamics potential
     parameters. This class is registered as a pytree with parameters as leaves,
     thus enable computing gradients with respect to the force field parameters.
+
+    To construct a force field from a TOML file, see :func:`ForceField.load_ff`.
+
     """
 
     def __init__(self, data=None, lookup=None, mapping=None):
@@ -284,7 +332,7 @@ class ForceField:
         For example, by selecting only the bond parameters of the bonded
         interactions:
 
-        .. code ::
+        .. code :: python
 
            >>> selection = (
            ...     ("bonded", ("bonds",)),
@@ -359,8 +407,8 @@ class ForceField:
         """Returns a function that maps atom data into a species number.
 
         Args:
-            by_name: If true, then the atom name (e. g. `"CA"`) is used as an
-                identifier. Otherwise, the element symbol (e. g. `"C"`) is
+            by_name: If true, then the atom name (e. g. ``"CA"``) is used as an
+                identifier. Otherwise, the element symbol (e. g. ``"C"``) is
                 used to look up the species number.
             renaming_pattern: Translate the atom names between different naming
                 conventions, e.g. from PDB to AMBER.
@@ -444,6 +492,9 @@ class Topology:
 
     This pytree stores the topological information of a system and provides
     utilities, to create this information e.g. from an `mdtraj` topology.
+
+    For a simple way to load a topology from a molecular graph, see
+    :func:`Topology.from_mdtraj`.
 
     Args:
         num_particles: The number of particles in the system
@@ -615,7 +666,7 @@ class Topology:
 
     @classmethod
     def from_mdtraj(cls, topology, mapping=None):
-        """Creates a topology instance from a `mdtraj` topology instance.
+        """Creates a topology instance from a ``mdtraj`` topology instance.
 
         This function uses mdtraj to create a graph-representation of the
         system. It then discovers bonds, angles and dihedral angles by searching
@@ -627,7 +678,7 @@ class Topology:
                 species number.
 
         Returns:
-            Returns a JAX topology based on the `mdtraj` topology.
+            Returns a JAX topology based on the ``mdtraj`` topology.
 
         """
 

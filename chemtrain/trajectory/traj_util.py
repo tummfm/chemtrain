@@ -384,9 +384,33 @@ def canonicalize_state_kwargs(state_kwargs: Dict[str, Union[Callable, Array]],
     return canonical_kwargs, statepoint_vals
 
 
+class GenerateFn(Protocol):
+    """Function generating a new trajectory state."""
+
+    @staticmethod
+    def __call__(params: Any, sim_state: Any, **kwargs) -> TrajectoryState:
+        """Computes a new trajectory state.
+
+        The function continues the trajectories from the last simulator state,
+        with a potential model defined by the energy params.
+
+        Args:
+            params: Energy params to initialize the energy function.
+            sim_state: Initial simulation states. Multiple states can be
+                provided, with pytree leaves concatenated along the first axes,
+                to run multiple trajectories in parallel.
+            **kwargs: Properties defining the (time-dependent) statepoint.
+                E.g., the temperature (`kT`) or pressure (`pressure`) for
+                NVT and NPT ensembles.
+
+        Returns:
+            Returns a new TrajectoryState.
+        """
+
+
 def trajectory_generator_init(simulator_template, energy_fn_template,
                               ref_timings=None, quantities=None, vmap_batch=10,
-                              vmap_sim_batch=10):
+                              vmap_sim_batch=10) -> GenerateFn:
     """Initializes a function to computes a trajectory.
 
     Args:
@@ -402,12 +426,12 @@ def trajectory_generator_init(simulator_template, energy_fn_template,
 
     The trajectory generation consists of the following steps:
 
-        1. Evaluation of the dynamic kwargs at the specified simulation times.
-           If the kwargs are constant, they are converted to constant functions.
-        2. Running multiple short simulations, saving only the sim-states at
-           the specified printout times.
-        3. Computing auxilliary quantities for each of the saved simulation
-           states.
+    1. Evaluation of the dynamic kwargs at the specified simulation times.
+       If the kwargs are constant, they are converted to constant functions.
+    2. Running multiple short simulations, saving only the sim-states at
+       the specified printout times.
+    3. Computing auxilliary quantities for each of the saved simulation
+       states.
 
     Returns:
         A function taking energy params and the current traj_state (including

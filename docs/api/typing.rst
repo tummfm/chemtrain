@@ -1,5 +1,5 @@
-``chemtrain.typing``
-=====================
+:modulename:`typing`
+==============================
 
 .. automodule:: chemtrain.typing
 

@@ -14,9 +14,8 @@
 
 """Functions for direct learning of per-snapshot quantities.
 
-Directly learnable quantities are, for example, energy, forces or virial
+Directly learnable quantities are, for example, energy, forces, or virial
 pressure.
-
 
 """
 from typing import NamedTuple, Callable, TypedDict, Tuple, List
@@ -79,7 +78,7 @@ def build_dataset(position_data: ArrayLike,
     are targets.
     Additionally, this function canonicalizes the keys of the reference data.
 
-    Example usage:
+    Example:
 
         For force matching, the reference data constist of particle positions
         and target forces.
@@ -192,7 +191,8 @@ def init_model(nbrs_init: NeighborList,
 
     Returns:
         A function(params, single_observation) returning a dict of predictions
-        containing energy ('U'), forces('F') and if applicable virial ('p').
+        containing energy (``'U'``), forces(``'F'``) and, if applicable,
+        virial (``'p'``).
         The single_observation is assumed to be a dict contain particle
         positions under 'R'.
     """

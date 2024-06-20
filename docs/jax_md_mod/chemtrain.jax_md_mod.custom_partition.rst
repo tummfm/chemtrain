@@ -1,11 +1,11 @@
-jax_md_mod.custom_space
-=======================
+:modulename:`custom_partition`
+==============================
 
-.. automodule:: chemtrain.jax_md_mod.custom_space
+.. automodule:: chemtrain.jax_md_mod.custom_partition
 
-.. autofunction:: init_fractional_coordinates
+.. currentmodule:: chemtrain.jax_md_mod.custom_partition
 
-.. autofunction:: exclude_grom_neighbor_list
+.. autofunction:: exclude_from_neighbor_list
 
 .. autofunction:: get_triplet_indices
 

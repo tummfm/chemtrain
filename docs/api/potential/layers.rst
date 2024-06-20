@@ -1,5 +1,5 @@
-``chemtrain.potential.layers``
-==============================
+:modulename:`potential.layers`
+========================================
 
 .. currentmodule:: chemtrain.potential.layers
 
@@ -9,11 +9,12 @@
 Initializers
 ________________
 
-.. autoclass:: OrthogonalVarianceScalingInit
-   :members:
+.. autosummary::
+   :toctree: _autosummary
+   :template: class.rst
 
-   .. automethod:: __init__
-.. autoclass:: RBFFrequencyInitializer
+   OrthogonalVarianceScalingInit
+   RBFFrequencyInitializer
 
 DimeNet++ Layers
 __________________
@@ -21,59 +22,34 @@ __________________
 Basis Layers
 .....................
 
-.. autoclass:: SmoothingEnvelope
-   :members:
+.. autosummary::
+   :toctree: _autosummary
+   :template: haiku.rst
 
-   .. automethod:: __init__
-   .. automethod:: __call__
-
-.. autoclass:: RadialBesselLayer
-   :members:
-
-   .. automethod:: __init__
-   .. automethod:: __call__
-
-.. autoclass:: SphericalBesselLayer
-   :members:
-
-   .. automethod:: __init__
-   .. automethod:: __call__
+   SmoothingEnvelope
+   RadialBesselLayer
+   SphericalBesselLayer
 
 .. _dimenet_building_blocks:
 
 DimeNet++ Building Blocks
 ............................
 
-.. autoclass:: ResidualLayer
-   :members:
+.. autosummary::
+   :toctree: _autosummary
+   :template: haiku.rst
 
-   .. automethod:: __init__
-   .. automethod:: __call__
-
-.. autoclass:: EmbeddingBlock
-   :members:
-
-   .. automethod:: __init__
-   .. automethod:: __call__
-
-.. autoclass:: OutputBlock
-   :members:
-
-   .. automethod:: __init__
-   .. automethod:: __call__
-
-.. autoclass:: InteractionBlock
-   :members:
-
-   .. automethod:: __init__
-   .. automethod:: __call__
-
+   ResidualLayer
+   EmbeddingBlock
+   OutputBlock
+   InteractionBlock
 
 Utility Functions
 __________________
 
 .. autosummary::
    :toctree: _autosummary
+   :template: function.rst
 
     high_precision_segment_sum
 

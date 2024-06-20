@@ -13,15 +13,19 @@
 import os
 import sys
 sys.path.insert(0, os.path.abspath('..'))
+sys.path.append(os.path.abspath('./_extensions'))
 
+from datetime import datetime
+from chemtrain.version import __version__ as chemtrain_version
 
 # -- Project information -----------------------------------------------------
 
 project = 'Chemtrain'
-author = 'Stephan Thaler'
+copyright = (f'{datetime.now().year}, Multiscale Modeling of Fluid Materials, '
+             f'TU Munich')
+author = 'Multiscale Modeling of Fluid Materials'
 
-version = ''
-release = '0.1.0'
+release = chemtrain_version
 
 
 # -- General configuration ---------------------------------------------------
@@ -40,15 +44,26 @@ extensions = [
     'sphinx.ext.viewcode',
     'sphinx_autodoc_typehints',
     'sphinx_remove_toctrees',
-    'myst_nb'
+    'myst_nb',
 ]
 
+napoleon_numpy_docstring = False
+
+napoleon_attr_annotations = True
+
+napoleon_use_ivar= True
+
 autosummary_generate = True
+
+# Do not write chemtrain before every subpackage/function/etc.
+add_module_names = False
 
 # Remove unnecessarily deep tocs for trainers
 
 remove_from_toctrees = [
-    "algorithms/_autosummary/_autosummary/*",
+    "api/_autosummary/_autosummary/*",
+    "api/**/_autosummary/*",
+    "jax_md_mod/**/_autosummary/*"
 ]
 
 templates_path = ["_templates"]
@@ -56,6 +71,7 @@ templates_path = ["_templates"]
 autodoc_mock_imports = [
     'e3nn_jax'
 ]
+
 
 source_suffix = ['.rst', '.ipynb']
 
@@ -74,9 +90,8 @@ intersphinx_mapping = {
 }
 
 # Jupyter options
-jupyter_execute_notebooks = "auto"
-execution_timeout = -1
-
+nb_execution_mode = "auto"
+nb_execution_timeout = -1
 nb_execution_excludepatterns = [
   # Require long computations
   'examples/*',
@@ -100,9 +115,24 @@ mathjax3_config = {
 # The theme to use for HTML and HTML Help pages.  See the documentation for
 # a list of builtin themes.
 #
-html_theme = 'sphinx_rtd_theme'
+html_theme = 'sphinx_book_theme'
+
+html_theme_options = {
+    "repository_url": "https://github.com/tummfm/chemtrain-dev",
+    "use_repository_button": True,
+    "home_page_in_toc": True
+}
+
+html_title = "chemtrain"
 
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
-# html_static_path = ['_static']
+html_static_path = ["_static"]
+html_css_files = ["custom.css"]
+html_js_files = ["custom.js"]
+
+# Add global definitions of custom roles
+
+with open("_templates/global.rst", "r") as f:
+    rst_prolog = f.read()

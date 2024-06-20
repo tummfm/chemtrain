@@ -1,5 +1,5 @@
-``chemtrain.learn.max_likelihood``
-==================================
+:modulename:`learn.max_likelihood`
+============================================
 
 .. currentmodule:: chemtrain.learn.max_likelihood
 
@@ -8,6 +8,8 @@
 Loss Functions
 ---------------
 
+These functions are masked implementations of common loss functions.
+
 .. autofunction:: mse_loss
 
 .. autofunction:: mae_loss
@@ -15,6 +17,11 @@ Loss Functions
 
 Dataset Predictions
 --------------------
+
+Algorithms such as force matching requires evaluation of the loss function on
+many samples instead of a single snapshot. Therefore, **chemtrain** provides
+functions to efficiently parallelize these evaluations, using vectorization
+and parallelization.
 
 .. autofunction:: pmap_update_fn
 

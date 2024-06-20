@@ -1,5 +1,5 @@
-Machine-Learning Molecular Dynamics Potentials in JAX
-========================================================
+Chemtrain --- Machine-Learning Molecular Dynamics Potentials in JAX
+====================================================================
 
 **chemtrain** is a library to simplify machine learning of MD potentials.
 It builds on and extends the JAXMD_ end-to-end differentiable MD framework.

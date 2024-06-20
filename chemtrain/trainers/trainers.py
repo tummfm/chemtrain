@@ -16,8 +16,10 @@
 """This file contains several Trainer classes as a quickstart for users."""
 import functools
 import gc
+import os
 import pickle
 import time
+from os import PathLike
 
 import jax.tree_util
 import warnings
@@ -41,7 +43,7 @@ try:
 except:
     ArrayLike = Any
 from optax import GradientTransformationExtraArgs
-from jax_md.partition import NeighborFn
+from jax_md.partition import NeighborFn, NeighborList
 from chemtrain.typing import EnergyFnTemplate
 from chemtrain.trajectory.traj_util import TrajectoryState, TimingClass
 
@@ -104,26 +106,67 @@ class PropertyPrediction(tt.DataParallelTrainer):
 class ForceMatching(tt.DataParallelTrainer):
     """Force-matching trainer.
 
-    This implementation assumes a constant number of particles per box and
-    constant box sizes for each snapshot.
-    If this is not the case, please use the ForceMatchingPrecomputed trainer
-    based on padded sparse neighborlists.
-    Caution: Currently neighborlist overflow is not checked.
-    Make sure to build nbrs_init large enough.
-    # TODO generalize to padded particles and without neighborlists
+    Args:
+        init_params: Initial energy parameters.
+        energy_fn_template: Function that takes energy parameters and returns
+            an energy function.
+        nbrs_init: Initial neighbor list. The neighbor list must be large enough
+            to not overflow for any sample of the dataset.
+        optimizer: Optimizer from optax.
+        position_data: Position data of the system.
+        energy_data: Energy snapshots corresponding to the positions.
+        force_data: Force snapshots corresponding to the positions.
+        virial_data: Virial snapshots corresponding to the positions. The virial
+            is the negative stress tensor/pressure tensor.
+        kt_data: Temperature snapshots corresponding to the positions.
+        box_tensor: Box of the system, fixed for all snapshots.
+        gamma_f: Weight of the force loss.
+        gamma_p: Weight of the virial loss.
+        batch_per_device: Number of samples to process vectorized on every
+            device.
+        batch_cache: Number of batches to load into the device memories.
+        train_ratio: Ratio of samples to use for training.
+        val_ratio: Ratio of samples to use for validation.
+        shuffle: Whether to shuffle the dataset.
+        full_checkpoint: Save the whole trainer instead of only some statistics.
+        disable_shmap: Use ``pmap`` instead of ``shmap`` for parallelization.
+        penalty_fn: Penalty loss depending only on the parameters.
+        convergence_criterion: Check convergence via
+            :class:`base.EarlyStopping`.
+        checkpoint_path: Path to the folder to store checkpoints.
 
-    Virial data is pressure tensor, i.e. negative stress tensor
+    Note:
+        This implementation assumes a constant number of particles per box and
+        constant box sizes for each snapshot.
+
+    Warning:
+        Currently neighborlist overflow is not checked.
+        Make sure to build nbrs_init large enough.
 
     """
-    def __init__(self, init_params, energy_fn_template, nbrs_init,
-                 optimizer, position_data, energy_data=None, force_data=None,
-                 virial_data=None, kt_data=None, box_tensor=None, gamma_f=1.,
-                 gamma_p=1.e-6, batch_per_device=1, batch_cache=10,
-                 train_ratio=0.7, val_ratio=0.1, shuffle=False,
-                 full_checkpoint=False,
-                 disable_shmap=False, penalty_fn=None,
-                 convergence_criterion='window_median',
-                 checkpoint_folder='checkpoints'):
+    def __init__(self,
+                 init_params,
+                 energy_fn_template: EnergyFnTemplate,
+                 nbrs_init: NeighborList,
+                 optimizer,
+                 position_data: ArrayLike,
+                 energy_data: ArrayLike = None,
+                 force_data: ArrayLike = None,
+                 virial_data: ArrayLike = None,
+                 kt_data: ArrayLike = None,
+                 box_tensor: ArrayLike = None,
+                 gamma_f: float = 1.,
+                 gamma_p: float = 1.e-6,
+                 batch_per_device: int = 1,
+                 batch_cache: int = 10,
+                 train_ratio: float = 0.7,
+                 val_ratio: float = 0.1,
+                 shuffle: bool = False,
+                 full_checkpoint: bool = False,
+                 disable_shmap: bool = False,
+                 penalty_fn: Callable = None,
+                 convergence_criterion: str = 'window_median',
+                 checkpoint_path: PathLike = 'checkpoints'):
 
         dataset_dict = {'position_data': position_data,
                         'energy_data': energy_data,
@@ -139,7 +182,7 @@ class ForceMatching(tt.DataParallelTrainer):
         loss_fn = force_matching.init_loss_fn(gamma_f=gamma_f, gamma_p=gamma_p)
 
         super().__init__(dataset_dict, loss_fn, model, init_params, optimizer,
-                         checkpoint_folder, batch_per_device, batch_cache,
+                         checkpoint_path, batch_per_device, batch_cache,
                          train_ratio, val_ratio, shuffle=shuffle,
                          disable_shmap=disable_shmap, penalty_fn=penalty_fn,
                          convergence_criterion=convergence_criterion,
@@ -156,6 +199,7 @@ class ForceMatching(tt.DataParallelTrainer):
                                             force_data, virial_data, kt_data)
 
     def evaluate_mae_testset(self):
+        """Prints the Mean Absolute Error for every target on the test set."""
         assert self.test_loader is not None, ('No test set available. Check'
                                               ' train and val ratios or add a'
                                               ' test_loader manually.')
@@ -178,11 +222,10 @@ class ForceMatching(tt.DataParallelTrainer):
 class Difftre(tt.PropagationBase):
     """Trainer class for parametrizing potentials via the DiffTRe method.
 
-    The implementation assumes a NVT ensemble in weight computation.
     The trainer initialization only sets the initial trainer state
     as well as checkpointing and save-functionality. For training,
     target state points with respective simulations need to be added
-    via 'add_statepoint'.
+    via :func:`Difftre.add_statepoint`.
 
     Args:
         init_params: Initial energy parameters
@@ -208,6 +251,17 @@ class Difftre(tt.PropagationBase):
             standatd deviation 'std' might be implemented in the future.
         checkpoint_folder: Name of folders to store ckeckpoints in.
 
+    Attributes:
+        weights_fn: Dictionary containing the reweighting functions for each
+            statepoint.
+        batch_losses: List of losses for each batch in each epoch.
+        epoch_losses: List of losses for each epoch.
+        step_size_history: List of step sizes for each batched update.
+        gradient_norm_history: List of gradient norms for each batched update.
+        predictions: Dictionary containing the predictions for each statepoint
+            at each epoch.
+        early_stop: Instance of EarlyStopping to check for convergence.
+
     Examples:
 
         .. code-block :: python
@@ -232,14 +286,10 @@ class Difftre(tt.PropagationBase):
                  optimizer: GradientTransformationExtraArgs,
                  reweight_ratio: ArrayLike = 1.0,
                  sim_batch_size: int = 1,
-                 energy_fn_template: EnergyFnTemplate=None,
-                 full_checkpoint=False,
+                 energy_fn_template: EnergyFnTemplate = None,
+                 full_checkpoint: bool = False,
                  convergence_criterion: str = 'window_median',
-                 checkpoint_folder = 'Checkpoints'):
-        # TODO doc: beware that for too short trajectory might have overfittet
-        #  to single trajectory; if in doubt, set reweighting ratio = 1 towards
-        #  end of optimization
-        checkpoint_path = 'output/difftre/' + str(checkpoint_folder)
+                 checkpoint_path: os.PathLike = 'Checkpoints'):
         init_state = util.TrainerState(params=init_params,
                                        opt_state=optimizer.init(init_params))
 
@@ -267,50 +317,25 @@ class Difftre(tt.PropagationBase):
 
     def add_statepoint(self,
                        energy_fn_template: EnergyFnTemplate,
-                       simulator_template,
+                       simulator_template: Callable,
                        neighbor_fn: NeighborFn,
                        timings: TimingClass,
                        state_kwargs: Dict[str, ArrayLike],
                        quantities: Dict[str, Dict],
-                       reference_state: TrajectoryState,
+                       reference_state,
                        targets: Dict[str, Any] = None,
-                       ref_press: ArrayLike = None,
                        loss_fn = None,
                        vmap_batch: int = 10,
                        initialize_traj: bool = True,
                        set_key: str = None,
                        loss_kwargs: Mapping = None,
                        entropy_approximation: bool = False,
-                       replica_kbt: ArrayLike = None,
                        resample_simstates: bool = False):
         """
         Adds a state point to the pool of simulations with respective targets.
 
-        Requires own energy_fn_template and simulator_template to allow
-        maximum flexibility for state points: Allows different ensembles
-        (NVT vs NpT), box sizes and target quantities per state point.
-        The quantity dict defines the way target observations
-        contribute to the loss function. Each target observable needs to be
-        saved in the quantity dict via a unique key. Model predictions will
-        be output under the same key. In case the default loss function should
-        be employed, for each observable the 'target' dict containing
-        a multiplier controlling the weight of the observable
-        in the loss function under 'gamma' as well as the prediction target
-        under 'target' needs to be provided.
-
-        In many applications, the default loss function will be sufficient.
-        If a target observable cannot be described directly as an average
-        over instantaneous quantities (e.g. stiffness),
-        a custom loss_fn needs to be defined. The signature of the loss_fn
-        needs to be the following: It takes the trajectory of computed
-        instantaneous quantities saved in a dict under its respective key of
-        the quantities_dict. Additionally, it receives corresponding weights
-        w_i to perform ensemble averages under the reweighting scheme. With
-        these components, ensemble averages of more complex observables can
-        be computed. The output of the function is (loss value, predicted
-        ensemble averages). The latter is only necessary for post-processing
-        the optimization process. See 'init_independent_mse_loss_fn' for
-        an example implementation.
+        Each statepoints initializes a new gradient and propagation function via
+        :func:`chemtrain.learn.difftre.init_difftre_gradient_and_propagation`.
 
         Args:
             energy_fn_template: Function that takes energy parameters and
@@ -331,8 +356,11 @@ class Difftre(tt.PropagationBase):
                 Targets are only necessary when using the 'independent_loss_fn'.
             loss_fn: Custom loss function taking the trajectory of quantities
                 and weights and returning the loss and predictions;
-                Default None initializes an independent MSE loss, which computes
+                By default, initializes an independent MSE loss, which computes
                 reweighting averages from snapshot-based observables.
+                In many applications, the default loss function will be
+                sufficient. For a description, see
+                :func:`chemtrain.learn.difftre.init_default_loss_fn`.
             vmap_batch: Batch size of vmapping of per-snapshot energy for weight
                 computation.
             initialize_traj: True, if an initial trajectory should be generated.
@@ -366,7 +394,6 @@ class Difftre(tt.PropagationBase):
             initialize_traj,
             safe_propagation=False,
             entropy_approximation=entropy_approximation,
-            replica_kbt=replica_kbt,
             resample_simstates=resample_simstates
         )
 
@@ -456,10 +483,6 @@ class Difftre(tt.PropagationBase):
         self.gradient_norm_history.append(onp.asarray(batch_norm))
         self.step_size_history.append(onp.asarray(alpha))
 
-        del grads, loss_val
-        gc.collect()
-
-
     def init_step_size_adaption(self,
                                 allowed_reduction: ArrayLike = 0.5,
                                 interior_points: int = 10,
@@ -468,29 +491,9 @@ class Difftre(tt.PropagationBase):
                                 ) -> None:
         """Initializes a line search to tune the step size in each iteration.
 
-        This method interpolates linearly between the old parameters
-        :math:`\\theta^{(i)}` and the paremeters :math:`\\tilde\\theta`
-        proposed by the optimizer to find the optimal update
-
-        .. math ::
-            \\theta^{(i + 1)} = (1 - \\alpha) \\theta^{(i)} + \\alpha\\tilde\\theta
-
-        that reduces the effective sample size to a predefined constant
-
-        .. math ::
-            N_\\text{eff}(\\theta^{(i+1)}) = r\cdot N_\\text{eff}(\\theta^{(i)}).
-
-        This method uses a vectorized bisection algorithm with fixed number of
-        iterations. At each iteration, the algorithm computes the effective
-        sample size for a predefined number of interior points and updates the
-        search interval boundaries to include the two closest points bisecting
-        the residual.
-
-        The number of required iterations computes from the number of interior
-        points :math:`n_i` and the desired accuracy :math:`a` via
-
-        .. math ::
-            N = \\left\\lceil -\\log(a) / \\log(n_i + 1)\\right\\rceil.
+        The line search optimizes step size to limit the decrease in the
+        effective sample size (ESS) via the algorithm
+        :func:`chemtrain.learn.difftre.init_step_size_adaption`.
 
         Args:
             allowed_reduction: Target reduction of the effective sample size
@@ -536,9 +539,11 @@ class Difftre(tt.PropagationBase):
 
     @property
     def best_params(self):
+        """Returns the best parameters according to the early stopping criterion."""
         return self.early_stop.best_params
 
     def move_to_device(self):
+        """Transforms the trainer states to JAX arrays."""
         super().move_to_device()
         self.early_stop.move_to_device()
 
@@ -593,55 +598,54 @@ class DifftreActive(tt.TrainerInterface):
 
 
 class RelativeEntropy(tt.PropagationBase):
-    """Trainer for relative entropy minimization."""
+    """Trainer for relative entropy minimization.
+
+    The relative entropy algorithm currently assume a NVT ensemble.
+
+    Args:
+        init_params: Initial energy parameters.
+        optimizer: Optimizer from optax.
+        reweight_ratio: Ratio of reference samples required for n_eff to
+            surpass to allow re-use of previous reference trajectory state.
+            If trajectories should not be re-used, a value > 1 can be specified.
+        sim_batch_size: Number of state-points to be processed as a single
+            batch. Gradients will be averaged over the batch before stepping the
+            optimizer.
+        energy_fn_template: Function that takes energy parameters and
+            initializes an new energy function. Here, the ``energy_fn_template``
+            is only a reference that will be saved alongside the trainer.
+            Each state point requires its own due to the dependence on the box
+            size via the displacement function, which can vary between state points.
+        convergence_criterion: Either ``'max_loss'`` or ``'ave_loss'``.
+            If ``'max_loss'``, stops if the gradient norm cross all batches in
+            the epoch is smaller than convergence_thresh.
+            ``'ave_loss'`` evaluates  the average gradient norm across the batch.
+            For a single state point, both are equivalent.
+        checkpoint_path: Path to the folder to store ckeckpoints in.
+        full_checkpoint: Save the whole trainer instead of only the inference
+            data.
+
+    Attributes:
+        data_states: Dictionary containing the dataloader states for each
+            state points.
+        delta_re: Dictionary containing the improvement of the relative entropy
+            with respect to the initial potential.
+        step_size_history: List of step size scales for each batched update.
+        gradient_norm_history: List of gradient norms for each batched update.
+        weight_fn: Dictionary containing the reweighting functions for each
+            statepoint.
+        early_stop: Instance of EarlyStopping to check for convergence.
+
+    """
     def __init__(self,
                  init_params,
                  optimizer,
-                 reweight_ratio=0.9,
-                 sim_batch_size=1,
-                 energy_fn_template=None,
-                 convergence_criterion='window_median',
-                 checkpoint_folder='Checkpoints',
+                 reweight_ratio: float = 0.9,
+                 sim_batch_size: int = 1,
+                 energy_fn_template: EnergyFnTemplate = None,
+                 convergence_criterion: str = 'window_median',
+                 checkpoint_path: os.PathLike = 'Checkpoints',
                  full_checkpoint: bool = False):
-        """
-        Initializes a relative entropy trainer instance.
-
-        Uses first order method optimizer as Hessian is very expensive
-        for neural networks. Both reweighting and the gradient formula
-        currently assume a NVT ensemble.
-
-        Args:
-            init_params: Initial energy parameters
-            optimizer: Optimizer from optax
-            reweight_ratio: Ratio of reference samples required for n_eff to
-                            surpass to allow re-use of previous reference
-                            trajectory state. If trajectories should not be
-                            re-used, a value > 1 can be specified.
-            sim_batch_size: Number of state-points to be processed as a single
-                            batch. Gradients will be averaged over the batch
-                            before stepping the optimizer.
-            energy_fn_template: Function that takes energy parameters and
-                                initializes an new energy function. Here, the
-                                energy_fn_template is only a reference that
-                                will be saved alongside the trainer. Each
-                                state point requires its own due to the
-                                dependence on the box size via the displacement
-                                function, which can vary between state points.
-            convergence_criterion: Either 'max_loss' or 'ave_loss'.
-                                   If 'max_loss', stops if the gradient norm
-                                   across all batches in the epoch is smaller
-                                   than convergence_thresh. 'ave_loss' evaluates
-                                   the average gradient norm across the batch.
-                                   For a single state point, both are
-                                   equivalent. A criterion based on the rolling
-                                   standard deviation 'std' might be implemented
-                                   in the future.
-            checkpoint_folder: Name of folders to store ckeckpoints in.
-            full_checkpoint: Save the whole trainer instead of only the
-                inference data.
-        """
-
-        checkpoint_path = 'output/rel_entropy/' + str(checkpoint_folder)
         init_trainer_state = util.TrainerState(
             params=init_params, opt_state=optimizer.init(init_params))
         super().__init__(init_trainer_state, optimizer, checkpoint_path,
@@ -660,7 +664,6 @@ class RelativeEntropy(tt.PropagationBase):
 
         self._adaptive_step_size = None
 
-
     def _set_dataset(self, key, reference_data, reference_batch_size,
                      batch_cache=1):
         """Set dataset and loader corresponding to current state point."""
@@ -672,13 +675,26 @@ class RelativeEntropy(tt.PropagationBase):
         self.data_states[key] = init_reference_batch_state
         return get_ref_batch
 
-    def add_statepoint(self, reference_data, energy_fn_template,
-                       simulator_template, neighbor_fn, timings, state_kwargs,
-                       reference_state, reference_batch_size=None,
-                       batch_cache=1, initialize_traj=True, set_key=None,
-                       vmap_batch=10, resample_simstates=False):
+    def add_statepoint(self,
+                       reference_data: ArrayLike,
+                       energy_fn_template: EnergyFnTemplate,
+                       simulator_template: Callable,
+                       neighbor_fn: NeighborFn,
+                       timings: TimingClass,
+                       state_kwargs: Dict[str, ArrayLike],
+                       reference_state,
+                       reference_batch_size: int = None,
+                       batch_cache: int = 1,
+                       initialize_traj: bool = True,
+                       set_key: str = None,
+                       vmap_batch: int = 10,
+                       resample_simstates: bool = False):
         """
         Adds a state point to the pool of simulations.
+
+        The gradient of the relative entropy is computed via the gradient
+        function initialized by
+        :func:`chemtrain.learn.difftre.init_rel_entropy_gradient_and_propagation`.
 
         As each reference dataset / trajectory corresponds to a single
         state point, we initialize the dataloader together with the
@@ -709,7 +725,7 @@ class RelativeEntropy(tt.PropagationBase):
                 starting any training.
             set_key: Specify a key in order to restart from same statepoint.
                 By default, uses the index of the sequance statepoints are
-                added, i.e. self.trajectory_states[0] for the first added
+                added, i.e. ``self.trajectory_states[0]`` for the first added
                 statepoint. Can be used for changing the timings of the
                 simulation during training.
             vmap_batch: Batch size of vmapping of per-snapshot energy and
@@ -758,29 +774,9 @@ class RelativeEntropy(tt.PropagationBase):
                                 ) -> None:
         """Initializes a line search to tune the step size in each iteration.
 
-        This method interpolates linearly between the old parameters
-        :math:`\\theta^{(i)}` and the paremeters :math:`\\tilde\\theta`
-        proposed by the optimizer to find the optimal update
-
-        .. math ::
-            \\theta^{(i + 1)} = (1 - \\alpha) \\theta^{(i)} + \\alpha\\tilde\\theta
-
-        that reduces the effective sample size to a predefined constant
-
-        .. math ::
-            N_\\text{eff}(\\theta^{(i+1)}) = r\cdot N_\\text{eff}(\\theta^{(i)}).
-
-        This method uses a vectorized bisection algorithm with fixed number of
-        iterations. At each iteration, the algorithm computes the effective
-        sample size for a predefined number of interior points and updates the
-        search interval boundaries to include the two closest points bisecting
-        the residual.
-
-        The number of required iterations computes from the number of interior
-        points :math:`n_i` and the desired accuracy :math:`a` via
-
-        .. math ::
-            N = \\left\\lceil -\\log(a) / \\log(n_i + 1)\\right\\rceil.
+        The line search optimizes step size to limit the decrease in the
+        effective sample size (ESS) via the algorithm
+        :func:`chemtrain.learn.difftre.init_step_size_adaption`.
 
         Args:
             allowed_reduction: Target reduction of the effective sample size
@@ -877,6 +873,7 @@ class SGMCForceMatching(tt.ProbabilisticFMTrainerTemplate):
 
     @property
     def params(self):
+        """Get the sampled parameters from all chains."""
         if len(self.results) == 1:  # single chain
             return self.results[0]['samples']['variables']['params']
         else:
@@ -893,9 +890,11 @@ class SGMCForceMatching(tt.ProbabilisticFMTrainerTemplate):
 
     @property
     def list_of_params(self):
+        """A list of the sampled parameters."""
         return util.tree_unstack(self.params)
 
     def save_trainer(self, save_path):
+        """Save the trainer to a file."""
         raise NotImplementedError('Saving the trainer currently does not work'
                                   ' for SGMCMC.')
 
@@ -904,7 +903,7 @@ class EnsembleOfModels(tt.ProbabilisticFMTrainerTemplate):
     """Train an ensemble of models by starting optimization from different
     initial parameter sets, for use in uncertainty quantification applications.
 
-    Usage:
+    Example:
 
         .. code-block:: python
 
@@ -953,7 +952,7 @@ class InterleaveTrainers(tt.TrainerInterface):
     This special trainer allows to train models simultaneously with different
     algorithms.
 
-    Usage:
+    Example:
 
         .. code-block::
 

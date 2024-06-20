@@ -1,13 +1,31 @@
-``chemtrain.potential``
-=======================
+``potential``
+==============
 
+Models
+------
+
+**Chemtrain** does not require a specific model to be used.
+Nevertheless, it provides some pre-defined models, such as a simple classical
+force field in the :mod:`chemtrain.models.prior` module.
 
 .. toctree::
-   :caption: Potential Models
    :titlesonly:
 
-
    prior
-   layers
    neural_networks
+
+
+Building Blocks
+-----------------
+
+These submodules contain utilities necessary for building advanced potential
+models. For example, the :mod:`chemtrain.models.sparse_graph` module contains
+functions to construct a sparse graph from a JAX, M.D
+:class:`jax_md.partition.NeighborList`.
+
+.. toctree::
+   :titlesonly:
+
+   dimenet_basis_util
+   layers
    sparse_graph

@@ -49,25 +49,31 @@ def stillinger_weber_energy(dr,
                             sigma=2.0951,
                             cutoff=1.8*2.0951,
                             three_body_strength=1.0):
-    """
-    Stillinger-Weber (SW) potential [1] which is commonly used to model
+    """Computes the stiling weber potential.
+
+    The Stillinger-Weber (SW) potential [#Stillinger]_ is commonly used to model
     silicon and similar systems. This function uses the default SW parameters
     from the original paper. The SW potential was originally proposed to
     model diamond in the diamond crystal phase and the liquid phase, and is
-    known to give unphysical amorphous configurations [2, 3]. For this reason,
-    we provide a three_body_strength parameter. Changing this number to 1.5
-    or 2.0 has been know to produce more physical amorphous phase, preventing
+    known to give unphysical amorphous configurations [#Holender, #Barkema]_.
+    For this reason,
+    we provide a three_body_strength parameter. Changing this number to $1.5$
+    or $2.0$ has been known to produce more physical amorphous phase, preventing
     most atoms from having more than four nearest neighbors. Note that this
     function currently assumes nearest-image-convention.
 
-    [1] Stillinger, Frank H., and Thomas A. Weber. "Computer simulation of
-    local order in condensed phases of silicon." Physical review B 31.8
-    (1985): 5262.
-    [2] Holender, J. M., and G. J. Morgan. "Generation of a large structure
-    (105 atoms) of amorphous Si using molecular dynamics." Journal of
-    Physics: Condensed Matter 3.38 (1991): 7241.
-    [3] Barkema, G. T., and Normand Mousseau. "Event-based relaxation of
-    continuous disordered systems." Physical review letters 77.21 (1996): 4358.
+
+    References:
+       .. [#Stillinger] Stillinger, Frank H., and Thomas A. Weber.
+          "Computer simulation of local order in condensed phases of silicon."
+          Physical review B 31.8 (1985): 5262.
+       .. [#Holender] Holender, J. M., and G. J. Morgan.
+          "Generation of a large structure (105 atoms) of amorphous Si using
+          molecular dynamics."
+          Journal of Physics: Condensed Matter 3.38 (1991): 7241.
+       .. [#Barkema] Barkema, G. T., and Normand Mousseau.
+          "Event-based relaxation of continuous disordered systems."
+          Physical review letters 77.21 (1996): 4358.
 
     Args:
         dr: A ndarray of pairwise distances between particles
@@ -467,51 +473,21 @@ def generic_repulsion_nonbond(displacement_or_metric: DisplacementOrMetricFn,
             exp=exp)
 
 
-def soft_sphere_neighbor_list(displacement_or_metric: DisplacementOrMetricFn,
-                              box_size: Box=None,
-                              species: Array=None,
-                              sigma: Array=1.0,
-                              epsilon: Array=1.0,
-                              alpha: Array=2.0,
-                              r_cutoff: Array = 1.,
-                              dr_threshold: float=0.2,
-                              per_particle: bool=False,
-                              capacity_multiplier: float = 1.25,
-                              initialize_neighbor_list: bool = True):
-    """Convenience wrapper to compute :ref:`soft spheres <soft-sphere>` using a neighbor list."""
-    sigma =  jnp.array(sigma, dtype=f32)
-    epsilon =  jnp.array(epsilon, dtype=f32)
-    alpha =  jnp.array(alpha, dtype=f32)
-    list_cutoff = jnp.max(sigma)
-    r_cutoff = jnp.array(r_cutoff, dtype=f32)
-    dr_threshold = jnp.array(dr_threshold, dtype=f32)
-
-    energy_fn = smap.pair_neighbor_list(
-      energy.soft_sphere,
-      space.canonicalize_displacement_or_metric(displacement_or_metric),
-      ignore_unused_parameters=True,
-      species=species,
-      sigma=sigma,
-      epsilon=epsilon,
-      alpha=alpha,
-      reduce_axis=(1,) if per_particle else None)
-
-    if initialize_neighbor_list:
-      assert box_size is not None
-      neighbor_fn = partition.neighbor_list(
-        displacement_or_metric, box_size, list_cutoff, dr_threshold,
-        capacity_multiplier=capacity_multiplier
-      )
-      return neighbor_fn, energy_fn
-
-    return energy_fn
-
 def lorentz_berthelot(idxs, species, sigma_dict, epsilon_dict):
-    """Applys the lorenz-berthelot rule to the idx and species array.
-    Calculates the sigma and epsilon values from the given dictonary.
-    sigma_ij = (sigma_ii + sigma_jj) / 2
-    epsilon_ij = (epsilon_ii * epsilon_jj)^1/2
-    https://en.wikipedia.org/wiki/Combining_rules
+    """Applies the Lorentz-Berthelot rule to a indices and species array.
+
+    The Lorentz-Berthelot rules [#wikipedia]_ calculate the $\\sigma$ and
+    $\\epsilon$ epsilon values from a given dictonary.
+
+    .. math::
+
+        \\sigma_{ij} = \\frac{\\sigma_{ii} + \\sigma_{jj}}{2}
+        \\epsilon_{ij} = \\sqrt{\\epsilon_{ii} * \\epsilon_{jj}}
+
+    References:
+
+       .. [#wikipedia] https://en.wikipedia.org/wiki/Combining_rules
+
     """
     pairs = species[idxs]
     u, inv = jnp.unique(pairs, return_inverse=True)
@@ -617,7 +593,6 @@ def tabulated_pair(displacement_or_metric: DisplacementOrMetricFn,
                    x_vals: Array,
                    y_vals: Array,
                    degree: int = 3,
-                   monotonic: bool = True,
                    r_onset: Array = 0.9,
                    r_cutoff: Array = 1.,
                    species: Array = None,
@@ -628,11 +603,8 @@ def tabulated_pair(displacement_or_metric: DisplacementOrMetricFn,
     r_onset = jnp.array(r_onset, f32)
     r_cutoff = jnp.array(r_cutoff, f32)
 
-    if monotonic:
-        spline = custom_interpolate.MonotonicInterpolate(x_vals, y_vals)
-    else:
-        spline = custom_interpolate.InterpolatedUnivariateSpline(x_vals, y_vals,
-                                                                 k=degree)
+    spline = custom_interpolate.MonotonicInterpolate(x_vals, y_vals)
+
     tabulated_partial = partial(tabulated, spline=spline)
 
     return smap.pair(
@@ -648,7 +620,6 @@ def tabulated_neighbor_list(displacement_or_metric: DisplacementOrMetricFn,
                             y_vals: Array,
                             box_size: Box,
                             degree: int = 3,
-                            monotonic: bool = False,
                             r_onset: Array = 0.9,
                             r_cutoff: Array = 1.,
                             dr_threshold: Array = 0.2,
@@ -673,11 +644,8 @@ def tabulated_neighbor_list(displacement_or_metric: DisplacementOrMetricFn,
 
     # Note: cannot provide the spline parameters via kwargs because only
     #       per-particle parameters are supported
-    if monotonic:
-        spline = custom_interpolate.MonotonicInterpolate(x_vals, y_vals)
-    else:
-        spline = custom_interpolate.InterpolatedUnivariateSpline(x_vals, y_vals,
-                                                                 k=degree)
+    spline = custom_interpolate.MonotonicInterpolate(x_vals, y_vals)
+
     tabulated_partial = partial(tabulated, spline=spline)
 
     energy_fn = smap.pair_neighbor_list(

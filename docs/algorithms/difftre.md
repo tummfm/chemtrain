@@ -33,41 +33,43 @@ from chemtrain import quantity, trainers, trajectory
 
 ## Concepts
 
-The key concept that enables DiffTRe is the interchangeability of ensemble and
-trajectory averages for ergodic systems
+Molecular dynamics is an efficient method to sample positions $\mathbf r$ from a 
+molecular systems.
+However, back-propagating gradients through the simulation is costly and
+prone to exploding gradients [^Ingraham2019].
+Instead, DiffTRe [^Thaler2021] estimates gradients of ensemble averages by
+employing a probabilistic perspective like in the Umbrella Sampling
+method [^Torrie1977].
+
+In the umbrella sampling method, biasing a potential enables an
+efficient computation of ensemble averages of an unbiased potential. 
+A postprocessing step then corrects the effect of the bias on the ensemble
+average.
+This correction re-weights the collected samples by accounting for the change
+in relative probability between the biased reference and unbiased target
+distribution.
+
+For a trainable target potential $U_\theta$ and samples $x^{(i)}$ from the
+biased reference potential $\tilde U$, the discretized reweighting reads
 
 ```{math}
-\langle a \rangle_T = \lim_{T\rightarrow \infty}\frac{1}{T}\int_0^T a(x(t))dt = \int a(x)p(x)dx = \langle a \rangle_{p(x)}.
+\langle a \rangle_{U_\theta} \approx \sum_{i=1}^N w^{(i)}a\left(x^{(i)}\right), \quad w^{(i)} = \frac{e^{-\beta\left(U_\theta(x^{(i)}) - \tilde U(x^{(i)})\right)}}{\sum_{j=1}^Ne^{-\beta\left(U_\theta(x^{(j)}) - \tilde U(x^{(j)})\right)}}
 ```
 
-This view does not treat the simulation as a dynamic process but merely an
-efficient method to sample from the distribution $p(x)$.
-
-However, to compute gradients of the ensemble averages, an additional step is
-necessary.
-Umbrella sampling is a method that uses non-physical potentials to compute
-ensemble averages of target potentials. 
-The empowering idea is to re-weight the collected samples by the relative
-probability between the non-physical and target distribution.
-Hence, this re-weighting step corrects the bias introduced by the non-physical
-potential.
-
-Given a trainable potential $U_\theta$ and samples $x^{(i)}$ from a reference
-potential $\tilde U$, the discretized reweighting reads
-
-```{math}
-\langle a \rangle_{U_\theta} \approx \sum_{i=1}^N w^{(i)}a\left(x^{(i)}\right), \quad w^{(i)} = \frac{\exp\left(-\beta(U_\theta(x^{(i)}) - \tilde U(x^{(i)})\right)}{\sum_{j=1}^N\exp\left(-\beta(U_\theta(x^{(j)}) - \tilde U(x^{(j)})\right)}
-```
-
-The reference potential $\tilde U$ does not depend on the learnable parameters.
+Since the reference and target potential are independent, DiffTRe
+assumes that the reference potential $\tilde U$ no longer depend on the
+learnable parameters.
+Therefore, also the samples $x^{(i)}$ are independent of the target potential.
 Hence, the only contribution to the gradients arises through the weights 
 $w^{(i)}$ and the instantaneous states $a(x)$ of the observables.
-This enables DiffTRe to compute gradients of the loss function without
-differentiating through the costly molecular dynamics simulation.
+Thus, by employing this umbrella sampling procedure, DiffTRe can compute
+gradients of the loss function without differentiating through the costly
+molecular dynamics simulation.
 
 Unfortunately, the statistical error of the approximation grows exponentially
-fast with the difference between the target and the reference potential.
-If the number of effective samples
+fast with the difference between the target and the reference
+potential [^Ceriotti2021].
+If the number of effective samples[^Carmichael2012]
 
 ```{math}
 N_{eff} = e^{-\sum_{i=1}^N w^{(i)}\log w^{(i)}}
@@ -78,11 +80,13 @@ current potential $\tilde U \leftarrow U_\theta$ and resamples the conformations
 $x^{(i)}$.
 
 To accelerate the resampling and use the full computational capabilities of a
-GPU, DiffTRe enables to sample from vectorized simulations.
-To seed the vectorized simulations, DiffTRe chooses initial states from the 
-simulated trajectory, with probability corresponding to their weight.
-Since the velocities are independent of the positions, it additionally
-selects the particle velocities from distinct replicas. 
+GPU, DiffTRe enables to sample from multiple simulations in parallel, using
+the vectorization capabilities of JAX.
+Additionally, DiffTRe provides the option to re-seed these parallel simulations
+by choosing initial states from the simulated trajectory, with probability
+corresponding to their weight.
+In principle, this resampling of initial states enables a faster convergence
+of the simulated trajectories to the new equilibrium distribution.
 
 ## Toy Example
 
@@ -169,7 +173,7 @@ simulator_init_state = simulator_init(jax.random.PRNGKey(0), r_init)
 nbrs_init = neighbor_fn.allocate(r_init)
 
 reference_state = trajectory.traj_util.SimulatorState(
-    simulator_init_state, nbrs_init)
+    sim_state=simulator_init_state, nbrs=nbrs_init)
 
 system = {
     'displacement_fn': displacement_fn,
@@ -235,6 +239,8 @@ plt.xlabel("Iterations")
 plt.ylabel("Loss")
 ```
 
+The plot shows, that DiffTRe is able to learn the correct ensemble average.
+
 ```{code-cell} ipython3
 last_epoch = len(trainer.predictions[0]) - 1
 
@@ -252,7 +258,6 @@ Let's also take a look at the inferred parameters.
 print(trainer.params)
 ```
 
-
 ## Further Reading
 
 ### Examples
@@ -263,3 +268,15 @@ print(trainer.params)
 
 1. Thaler, S., Zavadlav, J. *Learning neural network potentials from experimental data via Differentiable Trajectory Reweighting*. Nat Commun 12, 6884 (2021). <https://doi.org/10.1038/s41467-021-27241-4>
 2. Carles Navarro and Maciej Majewski and Gianni de Fabritiis *Top-down machine learning of coarse-grained protein force-fields*. arXiv (2023). <https://arxiv.org/abs/2306.11375>
+
+## References
+
+[^Ingraham2019]: Ingraham, J.; Riesselman, A.; Sander, C.; Marks, D. LEARNING PROTEIN STRUCTURE WITH A DIFFERENTIABLE SIMULATOR. **2019**.
+
+[^Thaler2021]: Thaler, S.; Zavadlav, J. Learning Neural Network Potentials from Experimental Data via Differentiable Trajectory Reweighting. _Nat Commun_ **2021**, _12_ (1), 6884. [https://doi.org/10.1038/s41467-021-27241-4](https://doi.org/10.1038/s41467-021-27241-4).
+
+[^Torrie1977]: Torrie, G. M.; Valleau, J. P. Nonphysical Sampling Distributions in Monte Carlo Free-Energy Estimation: Umbrella Sampling. _Journal of Computational Physics_ **1977**, _23_ (2), 187–199. [https://doi.org/10.1016/0021-9991(77)90121-8](https://doi.org/10.1016/0021-9991(77)90121-8).
+
+[^Ceriotti2021]: Ceriotti, M.; Brain, G. A. R.; Riordan, O.; Manolopoulos, D. E. The Inefficiency of Re-Weighted Sampling and the Curse of System Size in High-Order Path Integration. _Proceedings: Mathematical, Physical and Engineering Sciences_ **2012**, _468_ (2137), 2–17.
+
+[^Carmichael2012]: Carmichael, S. P.; Shell, M. S. A New Multiscale Algorithm and Its Application to Coarse-Grained Peptide Models for Self-Assembly. _J. Phys. Chem. B_ **2012**, _116_ (29), 8383–8393. [https://doi.org/10.1021/jp2114994](https://doi.org/10.1021/jp2114994).

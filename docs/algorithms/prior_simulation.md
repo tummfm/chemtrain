@@ -35,6 +35,24 @@ base_path = Path("../_data")
 
 # Prior Simulation
 
+The potential $U(\mathbf r)$ describes all interactions between particles of
+a system.
+However, not all these interactions are simple to parametrize [^Das2009].
+For example, short range interactions are crucial to ensure that particles do
+not overlap, but require quickly increasing forces at small particle distances.
+Hence, a common approach separates the full potential in to a learnable bias
+$\Delta U_\theta$ and a part kept fixed $U^\text{prior}$ during the variational
+procedure
+
+```{math}
+U(\mathbf r) = U^\text{prior}(\mathbf r) + \Delta U_\theta(\mathbf r)
+```
+
+Since the fixed potential manifests beliefs before seeing any data, it is
+a frequently used termed *prior potential* as in Bayesian statistics.
+Likewise, $\Delta$*-learning* refers to only learning an additive
+correction on top of the prior potential.
+
 ## Setup Force Field
 
 As a prior, we want to use a classical force field.
@@ -208,3 +226,7 @@ plt.plot(timings.t_production_end[::10], traj_state.aux["rmsd"][::10])
 plt.xlabel("Time [ps]")
 plt.ylabel("RMSD [nm^2]")
 ```
+
+# References
+
+[^Das2009]: Das, A.; Andersen, H. C. The Multiscale Coarse-Graining Method. III. A Test of Pairwise Additivity of the Coarse-Grained Potential and of New Basis Functions for the Variational Calculation. _The Journal of Chemical Physics_ **2009**, _131_ (3), 034102. [https://doi.org/10.1063/1.3173812](https://doi.org/10.1063/1.3173812).

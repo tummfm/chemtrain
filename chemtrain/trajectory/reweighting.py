@@ -12,10 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Implementation of the reweighting formalism.
+"""This module provides implementations of thermodynamic perturbation theory.
 
-Allows re-using existing trajectories.
-p(S) = ...
+Thermodynamic perturbation theory enables the transfer of information between
+perturbed ensembles, e.g., free energy differences or ensemble averages.
+
+A description and example of using free energy perturbation approaches can be
+found here: :doc:`/algorithms/relative_entropy`.
+
+Likewise, an example to use the reweighting approach for ensemble averages is
+provided here: :doc:`/algorithms/difftre`.
+
 """
 
 import time
@@ -24,27 +31,37 @@ import warnings
 import numpy as onp
 
 import jax_sgmc.util
-from jax import (checkpoint, lax, random, tree_util, vmap, numpy as jnp, jit)
+from jax import (checkpoint, lax, random, tree_util, vmap, numpy as jnp, jit,
+                 Array)
 
 import jax_md.util
 from jax_md import util as jax_md_util
+from numpy import ndarray, dtype, floating
 
 from chemtrain import util
 from chemtrain.trajectory import traj_util
 from chemtrain.jax_md_mod import custom_quantity
 from chemtrain.quantity import constants, observables
 
-from typing import Dict, Any, Union, Callable, Tuple
+from typing import Dict, Any, Union, Callable, Tuple, Protocol, overload, \
+    Optional
+
 try:
     from jax.typing import ArrayLike
 except:
     ArrayLike = Any
 from jax_md.partition import NeighborFn
 from chemtrain.typing import EnergyFnTemplate
-from chemtrain.trajectory.traj_util import TrajectoryState
+from chemtrain.trajectory.traj_util import TrajectoryState, TimingClass, GenerateFn
+from chemtrain.typing import ComputeFn
 
-def checkpoint_quantities(compute_fns):
-    """Applies checkpoint to all compute_fns to save memory on backward pass."""
+def checkpoint_quantities(compute_fns: dict[str, ComputeFn]) -> None:
+    """Applies checkpoint to all compute_fns to save memory on backward pass.
+
+    Args:
+        compute_fns: Dictionary of functions to compute instantaneous quantities
+            from simulator states.
+    """
     for quantity_key in compute_fns:
         compute_fns[quantity_key] = checkpoint(compute_fns[quantity_key])
 
@@ -354,28 +371,148 @@ def init_reference_trajectory_reweight_fns(energy_fn_template: EnergyFnTemplate,
     return init_reference_reweighting, compute_reweighted_quantities
 
 
-def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
-                                      neighbor_fn, timings, state_kwargs,
-                                      reweight_ratio=0.9,
-                                      npt_ensemble=False, energy_batch_size=10,
-                                      entropy_approximation=False,
-                                      max_iter_bar=25, safe_propagation=True,
-                                      replica_kbt=None,
+class ComputeWeightsFn(Protocol):
+    def __call__(self,
+                 params: Any,
+                 traj_state: TrajectoryState,
+                 entropy_and_free_energy: bool = False
+                 )-> Tuple[ArrayLike, ArrayLike] | Any:
+        """Computes weights for the reweighting approach.
+
+        Args:
+            params: Energy parameters to obtain the perturbed potential.
+            traj_state: Trajectory of a sufficiently close potential. The
+                auxiliary quantities must contain the energy of the reference
+                trajectory (key: ``'energy'``).
+            **kwargs: Additional arguments to be passed to the function.
+
+
+        Returns:
+            Returns the weight for each sample and the effective sample size.
+
+            If ``entropy_and_free_energy=True`` set in kwargs, additionally
+            returns the free energy and entropy difference to the reference
+            potential.
+
+        """
+
+
+class PropagateFn(Protocol):
+    def __call__(self,
+                 params: Any,
+                 traj_state: TrajectoryState,
+                 *args,
+                 **kwargs
+                 ) -> TrajectoryState | Tuple[TrajectoryState, ...]:
+        """Samples from a new reference ensemble if the ESS is insufficient.
+
+        This function computes the ESS and decides whether to update the
+        reference potential to the current potential parameters.
+
+        Additionally, the function checks whether overflow occurred and
+        increases the neighbor list if necessary.
+
+        Args:
+            params: Energy parameters for the perturbed target potential.
+            traj_state: Trajectory from the most recent reference potential.
+
+        Returns:
+            Returns a trajectory state with adequate ESS and neighbor list,
+            which can be the previous trajectory state.
+
+            If obtained via the ``safe_propagate`` decorator, can return
+            additional results besides the propagated trajectory state.
+
+        """
+
+
+ReweightingFns = Union[
+    Tuple[Callable, ComputeWeightsFn, PropagateFn],
+    Tuple[Callable, ComputeWeightsFn, Callable, Callable[..., PropagateFn]]
+]
+
+
+def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
+                                      simulator_template: Callable,
+                                      neighbor_fn: NeighborFn,
+                                      timings: TimingClass,
+                                      state_kwargs: Dict[str, ArrayLike],
+                                      reweight_ratio: float = 0.9,
+                                      npt_ensemble: bool = False,
+                                      energy_batch_size: int = 10,
+                                      entropy_approximation: bool = False,
+                                      max_iter_bar: int = 25,
+                                      safe_propagation: bool = True,
                                       resample_simstates: bool = False,
-                                      ):
+                                      ) -> ReweightingFns:
     """
     Initializes all functions necessary for trajectory reweighting for
     a single state point.
 
-    Initialized functions include a function that computes weights for a
+    The initialized functions include a function that computes weights for a
     given trajectory and a function that propagates the trajectory forward
     if the statistical error does not allow a re-use of the trajectory.
-    The propagation function also ensures that generated trajectories
-    did not encounter any neighbor list overflow.
+
+    The third and (optionally) forth function depends on the value of
+    ``safe_propagation``. If set to True, only three functions are returned.
+    Additionally, the propagation function checks the neighbor list for
+    overflow and the trajectory for NaNs. However, in this case, the
+    propagation function is not jit-able. Instead, for
+    ``safe_propagation=False``, the fourth function can be used as decorator
+    to extend a non-jitable outer function.
+
+    Args:
+        energy_fn_template: Energy function template to initialize a new
+            energy function with the current parameters.
+        simulator_template: Template to create new simulators with different
+            energy functions.
+        neighbor_fn: Function to re-compute a neighbor list on reference
+            positions.
+        timings: Timings of the simulation.
+        state_kwargs: Dictionary defining the statepoint, e.g., containing the
+            reference temperature ``'kT'``.
+        reweight_ratio: Minimal fractional ESS to re-use a trajectory.
+        npt_ensemble: Whether to reweight in an NPT ensemble.
+        energy_batch_size: Batch size for the vectorized energy computation.
+        entropy_approximation: Approximation of the entropy difference between
+            reference and target potential with similar gradient.
+        max_iter_bar: Maximum number of iterations for the BAR procedure.
+        safe_propagation: Ensure that generated trajectories did not encounter
+            any neighbor list overflow.
+        resample_simstates: Re-samples the sim states from the trajectory for
+            a new simulation.
+
+    Example:
+
+        Here, we increase the number of retires for overflown neighbor lists
+        and additionally return additional arguments besides the trajectory
+        state.
+
+        .. code:: python
+
+            @partial(safe_propagate, multiple_argents=True, max_retry=10)
+            def outer_fn(params, traj_state):
+                traj_state = propagate(params, traj_state)
+                weights = compute_weights(params, traj_state)
+
+                loss, predictions = some_loss_fn(traj_state, weights)
+
+                return traj_state, loss, predictions
+
+    Returns:
+        Returns a tuple of function to apply the reweighting formalism.
+        The first function generates a reference trajectory, starting from
+        a reference simulator state.
+        The second function computes the weights given a reference trajectory
+        state.
+        The third function propagates the trajectory state, re-computing a
+        trajectory from the current energy parameters if the ESS drops below
+        a certain threshold.
+        The fourth function is only returned if ``safe_propagation=False``.
+
     """
     traj_energy_fn = custom_quantity.energy_wrapper(energy_fn_template)
     reweighting_quantities = {'energy': traj_energy_fn}
-
 
     bennett_free_energy = init_bar(
         energy_fn_template, state_kwargs['kT'], energy_batch_size, max_iter_bar)
@@ -440,7 +577,7 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
         return new_traj_state
 
 
-    def compute_weights(params, traj_state, entropy_and_free_energy=False):
+    def compute_weights(params, traj_state, entropy_and_free_energy = False):
         """Computes weights for the reweighting approach."""
 
         # reweighting properties (U and pressure) under perturbed potential
@@ -518,7 +655,6 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
         )
 
         return updated_traj
-
 
     @jit
     def propagation_fn(params, traj_state):
@@ -600,15 +736,14 @@ def init_pot_reweight_propagation_fns(energy_fn_template, simulator_template,
                                'capacity multiplier.')
         return wrapped
 
-
-    def propagate(params, old_traj_state):
+    def propagate(params, traj_state: TrajectoryState, **kwargs) -> TrajectoryState:
         """Wrapper around jitted propagation function that ensures that
         if neighbor list buffer overflowed, the trajectory is recomputed and
         the neighbor list size is increased until valid trajectory was obtained.
         Due to the recomputation of the neighbor list, this function cannot be
         jit.
         """
-        new_traj_state = propagation_fn(params, old_traj_state)
+        new_traj_state = propagation_fn(params, traj_state)
         return new_traj_state
 
     safe_propagation_fn = safe_propagate(propagate, multiple_arguments=False)

@@ -61,6 +61,7 @@ class TrainerInterface(metaclass=abc.ABCMeta):
 
     @property
     def energy_fn(self):
+        """Returns the energy function for the current parameters."""
         if self.reference_energy_fn_template is None:
             raise ValueError('Cannot construct energy_fn as no reference '
                              'energy_fn_template was provided during '
@@ -99,14 +100,17 @@ class TrainerInterface(metaclass=abc.ABCMeta):
             return data
 
     def save_energy_params(self, file_path, save_format='.hdf5'):
+        """Loads energy parameters.
+
+        Args:
+            file_path: Path to the file where to save the energy parameters.
+                Currently, only saving to pickle files (``'*.pkl'``) is
+                supported.
+            save_format: Format in which to save the energy parameters.
+
+        """
         if save_format == '.hdf5':
-            raise NotImplementedError  # TODO implement hdf5
-            # from jax_sgmc.io import pytree_dict_keys, dict_to_pytree
-            # leaf_names = pytree_dict_keys(self.state)
-            # leafes = tree_leaves(self.state)
-            # with h5py.File(file_path, "w") as file:
-            #     for leaf_name, value in zip(leaf_names, leafes):
-            #         file[leaf_name] = value
+            raise NotImplementedError
         elif save_format == '.pkl':
             with open(file_path, 'wb') as pickle_file:
                 pickle.dump(tree_map(onp.asarray, self.params), pickle_file)
@@ -114,6 +118,14 @@ class TrainerInterface(metaclass=abc.ABCMeta):
             format_not_recognized_error(save_format)
 
     def load_energy_params(self, file_path):
+        """Loads energy parameters.
+
+        Args:
+            file_path: Path to the file containing the energy parameters.
+                Currently, only loading from pickle files (``'*.pkl'``) is
+                supported.
+
+        """
         if file_path.endswith('.hdf5'):
             raise NotImplementedError
         elif file_path.endswith('.pkl'):
@@ -175,6 +187,10 @@ class MLETrainerTemplate(TrainerInterface):
         reference_energy_fn_template: Function returning a concrete energy
             function for the current parameters
 
+    The MLE trainer performs a sequence of task before and after each training,
+    epoch and batch update. It is possible to add custom tasks to the trainer
+    via :func:`MLETrainerTemplate.add_task`.
+
     Attributes:
         update_times: Computation time of each update
         gradient_norm_history: Norms of the gradient for each update
@@ -216,7 +232,27 @@ class MLETrainerTemplate(TrainerInterface):
         self.release_fns = []
 
     def add_task(self, trigger, fn_or_method):
-        """Adds a tasks to perform regularly during training."""
+        """Adds a tasks to perform regularly during training.
+
+        Args:
+            trigger: The trigger at which the task is executed. Can be
+                ``'pre/post_training/epoch/batch'``.
+            fn_or_method: The function or method to be executed.
+
+        Example:
+
+            The following code adds a task printing a specific energy parameter
+            after each epoch.
+
+            .. code-block:: python
+
+                def print_parameter(trainer, *args, **kwargs):
+                   print(f"Parameter after epoch {trainer._epoch}: "
+                         f"{trainer.state.params['parameter']}")
+
+                trainer.add_task("post_epoch", print_parameter)
+
+        """
 
         valid_triggers = [
             "pre_training",
@@ -299,7 +335,7 @@ class MLETrainerTemplate(TrainerInterface):
 
     def _optimizer_step(self, curr_grad):
         """Wrapper around step_optimizer that is useful whenever the
-        update of the optimizer can be done outside of jit-compiled functions.
+        update of the optimizer can be done outside jit-compiled functions.
 
         Returns:
             Returns the parameters after an update of the optimizer, but
@@ -336,20 +372,19 @@ class MLETrainerTemplate(TrainerInterface):
         training into epochs and batches as well as providing checkpointing and
         ending of training if the convergence criterion is met. The specifics
         of dataloading, parameter updating and convergence criterion evaluation
-        needs to be implemented in _get_batch(), _update() and
-        _evaluate_convergence(), respectively, depending on the exact trainer
+        needs to be implemented in ``_get_batch()``, ``_update()`` and
+        ``_evaluate_convergence()``, respectively, depending on the exact trainer
         details to be implemented.
 
         Args:
             max_epochs: Maximum number of epochs for which training is
-                        continued. Training will end sooner if convergence
-                        criterion is met.
+                continued. Training will end sooner if convergence criterion is
+                met.
             thresh: Threshold of the early stopping convergence criterion. If
-                    None, no early stopping is applied. Definition of thresh
-                    depends on specific convergence criterion.
-                    See EarlyStopping.
+                None, no early stopping is applied. Definition of thresh depends
+                on specific convergence criterion. See :class:`EarlyStopping`.
             checkpoint_freq: Number of epochs after which a checkpoint is saved.
-                             No checkpoints are saved by default.
+                By default, do not save checkpoints.
         """
         self._converged = False
         start_epoch = self._epoch
@@ -427,6 +462,7 @@ class MLETrainerTemplate(TrainerInterface):
         """
 
     def move_to_device(self):
+        """Converts all arrays of the trainer state to JAX arrays."""
         self.state = tree_map(jnp.array, self.state)  # move on device
 
     def _release_data_references(self):
@@ -469,7 +505,7 @@ class PropagationBase(MLETrainerTemplate):
                          set_key=None, energy_batch_size=10,
                          initialize_traj=True,
                          safe_propagation=True, entropy_approximation=False,
-                         replica_kbt=None, resample_simstates=False):
+                         resample_simstates=False):
         """Initializes the simulation and reweighting functions as well
         as the initial trajectory for a statepoint."""
         # TODO ref pressure only used in print and to have barostat values.
@@ -508,16 +544,12 @@ class PropagationBase(MLETrainerTemplate):
                 "defined in the state_kwargs."
             )
 
-        if replica_kbt is not None:
-            assert reference_state.sim_state.position.ndim > 2, (
-                "Replica exchange requires multiple simulator states")
-
         gen_init_traj, *reweight_fns = init_pot_reweight_propagation_fns(
             energy_fn_template, simulator_template, neighbor_fn, timings,
             state_kwargs, self.reweight_ratio, npt_ensemble,
             energy_batch_size, safe_propagation=safe_propagation,
             entropy_approximation=entropy_approximation,
-            replica_kbt=replica_kbt, resample_simstates=resample_simstates
+            resample_simstates=resample_simstates
         )
         if initialize_traj:
             self.key, split = random.split(self.key)
@@ -540,13 +572,16 @@ class PropagationBase(MLETrainerTemplate):
 
     @property
     def params(self):
+        """Current energy parameters."""
         return self.state.params
 
     @params.setter
     def params(self, loaded_params):
+        """Replaces the current energy parameters."""
         self.state = self.state.replace(params=loaded_params)
 
     def get_sim_state(self, key):
+        """Gets the simulator state of a statepoint."""
         return self.trajectory_states[key].sim_state
 
     def _get_batch(self):
@@ -779,7 +814,8 @@ class DataParallelTrainer(MLETrainerTemplate):
     @abc.abstractmethod
     def _build_dataset(self, *args, **kwargs):
         """Function that returns a tuple (dataset, target_keys).
-        The 'dataset' is a dictionary for the specific problem at hand.
+
+        The ``'dataset'`` is a dictionary for the specific problem at hand.
         The data for each leaf of the dataset is assumed to be stacked along
         axis 0. 'target_keys' is a list of keys that are necessary to evaluate
         the loss_fn, assuming the model prediction is available. In the simplest
@@ -796,6 +832,7 @@ class DataParallelTrainer(MLETrainerTemplate):
 
     @property
     def params(self):
+        """Current energy parameters."""
         single_params = self.state.params
         return single_params
 
@@ -805,6 +842,11 @@ class DataParallelTrainer(MLETrainerTemplate):
 
     @property
     def best_params(self):
+        """Returns the best parameters based on the validation loss.
+
+        If training was performed with early stopping, return the best
+        parameters to this criterion instead.
+        """
         #  if no validation data given, _early_stop.best_params are simply
         #  init_params
         if self.val_loader is None:
@@ -824,10 +866,12 @@ class DataParallelTrainer(MLETrainerTemplate):
 
     @property
     def best_inference_params_replicated(self):
+        """Returns the best inference params replicated on every device."""
         inference_params = self.best_inference_params
         return util.tree_replicate(inference_params)
 
     def move_to_device(self):
+        """Transforms all arrays of the trainer state to JAX arrays."""
         super().move_to_device()
         self._early_stop.move_to_device()
 
@@ -890,10 +934,12 @@ class MCMCForceMatchingTemplate(ProbabilisticFMTrainerTemplate):
 
     @property
     def list_of_params(self):
+        """Returns a list of sampled parameters."""
         return [state.position['params'] for state in self.results]
 
     @property
     def params(self):
+        """Concatenates the sampled parameters along the first dimension."""
         return util.tree_stack(self.list_of_params)
 
     @params.setter
@@ -909,14 +955,14 @@ class EarlyStopping:
 
     The following criteria are implemented:
 
-        - ``'window_median'``: 2 windows are placed at the end of the loss
-          history. Stops when the median of the latter window of size "thresh"
-          exceeds the median of the prior window of the same size.
+    - ``'window_median'``: 2 windows are placed at the end of the loss
+      history. Stops when the median of the latter window of size "thresh"
+      exceeds the median of the prior window of the same size.
 
-        - ``'PQ'``: Stops when the PQ criterion exceeds thresh
+    - ``'PQ'``: Stops when the PQ criterion exceeds thresh
 
-        - ``'max_loss'``: Stops when the loss decreased below the maximum allowed
-          loss specified via thresh.
+    - ``'max_loss'``: Stops when the loss decreased below the maximum allowed
+      loss specified via thresh.
 
     Args:
         criterion: Convergence criterion to employ
@@ -976,10 +1022,10 @@ class EarlyStopping:
         Args:
             curr_epoch_loss: Validation loss of the most recent epoch
             thresh: Convergence threshold. Specific definition depends on the
-                    selected convergence criterion.
+                selected convergence criterion.
             params: Optimization parameters to save in case of being best. Make
-                    sure to supply non-devive-replicated params,
-                    i.e. self.params.
+                sure to supply non-device-replicated params, i.e.
+                ``self.params.``
             save_best_params: If best params are supposed to be tracked
 
         Returns:

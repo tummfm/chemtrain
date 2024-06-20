@@ -12,10 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Utility functions for active learning applications."""
+"""Functions build around the DiffTRe algorithm. The DiffTRe algorithm builds
+on umbrella sampling to efficiently compute gradients of ensemble observables.
+
+Chemtrain implements umbrella sampling approaches in the module
+:mod:`chemtrain.trajectory.reweighting`.
+
+"""
 
 import functools
-from typing import Dict, Any, Callable
+from typing import Dict, Any, Callable, Tuple
 
 import jax
 from jax import jit, grad, tree_util, vmap, numpy as jnp, lax
@@ -24,45 +30,66 @@ from jax.typing import ArrayLike
 import numpy as onp
 
 from chemtrain.learn import max_likelihood, force_matching
-from chemtrain.typing import TargetDict
+from chemtrain.typing import TargetDict, EnergyFnTemplate, ComputeFn
 from chemtrain.jax_md_mod import custom_quantity
 from chemtrain.trajectory import reweighting, traj_util
 
 def init_default_loss_fn(targets: TargetDict, l_H = 0.0, l_RE = None):
-    """Initializes the default loss function, where MSE errors of
-    destinct quantities are added.
+    """Initializes the MSE loss function for DiffTRe.
 
-    First, observables are computed via the reweighting scheme.
-    These observables can be ndarray valued, e.g. vectors for RDF
-    / ADF or matrices for stress. For each observable, the element-wise
-    MSE error is computed wrt. the target provided in
-    "quantities[quantity_key]['target']". This per-quantity loss
-    is multiplied by gamma in "quantities[quantity_key]['gamma']".
-    The final loss is then the sum over all of these weighted
-    per-quantity MSE losses. This function allows both observables that
-    are simply ensemble averages of instantaneously fluctuating quantities
-    and observables that are more complex functions of one or more quantity
-    trajectories. The function computing the observable from trajectories of
-    instantaneous fluctuating quantities needs to be provided via in
-    "quantities[quantity_key]['traj_fn']". For the simple, but common case of
-    an average of a single quantity trajectory, 'traj_fn' is given by
-    traj_quantity.init_traj_mean_fn.
+    The default loss for DiffTRe minimizes the mean squared error (MSE)
+    between an observable :math:`\\mathcal A` and an (experimental) reference
+    :math:`\hat a`
 
-    Alternatively, a custom loss_fn can be defined. The custom
-    loss_fn needs to have the same input-output signuture as the loss_fn
-    implemented here.
+    .. math::
+
+       \\mathcal L(\\theta) = \\gamma \\left(
+           \\hat a - \\mathcal A(\\mathbf w_N, \\mathbf r_N) \\right)^2.
+
+    Some observables are simple ensemble averages of instantaneous quantities
+    :math:`a`
+
+    .. math::
+
+       \\mathcal A(\\mathbf w, \\mathbf r^n) =
+           \\sum_{n=1}^N w^{(n)} a\\left(\mathbf r^{(n)}\\right).
+
+    However, some quantities, e.g., the heat capacity :math:`c_V`,
+    relate to multiple ensemble averages or even multiple quantities.
+    Therefore, each target specifies a ``traj_fn`` with access to all
+    instantaneous quantities.
+
+    For a list of implemented ensemble observables, refer to the module
+    :mod:`chemtrain.quantity.observables`.
+
+    Example:
+        The target dictionary is of the form:
+
+        .. code::
+
+           target_dict = {
+               ...
+               'some_quantity': {
+                   'target': <target-value>,
+                   'gamma': <coefficient>,
+                   'traj_fn': <compute-function>
+               },
+              ...
+           }
 
     Args:
-        targets: The target dict with 'gamma', 'target' and 'traj_fn'
-            for each observable defined in 'quantities'.
+        targets: Dictionary containing the target values, weighting factors
+            and compute functions.
         l_H: Coefficient of the maximum entropy penalty
         l_RE: Interpolation coefficient between relative entropy and difftre
             loss.
 
     Returns:
-        The loss_fn taking trajectories of fluctuating properties,
-        computing ensemble averages via the reweighting scheme and
-        outputs the loss and predicted observables.
+        Returns a DiffTRe loss_fn accepting trajectories of instantaneous
+        properties. The loss function computes observables (ensemble averages)
+        via the reweighting scheme and outputs the MSE loss and predicted
+        observations.
+
     """
     # Interpolate between the default loss and the relative entropy loss
     if l_RE is None:
@@ -92,8 +119,32 @@ def init_default_loss_fn(targets: TargetDict, l_H = 0.0, l_RE = None):
     return loss_fn
 
 
-def init_difftre_gradient_and_propagation(reweight_fns, loss_fn, quantities, energy_fn_template):
-    """Initializes the function to compute gradients of ensemble averages via DiffTRe."""
+def init_difftre_gradient_and_propagation(
+    reweight_fns: Tuple[Callable, Callable, Callable],
+    loss_fn,
+    quantities: Dict[str, ComputeFn],
+    energy_fn_template: EnergyFnTemplate):
+    """Initializes the function to compute the DiffTRe loss and its gradients.
+
+    DiffTRe computes gradients of ensemble averages via a perturbation approach,
+    initiazed in
+    :func:`chemtrain.trajectory.reweighting.init_pot_reweight_propagation_fns`.
+
+    Args:
+        reweight_fns: Functions to perform and evaluate umbrella-sampling
+            simulations.
+        loss_fn: DiffTRe compatible loss function, e.g.,
+            initialized via :func:`init_default_loss_fn`.
+        quantities: Dictionary specifying how to compute instantaneous
+            quantities from the simulator states.
+        energy_fn_template: Template to initialize the energy function that
+            is required to compute the weights.
+
+    Returns:
+        Returns a function to propagate the current trajectory state,
+        compute the loss and gradient, and predict observations.
+
+    """
 
     weights_fn, propagate_fn, safe_propagate = reweight_fns
 
@@ -129,7 +180,6 @@ def init_difftre_gradient_and_propagation(reweight_fns, loss_fn, quantities, ene
     #       loss grad
 
     @safe_propagate
-    @functools.partial(jit, donate_argnums=1)
     def difftre_grad_and_propagation(params, traj_state):
         """The main DiffTRe function that recomputes trajectories
         when needed and computes gradients of the loss wrt. energy function
@@ -144,17 +194,31 @@ def init_difftre_gradient_and_propagation(reweight_fns, loss_fn, quantities, ene
 
 
 def init_rel_entropy_loss_fn(energy_fn_template, compute_weights, kbt, vmap_batch_size=10):
-    """Initializes a function that computes the relative entropy loss.
+    """Initializes a function to computes the relative entropy loss.
 
-    The relative entropy between an atomistic system and a consistently
-    coarse-grained reference system depends on the free energies difference
-    between the systems.
-    This free energy difference is not simple to compute.
-    However, all contributions to the relative entropy that depend on the
-    model parameters are simple to estimate up to a constant.
-    Thus, only considering these terms, we can create a loss function that
-    has the same gradients with respect to the model parameters as the
-    relative entropy.
+    The relative entropy between a fine-grained (FG) reference system
+    with :math:`U^\\mathrm{FG}(\\mathbf r)` coarse-grained (CG) reference system
+    with :math:`U_\\theta^\\mathrm{CG}(\\mathbf R)` is
+
+    .. math::
+
+       S_\\text{rel} = \\beta\\langle
+          U_\\theta^\\mathrm{CG}(\\mathcal M(\\mathbf r))
+          - U^\\mathrm{FG}(\\mathbf r) \\rangle_\\text{FG}
+          -\\beta(A^\\mathrm{CG}_\\theta - A^\\mathrm{FG}) + S_\\text{map}.
+
+    This relative entropy depends on the free energies of the models and
+    a mapping entropy.
+
+    However, using free-energy perturbation approaches, one can create
+    a replacement loss functions that has the same gradients
+
+    .. math::
+
+       \\mathcal L(\\theta) = \\beta \\langle
+          U_\\theta^\\mathrm{CG}(\\mathcal M(\\mathbf r))\\rangle_\\text{FG}
+          -\\beta A^\\mathrm{CG}_\\theta.
+
 
     Args:
         energy_fn_template: Energy function template
@@ -204,14 +268,22 @@ def init_rel_entropy_gradient_and_propagation(reference_dataloader,
                                               vmap_batch_size=10):
     """Initialize function to compute the relative entropy gradients.
 
+    DiffTRe computes gradients of ensemble averages via a perturbation approach,
+    initiazed in
+    :func:`chemtrain.trajectory.reweighting.init_pot_reweight_propagation_fns`.
+
     The computation of the gradient is batched to increase computational
     efficiency.
 
     Args:
         reference_dataloader: Dataloader containing the mapped atomistic
             reference positions.
-        reweight_fns: Tuple of functions to perform potential reweighting.
-        energy_fn_template: Energy function template
+        reweight_fns: Functions to perform and evaluate umbrella-sampling
+            simulations to estimate the free energy gradients.
+            Initialized via
+            :func:`chemtrain.trajectory.reweighting.init_pot_reweight_propagation_fns`.
+        energy_fn_template: Template to initialize the energy function that
+            is required to compute the weights.
         kbt: Temperature of the statepoint
         vmap_batch_size: Batch for computing the potential energies on the
             reference positions.

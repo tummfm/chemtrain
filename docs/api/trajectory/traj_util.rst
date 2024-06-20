@@ -1,5 +1,5 @@
-``chemtrain.trajectory.traj_util``
-==================================
+:modulename:`trajectory.traj_util`
+============================================
 
 .. currentmodule:: chemtrain.trajectory.traj_util
 
@@ -10,6 +10,7 @@ Initialize Simulation
 
 .. autosummary::
    :toctree: _autosummary
+   :template: function.rst
 
     process_printouts
     initialize_simulator_template
@@ -20,13 +21,16 @@ Run Simulation
 
 .. autosummary::
    :toctree: _autosummary
+   :template: function.rst
 
    trajectory_generator_init
+
 
 The following states are necessary in the scope of the module:
 
 .. autosummary::
    :toctree: _autosummary
+   :template: class.rst
 
    TimingClass
    SimulatorState
@@ -37,6 +41,7 @@ Compute Quantities
 
 .. autosummary::
    :toctree: _autosummary
+   :template: function.rst
 
    quantity_traj
    quantity_map
@@ -48,6 +53,7 @@ Utilities
 
 .. autosummary::
    :toctree: _autosummary
+   :template: function.rst
 
    canonicalize_state_kwargs
    init_simulation_fn

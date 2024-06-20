@@ -5,16 +5,20 @@
 .. autoclass:: {{ objname }}
 
    {% block methods %}
-
    {% if methods %}
    .. rubric:: {{ _('Methods') }}
+
+   .. automethod:: __init__
+   .. automethod:: __call__
 
    .. autosummary::
       :toctree: _autosummary
       :template: method.rst
 
    {% for item in methods %}
+   {% if item != '__init__' %}
       ~{{ name }}.{{ item }}
+   {% endif %}
    {%- endfor %}
    {% endif %}
    {% endblock %}
@@ -25,7 +29,6 @@
 
    {% for item in attributes %}
    .. autoattribute:: {{ name }}.{{ item }}
-      :annotation:
    {%- endfor %}
    {% endif %}
    {% endblock %}

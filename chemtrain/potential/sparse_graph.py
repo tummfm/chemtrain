@@ -42,26 +42,24 @@ class SparseDirectionalGraph:
 
      Attributes:
          distance_ij: A (N_edges,) array storing for each the radial distances
-                      between particle i and j
+            between particle i and j
          idx_i: A (N_edges,) array storing for each edge particle index i
          idx_j: A (N_edges,) array storing for each edge particle index j
          angles: A (N_triplets,) array storing for each triplet the angle formed
-                 by the 3 particles
+            by the 3 particles
          reduce_to_ji: A (N_triplets,) array storing for each triplet kji edge
-                       index j->i to aggregate messages via a segment_sum: each
-                       m_ji is a distinct segment containing all incoming m_kj.
+            index j->i to aggregate messages via a segment_sum: each m_ji is a
+            distinct segment containing all incoming m_kj.
          expand_to_kj: A (N_triplets,) array storing for each triplet kji edge
-                       index k->j to gather all incoming edges for message
-                       passing.
+            index k->j to gather all incoming edges for message passing.
          edge_mask: A (N_edges,) boolean array storing for each edge whether the
-                    edge exists. By default, all edges are considered.
+            edge exists. By default, all edges are considered.
          triplet_mask: A (N_triplets,) boolean array storing for each triplet
-                       whether the triplet exists. By default, all triplets are
-                       considered.
+            whether the triplet exists. By default, all triplets are considered.
          n_edges: Number of non-masked edges in the graph. None assumes all
-                  edges are real.
+            edges are real.
          n_triplets: Number of non-masked triplets in the graph. None assumes
-                     all triplets are real.
+            all triplets are real.
          n_particles: Number of non-masked species in the graph.
     """
     species: jnp.ndarray
@@ -164,11 +162,11 @@ def safe_angle_mask(r_ji, r_kj, angle_mask):
 
     Args:
         r_ji: Array (N_triplets, dim) of vectors  pointing to position of
-              particle i from particle j
+            particle i from particle j
         r_kj: Array (N_triplets, dim) of vectors pointing to position of
-              particle k from particle j
+            particle k from particle j
         angle_mask: (N_triplets, ) or (N_triplets, 1) Boolean mask for each
-                    triplet, which is False for triplets that need to be masked.
+            triplet, which is False for triplets that need to be masked.
 
     Returns:
         A tuple (r_ji_safe, r_kj_safe) of vectors r_ji and r_kj, where masked
@@ -192,9 +190,9 @@ def angle_triplets(positions, displacement_fn, angle_idxs, angle_mask):
         positions: Array pf particle positions (N_particles x 3)
         displacement_fn: Jax_md displacement function
         angle_idxs: Array of particle indeces that form a triplet
-                    (N_triples x 3)
+            (N_triples x 3)
         angle_mask: Boolean mask for each triplet, which is False for triplets
-                    that need to be masked.
+            that need to be masked.
 
     Returns:
         A (N_triples,) array with the angle for each triplet.
@@ -247,21 +245,21 @@ def sparse_graph_from_neighborlist(displacement_fn: Callable,
         positions: (N_particles, dim) array of particle positions
         neighbor: Jax_MD neighbor list that is in sync with positions
         r_cutoff: Radial cutoff distance, below which 2 particles are considered
-                  to be connected by an edge.
+            to be connected by an edge.
         species: (N_particles,) array encoding atom types. If None, assumes type
-                 0 for all atoms.
+            0 for all atoms.
         max_edges: Maximum number of edges storable in the graph. Can be used to
-                   reduce the number of padded edges, but should be used
-                   carefully, such that no existing edges are capped. Default
-                   None uses the maximum possible number of edges as given by
-                   the dense neighbor list.
+            reduce the number of padded edges, but should be used carefully,
+            such that no existing edges are capped. Default None uses the
+            maximum possible number of edges as given by the dense neighbor
+            list.
         max_triplets: Maximum number of triplets storable in the graph. Can be
-                    used to reduce the number of padded triplets, but should be
-                    used carefully, such that no existing triplets are capped.
-                    Default None uses the maximum possible number of triplets as
-                    given by the dense neighbor list.
+            used to reduce the number of padded triplets, but should be used
+            carefully, such that no existing triplets are capped. Default None
+            uses the maximum possible number of triplets as given by the dense
+            neighbor list.
         species_mask: (N_particles,) array encoding atom types. Default None,
-                    assumes no masking necessary.
+            assumes no masking necessary.
 
     Returns:
         Tuple (sparse_graph, too_many_edges_error_code) containing the
@@ -403,21 +401,19 @@ def convert_dataset_to_graphs(r_cutoff, position_data, box, species,
     Args:
         r_cutoff: Radial cut-off distance below which 2 particles form an edge
         position_data: Either a list of (N_particles, dim) arrays of particle
-                       positions in case N_particles is not constant accross
-                       snapshots or a (N_snapshots, N_particles, dim) array.
-                       The positions need to be given in real (non-fractional)
-                       coordinates.
+            positions in case N_particles is not constant accross snapshots or a
+            (N_snapshots, N_particles, dim) array. The positions need to be
+            given in real (non-fractional) coordinates.
         box: Either a single 1 or 2-dimensional box (if the box is constant
-             across snapshots) or an (N_snapshots, dim) or
-             (N_snapshots, dim, dim) array of boxes.
+            across snapshots) or an (N_snapshots, dim) or
+            (N_snapshots, dim, dim) array of boxes.
         species: Either a list of (N_particles,) arrays of atom types in case
-                 N_particles is not constant accross snapshots or a single
-                 (N_particles,) array.
+            N_particles is not constant accross snapshots or a single
+            (N_particles,) array.
         padding: If True, pads resulting edges and triplets to the maximum
-                 across the input data to allow for straightforward batching
-                 without re-compilation. If False, returns edges and triplets
-                 with varying shapes, but to-be-masked non-existing edges /
-                 triplets.
+            across the input data to allow for straightforward batching
+            without re-compilation. If False, returns edges and triplets with
+            varying shapes, but to-be-masked non-existing edges / triplets.
 
     Returns:
         With padding, a SparseDirectionalGraph pytree containing all graphs of
@@ -507,7 +503,7 @@ def pad_per_atom_quantities(per_atom_data):
 
     Args:
         per_atom_data: List of (N_particles,) arrays containing a scalar
-                       quantity of each particle.
+            quantity of each particle.
 
     Returns:
         A (N_snapshots, N_particles) array and corresponding mask array.

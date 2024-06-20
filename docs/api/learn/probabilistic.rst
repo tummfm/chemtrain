@@ -1,5 +1,5 @@
-``chemtrain.learn.probabilistic``
-=================================
+:modulename:`learn.probabilistic`
+===========================================
 
 .. currentmodule:: chemtrain.learn.probabilistic
 
@@ -12,24 +12,26 @@ Defines the Bayesian UQ problem by building prior and likelihood functions as we
 combining them to prepare the problem in order to initialize an SGMCMC force matching
 trainer.
 
-.. autofunction:: uniform_prior
+.. autosummary::
+   :toctree: _autosummary
+   :template: function.rst
 
-.. autofunction:: init_elementwise_prior_fn
-
-.. autofunction:: init_likelihood
-
-.. autofunction:: init_log_posterior_fn
-
-.. autofunction:: init_force_matching
+   uniform_prior
+   init_elementwise_prior_fn
+   init_likelihood
+   init_log_posterior_fn
+   init_force_matching
 
 Dropout Monte Carlo
 -------------------------------
 Utility functions to perform forward UQ of a model trained via Dropout.
 
+.. autosummary::
+   :toctree: _autosummary
+   :template: function.rst
 
-.. autofunction:: init_dropout_uq_fwd
-
-.. autofunction:: dropout_uq_predictions
+   init_dropout_uq_fwd
+   dropout_uq_predictions
 
 Propagate Uncertainty
 -------------------------------
@@ -44,8 +46,10 @@ UQ Postprocessing
 
 Utility functions to assess statistics of Markov chains and compute error metrics.
 
-.. autofunction:: mcmc_statistics
+.. autosummary::
+   :toctree: _autosummary
+   :template: function.rst
 
-.. autofunction:: validation_mae_params_fm
-
-.. autofunction:: test_rmse_params_fm
+   mcmc_statistics
+   validation_mae_params_fm
+   test_rmse_params_fm

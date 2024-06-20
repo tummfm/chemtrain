@@ -1,5 +1,5 @@
-jax_md_mod.io
-==============
+:modulename:`io`
+===========================
 
 Utility to load and save simulation data.
 

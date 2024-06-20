@@ -1,13 +1,10 @@
-``chemtrain.quantity.property_prediction``
-==========================================
+:modulename:`quantity.property_prediction`
+====================================================
 
 .. currentmodule:: chemtrain.quantity.property_prediction
 
 .. automodule:: chemtrain.quantity.property_prediction
 
-This module contains methods for molecular property prediction,
-which build on neural network architectures used for potential
-energy prediction.
 
 Molecular property predictor
 -------------------------------
@@ -35,11 +32,13 @@ Utility functions for initialization of the dataset and the model as well as
 a masked loss function for masking virtual atoms that are added to conserve
 array shapes.
 
-.. autofunction:: build_dataset
+.. autosummary::
+   :toctree: _autosummary
+   :template: function.rst
 
-.. autofunction:: init_model
-
-.. autofunction:: init_loss_fn
+   build_dataset
+   init_model
+   init_loss_fn
 
 Post-processing
 -------------------------------
@@ -47,6 +46,9 @@ Property prediction at the atom level is often highly class-imbalanced.
 To account for this imbalance, the following functions evaluate prediction
 accuracy for each atom species:
 
-.. autofunction:: per_species_results
+.. autosummary::
+   :toctree: _autosummary
+   :template: function.rst
 
-.. autofunction:: per_species_box_errors
+   per_species_results
+   per_species_box_errors

@@ -1,5 +1,5 @@
-``chemtrain.learn.difftre``
-===================================
+:modulename:`learn.difftre`
+=====================================
 
 .. currentmodule:: chemtrain.learn.difftre
 
@@ -19,3 +19,8 @@ Gradient Computation Routines
 .. autofunction:: init_difftre_gradient_and_propagation
 
 .. autofunction:: init_rel_entropy_gradient_and_propagation
+
+ESS Line-Search
+----------------
+
+.. autofunction:: init_step_size_adaption

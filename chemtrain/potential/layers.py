@@ -15,8 +15,8 @@
 """Jax / Haiku implementation of layers to build the DimeNet++ architecture.
 
 The :ref:`dimenet_building_blocks` take components of
-:class:`~chemtrain.sparse_graph.SparseDirectionalGraph` as input. Please refer
-to this class for input descriptions.
+:class:`chemtrain.potential.sparse_graph.SparseDirectionalGraph` as input.
+Please refer to this class for input descriptions.
 """
 import haiku as hk
 from jax import nn, ops, numpy as jnp, scipy as jsp

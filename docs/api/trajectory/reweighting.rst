@@ -1,5 +1,5 @@
-``chemtrain.trajectory.reweighting``
-====================================
+:modulename:`trajectory.reweighting`
+==============================================
 
 .. currentmodule:: chemtrain.trajectory.reweighting
 
@@ -12,6 +12,12 @@ Reweighting
 ___________
 
 .. autofunction:: init_pot_reweight_propagation_fns
+
+.. autoclass:: ComputeWeightsFn
+   :members: __call__
+
+.. autoclass:: PropagateFn
+   :members: __call__
 
 .. autofunction:: init_reference_trajectory_reweight_fns
 

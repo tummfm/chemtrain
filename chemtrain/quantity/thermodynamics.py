@@ -27,7 +27,7 @@ def init_pressure_target(energy_fn_template: EnergyFnTemplate,
                          ) -> TargetInit:
     """Initializes pressure target."""
 
-    @target_quantity([], ['ref_box_tensor'])
+    @target_quantity([], ['reference_box'])
     def initialize(key, compute_fns, init_args):
         compute_fn = custom_quantity.init_pressure(
             energy_fn_template=energy_fn_template,
@@ -129,7 +129,7 @@ def init_heat_capacity_nvt(gamma: float = 1.0,
                            target: float = 1.0,
                            linearized: bool = False,
                            ) -> TargetInit:
-    @target_quantity(['kbt'], ['dof', 'r_init'])
+    @target_quantity(['kT'], ['dof', 'r_init'])
     def initialize(key, compute_fns, init_args):
         dof = init_args.get('dof')
         if dof is None:
@@ -155,7 +155,7 @@ def init_heat_capacity_npt(gamma: float = 1.0,
                            target: float = 1.0,
                            linearized: bool = False,
                            ) -> TargetInit:
-    @target_quantity(['kbt', 'ref_pressure'], ['dof', 'r_init'])
+    @target_quantity(['kT', 'pressure'], ['dof', 'r_init'])
     def initialize(key, compute_fns, init_args):
         dof = init_args.pop('dof', None)
         r_init = init_args.pop('r_init', None)

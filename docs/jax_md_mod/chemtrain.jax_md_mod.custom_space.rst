@@ -1,5 +1,5 @@
-jax_md_mod.custom_space
-=======================
+:modulename:`custom_space`
+=====================================
 
 .. automodule:: chemtrain.jax_md_mod.custom_space
 

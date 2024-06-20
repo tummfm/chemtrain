@@ -1,4 +1,4 @@
-``chemtrain.learn``
+``learn``
 ===================
 
 The module ``chemtrain.learn`` enables learning potentials using different
@@ -7,31 +7,31 @@ methods on multiple datasets.
 Learning on Distributions
 --------------------------
 
-Matching distributions of conformations.
+The following submodules provide methods to learn potentials based on a
+statistical mechanics perspective.
 
 .. toctree::
    :titlesonly:
 
    difftre
-   ibi
 
 Learning on Single Snapshots
 ------------------------------
 
-Directly matching predictions on individual conformations.
+These modules enable to learn potential by matching of single snapshots.
 
 .. toctree::
    :titlesonly:
 
    force_matching
+   probabilistic
 
 Advanced Learning
 ------------------
 
-Learning Tools
+These modules provide general utilities for machine learning of potentials.
 
 .. toctree::
    :titlesonly:
 
-   probabilistic
    max_likelihood

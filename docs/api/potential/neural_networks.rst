@@ -1,5 +1,5 @@
-``chemtrain.potential.neural_networks``
-=======================================
+:modulename:`potential.neural_networks`
+=================================================
 
 .. currentmodule:: chemtrain.potential.neural_networks
 
@@ -8,9 +8,9 @@
 DimeNet++
 -----------------
 The :class:`DimeNetPP` directly takes a
-:class:`~chemtrain.sparse_graph.SparseDirectionalGraph` as input and predicts
-per-atom quantities. As :class:`DimeNetPP` is a haiku Module, it needs to be
-wrapped inside a hk.transform() before it can be applied.
+:class:`chemtrain.potential.sparse_graph.SparseDirectionalGraph` as input and
+predicts per-atom quantities. As :class:`DimeNetPP` is a haiku Module, it needs
+to be wrapped inside a hk.transform() before it can be applied.
 
 We provide 2 interfaces to DimeNet++:
 The function :meth:`dimenetpp_neighborlist` serves as a interface to Jax M.D.

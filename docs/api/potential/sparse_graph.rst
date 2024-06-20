@@ -1,5 +1,5 @@
-``chemtrain.potential.sparse_graph``
-====================================
+:modulename:`potential.sparse_graph`
+==============================================
 
 .. currentmodule:: chemtrain.potential.sparse_graph
 

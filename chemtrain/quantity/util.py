@@ -12,111 +12,151 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Create quantitiy targets for training. """
+"""Create quantity targets for training. """
 import functools
 
 from jax_md.partition import NeighborList
 
-from typing import TypedDict, Callable, Dict, Any, Tuple, List
+from typing import TypedDict, Callable, Dict, Any, Tuple, List, Protocol
 from chemtrain.typing import ArrayLike, ComputeFn, EnergyFnTemplate, TargetDict
 
 InitReturn = Tuple[Dict[str, TargetDict], Dict[str, ComputeFn]]
 ComputeFnInit = Callable[..., ComputeFn]
 ComputeFnInitDict = Dict[str, Callable[..., ComputeFnInit]]
 ComputeFnDict = Dict[str, ComputeFn]
-TargetInit = Callable[..., Tuple[TargetDict, ComputeFnDict]]
+
+class TargetInit(Protocol):
+
+    required_args: List[str]
+    optional_args: List[str]
+
+    def __call__(self,
+                 key,
+                 target_dicts,
+                 compute_fns,
+                 system) -> Tuple[TargetDict, ComputeFnDict]:
+        ...
 
 
 class InitArguments(TypedDict, total=False):
-    """Non-exhaustive dictionary of arguments to initialize the compute functions. """
+    """Non-exhaustive dictionary of arguments to initialize the compute functions.
+
+    Arguments:
+        displacement_fn: Function to compute the displacement from particles.
+            Initialized via :mod:`jax_md.space`.
+        energy_fn_template: Template to build energy function from a set of
+            parameters.
+        r_init: Initial positions of the system, e.g., to infer the number of
+            particles in the system.
+        nbrs_init: Initial neighbor list of the system, e.g., to infer the
+            number of close triplets in the system.
+        reference_box: Reference box of the system.
+        kT: Fixed temperature of the system.
+        pressure: Fixed pressure of the system
+
+    """
     displacement_fn: Callable
     energy_fn_template: EnergyFnTemplate
     nbrs_init: NeighborList
-    reference_box: ArrayLike
-    ref_box_tensor: ArrayLike
     r_init: ArrayLike
+    reference_box: ArrayLike
+    kT: ArrayLike
+    pressure: ArrayLike
 
 
 class TargetBuilder:
+    """Class to simplify the initialization of DiffTRe targets.
 
-    def __init__(self):
+    For each added target, the target builder will check whether compute
+    functions for all required snapshots are provided.
+    Additionally, the target builder delays the initialization of the compute
+    functions until all information about the system is available.
+
+    Args:
+        system: Dictionary containing properties of the system, e.g., the
+            displacement between particles.
+        strict: If True, the target builder will check whether all required
+            system properties are provided for each target. Otherwise,
+            the properties of the system can be provided when building the
+            targets.
+
+    Example:
+
+        First, we add the RDF function to the target builder:
+
+        .. code::
+
+              target_builder = TargetBuilder()
+
+              target_builder["rdf"] = quantity.structure.init_radial_distribution_target(
+                  target, rdf_start=0.00, rdf_cut=1.0, nbins=50
+              )
+
+        Then, as soon as the box and displacement function of the system are known,
+        the compute functions and observables can be initialized:
+
+        .. code::
+
+           targets, compute_fns = target_builder.build({
+               'displacement_fn': displacement_fn,
+               'reference_box': box
+           })
+
+    """
+
+    def __init__(self,
+                 system: InitArguments = None,
+                 strict: bool = False):
+        if system is None:
+            system = {}
+
+        self._strict = strict
+        self._system = system
         self._targets = {}
 
     def __setitem__(self, key, value: TargetInit):
         assert key not in self._targets, (
             f"Duplicate target {key}."
         )
+
+        if self._strict:
+            for required_arg in value.required_args:
+                assert required_arg in self._system.keys(), (
+                    f"Required argument {required_arg} not provided."
+                )
+
         self._targets[key] = value
 
-    def build(self, system: InitArguments):
+    def build(self,
+              system: InitArguments = None
+              ) -> Tuple[TargetDict, ComputeFnDict]:
+        """Initializes the targets and compute functions.
+
+        Args:
+            system: Dictionary containing properties of the system, e.g., the
+                displacement between particles.
+
+        Returns:
+            Returns a dictionary of observables and a dictionary of functions
+            to compute instantaneous properties from the simulator states.
+
+        """
+        if system is not None:
+            self._system.update(system)
+
         target_dicts = {}
         compute_fns = {}
         for key, init_fn in self._targets.items():
             target_dicts, compute_fns = init_fn(
-                key, target_dicts, compute_fns, system)
+                key, target_dicts, compute_fns, self._system)
         return target_dicts, compute_fns
 
 
-# def set_init_kwargs(init_fn: ComputeFnInit,
-#                     required: List[str],
-#                     optional: List[str],
-#                     **set_kwargs: Any):
-#     """Helper function initializing the compute functions.
-#
-#     Known arguments are set as keyword arguments while arguments that are
-#     required but now yet available are marked:
-#
-#     .. code-block ::
-#
-#         # The compute function requires the indicies of the bonds given by the
-#         # bond dihedral params.
-#         dihedral_params = custom_quantity.BondDihedralParams(bond_idxs, ...)
-#
-#         compute_fn_init = set_init_kwargs(
-#             custom_quantity.init_bond_dihedral_distribution,
-#             'displacement_fn', bond_dihedral_params=dihedral_struct
-#         )
-#
-#         # The final compute functions can be initialized after the simulation
-#         # has been setup.
-#
-#         compute_fn_templates = {
-#             'dihedral_dist' compute_fn_init,
-#             ...
-#         }
-#
-#         init_args = {
-#             'displacement_fn': ...
-#         }
-#
-#         compute_fns = initialize_compute_fns(
-#             compute_fn_templates, init_args)
-#
-#     Args:
-#         init_fn: Function initializing the compute function.
-#         required: List of keyword arguments required for the initialization
-#             that are not yet available.
-#         set_kwargs: Keyword arguments that are known and can be set directly.
-#
-#     Returns:
-#         Returns a partially initialized compute function.
-#
-#     """
-#     @functools.wraps(init_fn)
-#     def partial_init_fn(**kwargs):
-#         filtered_kwargs = {
-#             key: kwargs[key] for key in required
-#         }
-#         # Collect all optional args
-#         filtered_optional_kwargs = {
-#             key: value for key in optional
-#             if (value := kwargs.get(key)) is not None
-#         }
-#         filtered_kwargs.update(filtered_optional_kwargs)
-#         return init_fn(**filtered_kwargs, **set_kwargs)
-#     return partial_init_fn
-
 def target_quantity(required: list = None, optional: list = None):
+    """Initializes a decorator defining required and optional arguments to
+    initialize a target.
+    """
+
     if required is None:
         required = []
     if optional is None:
@@ -156,6 +196,10 @@ def target_quantity(required: list = None, optional: list = None):
                 compute_fns.update({key: compute_fn})
 
             return targets_dict, compute_fns
+
+        # Enables checking whether system arguments are already provided
+        quantity_init.required_args = required
+        quantity_init.optional_args = optional
         return quantity_init
 
     return quantity_init_wrapper

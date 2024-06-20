@@ -68,29 +68,27 @@ class DimeNetPP(hk.Module):
         Args:
             r_cutoff: Radial cut-off distance of edges
             n_species: Number of different atom species the network is supposed
-                       to process.
+                to process.
             num_targets: Number of different atomic properties to predict
             kbt_dependent: True, if DimeNet explicitly depends on temperature.
-                           In this case 'kT' needs to be provided as a kwarg
-                           during the model call to the energy_fn. Default False
-                           results in a model independent of temperature.
+                In this case 'kT' needs to be provided as a kwarg during the
+                model call to the energy_fn. Default False results in a model
+                independent of temperature.
             embed_size: Size of message embeddings. Scale interaction and output
-                        embedding sizes accordingly, if not specified
-                        explicitly.
+                embedding sizes accordingly, if not specified explicitly.
             n_interaction_blocks: Number of interaction blocks
             num_residual_before_skip: Number of residual blocks before the skip
-                                      connection in the Interaction block.
+                connection in the Interaction block.
             num_residual_after_skip: Number of residual blocks after the skip
-                                     connection in the Interaction block.
-            out_embed_size: Embedding size of output block.
-                            If None is set to 2 * embed_size.
-            type_embed_size: Embedding size of atom type embeddings.
-                             If None is set to 0.5 * embed_size.
+                connection in the Interaction block.
+            out_embed_size: Embedding size of output block. If None is set to
+                2 * embed_size.
+            type_embed_size: Embedding size of atom type embeddings. If None is
+                set to 0.5 * embed_size.
             angle_int_embed_size: Embedding size of Linear layers for
-                                  down-projected triplet interation.
-                                  If None is 0.5 * embed_size.
+                down-projected triplet interation. If None is 0.5 * embed_size.
             basis_int_embed_size: Embedding size of Linear layers for interation
-                                  of RBS/ SBF basis in interaction block
+                of RBS/ SBF basis in interaction block
             num_dense_out: Number of final Linear layers in output block
             num_rbf: Number of radial Bessel embedding functions
             num_sbf: Number of spherical Bessel embedding functions
@@ -98,9 +96,8 @@ class DimeNetPP(hk.Module):
             envelope_p: Power of envelope polynomial
             init_kwargs: Kwargs for initializaion of Linear layers
             dropout_mode: A dict defining which fully connected layers to apply
-                          dropout and at which rate
-                          (see dropout.dimenetpp_setup). If None, no Dropout is
-                          applied.
+                dropout and at which rate (see dropout.dimenetpp_setup).
+                If None, no Dropout is applied.
             name: Name of DimeNet++ model
             outscale: Scale the output initially return zero energy
         """
@@ -153,10 +150,9 @@ class DimeNetPP(hk.Module):
 
         Args:
             graph: An instance of sparse_graph.SparseDirectionalGraph defining
-                   the molecular graph connectivity.
+                the molecular graph connectivity.
             **dyn_kwargs: Kwargs supplied on-the-fly, such as 'kT' for
-                          temperature-dependent models or 'dropout_key' for
-                          Dropout.
+                temperature-dependent models or 'dropout_key' for Dropout.
 
         Returns:
             An (n_partciles, num_targets) array of predicted per-atom quantities
@@ -229,16 +225,16 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
         displacement: Jax_md displacement function
         r_cutoff: Radial cut-off distance of DimeNetPP and the neighbor list
         n_species: Number of different atom species the network is supposed
-                   to process.
+            to process.
         positions_test: Sample positions to estimate max_edges / max_angles.
-                        Needs to be provided to enable capping.
+            Needs to be provided to enable capping.
         neighbor_test: Sample neighborlist to estimate max_edges / max_angles.
-                       Needs to be provided to enable capping.
+            Needs to be provided to enable capping.
         max_edge_multiplier: Multiplier for initial estimate of maximum edges.
         max_triplet_multiplier: Multiplier for initial estimate of maximum
-                                triplets.
+            triplets.
         dimenetpp_kwargs: Kwargs to change the default structure of DimeNet++.
-                          For definition of the kwargs, see DimeNetPP.
+            For definition of the kwargs, see DimeNetPP.
 
     Returns:
         A tuple of 2 functions: A init_fn that initializes the model parameters
@@ -276,10 +272,10 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
 
         Args:
             positions: Jax_md state-position. (N_particles x dim) array of
-                       particle positions
+                particle positions
             neighbor: Jax_md dense neighbor list corresponding to positions
             species: (N_particles,) Array encoding atom types. If None, assumes
-                     all particles to belong to the same species
+                all particles to belong to the same species
             **dynamic_kwargs: Dynamic kwargs, such as 'box' or 'kT'.
 
         Returns:
@@ -315,7 +311,7 @@ def dimenetpp_property_prediction(
         r_cutoff: Radial cut-off distance of DimeNetPP and the neighbor list.
         n_targets: Number of different molecular properties to predict.
         n_species: Number of different atom species the network is supposed
-                   to process.
+            to process.
         **model_kwargs: Kwargs to change the default structure of DimeNet++.
 
     Returns:
@@ -331,7 +327,7 @@ def dimenetpp_property_prediction(
 
         Args:
             mol_graph: An instance of sparse_graph.SparseDirectionalGraph
-                       defining the molecular graph connectivity.
+                defining the molecular graph connectivity.
             dynamic_kwargs: Dynamic kwargs for DimeNet++.
 
         Returns:
@@ -399,9 +395,9 @@ def pair_interaction_nn(displacement: space.DisplacementFn,
         displacement: Displacement function
         r_cutoff: Radial cut-off of pairwise interactions and neighbor list
         hidden_layers: A list (or scalar in the case of a single hidden layer)
-                       of number of neurons for each hidden layer in the MLP
+            of number of neurons for each hidden layer in the MLP
         pair_net_kwargs: Kwargs to change the default structure of PairwiseNN.
-                         For definition of the kwargs, see PairwiseNN.
+            For definition of the kwargs, see PairwiseNN.
 
     Returns:
         A tuple of 2 functions: A init_fn that initializes the model parameters

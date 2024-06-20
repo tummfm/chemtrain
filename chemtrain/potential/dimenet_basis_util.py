@@ -10,15 +10,13 @@ import sympy as sym
 
 
 def Jn(r, n):
-    """
-    numerical spherical bessel functions of order n
-    """
+    """Numerical spherical bessel functions of order n."""
     return np.sqrt(np.pi/(2*r)) * sp.jv(n+0.5, r)
 
 
 def Jn_zeros(n, k):
-    """
-    Compute the first k zeros of the spherical bessel functions up to order n (excluded)
+    """Compute the first k zeros of the spherical bessel functions up to order
+    n (excluded).
     """
     zerosj = np.zeros((n, k), dtype="float32")
     zerosj[0] = np.arange(1, k + 1) * np.pi
@@ -35,8 +33,8 @@ def Jn_zeros(n, k):
 
 
 def spherical_bessel_formulas(n):
-    """
-    Computes the sympy formulas for the spherical bessel functions up to order n (excluded)
+    """Computes the sympy formulas for the spherical bessel functions up to
+    order n (excluded).
     """
     x = sym.symbols('x')
 
@@ -50,9 +48,8 @@ def spherical_bessel_formulas(n):
 
 
 def bessel_basis(n, k):
-    """
-    Compute the sympy formulas for the normalized and rescaled spherical bessel functions up to
-    order n (excluded) and maximum frequency k (excluded).
+    """Compute the sympy formulas for the normalized and rescaled spherical
+    bessel functions up to order n (excluded) and maximum frequency k (excluded).
     """
 
     zeros = Jn_zeros(n, k)
@@ -76,19 +73,21 @@ def bessel_basis(n, k):
     return bess_basis
 
 
-def sph_harm_prefactor(l, m):
-    """
-    Computes the constant pre-factor for the spherical harmonic of degree l and order m
-    input:
-    l: int, l>=0
-    m: int, -l<=m<=l
+def sph_harm_prefactor(l: int, m: int):
+    """Computes the constant pre-factor for the spherical harmonic of degree l
+    and order m.
+
+    Args:
+        l: :math:`l>=0`
+        m: :math:`-l<=m<=l`
+
     """
     return ((2*l+1) * np.math.factorial(l-abs(m)) / (4*np.pi*np.math.factorial(l+abs(m))))**0.5
 
 
 def associated_legendre_polynomials(l, zero_m_only=True):
-    """
-    Computes sympy formulas of the associated legendre polynomials up to order l (excluded).
+    """Computes sympy formulas of the associated legendre polynomials up to
+    order l (excluded).
     """
     z = sym.symbols('z')
     P_l_m = [[0]*(j+1) for j in range(l)]
@@ -113,9 +112,11 @@ def associated_legendre_polynomials(l, zero_m_only=True):
 
 
 def real_sph_harm(l, zero_m_only=True, spherical_coordinates=True):
-    """
-    Computes formula strings of the the real part of the spherical harmonics up to order l (excluded).
-    Variables are either cartesian coordinates x,y,z on the unit sphere or spherical coordinates phi and theta.
+    """Computes formula strings of the the real part of the spherical harmonics
+    up to order l (excluded).
+
+    Variables are either cartesian coordinates x,y,z on the unit sphere or
+    spherical coordinates phi and theta.
     """
     if not zero_m_only:
         S_m = [0]

@@ -1,5 +1,5 @@
-``chemtrain.data.data_processing``
-==================================
+:modulename:`data.data_processing`
+============================================
 
 .. currentmodule:: chemtrain.data.data_processing
 

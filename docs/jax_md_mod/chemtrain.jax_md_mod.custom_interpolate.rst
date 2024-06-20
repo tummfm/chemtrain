@@ -1,8 +1,9 @@
-jax_md_mod.custom_interpolate
-=============================
+:modulename:`custom_interpolate`
+===========================================
 
-.. autoclass:: chemtrain.jax_md_mod.custom_interpolate.MonotonicInterpolate
-   :members:
+.. automodule:: chemtrain.jax_md_mod.custom_interpolate
 
-.. autoclass:: chemtrain.jax_md_mod.custom_interpolate.InterpolatedUnivariateSpline
+.. currentmodule:: chemtrain.jax_md_mod.custom_interpolate
+
+.. autoclass:: MonotonicInterpolate
    :members:

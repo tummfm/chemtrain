@@ -1,5 +1,5 @@
-``chemtrain.potential.prior``
-=============================
+:modulename:`potential.prior`
+=======================================
 
 .. currentmodule:: chemtrain.potential.prior
 
