@@ -38,7 +38,7 @@ base_path = Path("../_data")
 
 Force matching is a bottom-up method to derive coarse-grained potentials
 $U_\theta$ from atomistic reference data.
-In a variation formulation, the approach learns a set of parameters $\theta$
+In a variational formulation, the approach learns a set of parameters $\theta$
 by optimizing the error $\chi^2$ of predicted coarse forces
 $\mathbf F_I^\theta(\mathbf R)$ on the coarse-grained sites
 $\mathbf R = M(\mathbf r)$ [^Noid2008]
@@ -164,7 +164,7 @@ print(f"Parameter gradients on initial sample are\n{test_loss_fn(init_params, po
 ## Analytical Solution
 
 As our model relies only on the magnitude of the displacement between $C_1$ and $C_2$,
-we this distance and plot it.
+we compute this distance and plot it.
 
 ```{code-cell}
 disp = jax.vmap(displacement_fn)(position_dataset[:, 0, :], position_dataset[:, 1, :])

@@ -59,7 +59,7 @@ This part is, however, independent of the fine-grained and coarse-grained distri
 
 The second part is the expected difference between the predicted potential energies $U_\theta^\text{CG}(M(\mathbf r)) - U^\text{AA}(\mathbf r)$ in the fine-scaled ensemble.
 This part is simple to estimate.
-As for force-matching, estimation can involve pre-computing an atomistic trajectory, followed by a batched gradient-based optimization.
+Analogous to force-matching, the estimation involves pre-computing an atomistic trajectory, followed by a batched gradient-based optimization.
 
 The last part is the free energy difference between the fine-scaled and coarse-grained ensembles.
 Since the free energy normalizes a distribution 
@@ -191,7 +191,7 @@ print(f"Energy with initial params is {energy_fn_template(init_params)(position_
 ## Analytical Solution
 
 As our model relies only on the magnitude of the displacement between $C_1$ and $C_2$,
-we this distance and plot it.
+we compute this distance and plot it.
 
 ```{code-cell} 
 disp = jax.vmap(displacement_fn)(position_dataset[:, 0, :], position_dataset[:, 1, :])

@@ -51,7 +51,7 @@ make -C docs html
 
 Chemtrain is an extensive library to train machine-learning models for
 molecular dynamics.
-Its modular design tries to enable the creation of new training strategies.
+Its modular design enables the creation of new training strategies.
 The functionalities of these modules are:
 
 ### ``trainers`` -- **High-Level API to Algorithms**
@@ -84,9 +84,9 @@ schemes to reuse trajectories via re-weighting based on perturbation theory.
 ### ``quantity`` --- **Computing Ensemble Quantities**
 
 In addition to computing single-snapshot quantities,
-**chemtrain** enables to computation of macroscopic ensemble-based
+**chemtrain** enables the computation of macroscopic ensemble-based
 quantities. Examples of such quantities are simple ensemble averages, but
-also thermodynamic quantities like the free energy or heat capacity.
+also thermodynamic quantities such as the free energy or heat capacity.
 
 ### ``data`` --- **Data Loading and Processing**
 
