@@ -22,7 +22,7 @@ import haiku as hk
 from jax import numpy as jnp, nn as jax_nn
 from jax_md import smap, space, partition, nn, util
 
-from chemtrain.potential import layers, dropout, sparse_graph
+from jax_md_mod.model import dropout, layers, sparse_graph
 
 
 class DimeNetPP(hk.Module):

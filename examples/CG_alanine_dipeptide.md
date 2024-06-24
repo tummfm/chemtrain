@@ -26,6 +26,8 @@ import optax
 from jax import numpy as jnp, random
 
 from jax_md import simulate, partition, space
+from jax_md_mod import io, custom_quantity, custom_space
+from jax_md_mod.model import layers, neural_networks, prior
 
 import mdtraj
 
@@ -33,8 +35,6 @@ import matplotlib.pyplot as plt
 
 import haiku as hk
 
-from chemtrain.jax_md_mod import io, custom_quantity, custom_space
-from chemtrain.potential import layers, neural_networks, prior
 from chemtrain.data import data_processing
 from chemtrain.trajectory import traj_util
 from chemtrain import quantity, trainers

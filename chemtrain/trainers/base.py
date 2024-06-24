@@ -32,7 +32,7 @@ from chemtrain import util
 from chemtrain.data import data_processing
 from chemtrain.learn.max_likelihood import pmap_update_fn, \
     init_val_loss_fn, step_optimizer, shmap_update_fn
-from chemtrain.potential import dropout
+from jax_md_mod.model import dropout
 from chemtrain.trajectory.reweighting import init_pot_reweight_propagation_fns
 from chemtrain.trajectory import traj_util
 from chemtrain.typing import EnergyFnTemplate

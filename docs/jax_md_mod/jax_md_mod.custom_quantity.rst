@@ -1,9 +1,9 @@
 :modulename:`custom_quantity`
 ========================================
 
-.. automodule:: chemtrain.jax_md_mod.custom_quantity
+.. automodule:: jax_md_mod.custom_quantity
 
-.. currentmodule:: chemtrain.jax_md_mod.custom_quantity
+.. currentmodule:: jax_md_mod.custom_quantity
 
 
 Common Quantities

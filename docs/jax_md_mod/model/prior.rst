@@ -1,9 +1,9 @@
-:modulename:`potential.prior`
+:modulename:`model.prior`
 =======================================
 
-.. currentmodule:: chemtrain.potential.prior
+.. currentmodule:: jax_md_mod.model.prior
 
-.. automodule:: chemtrain.potential.prior
+.. automodule:: jax_md_mod.model.prior
 
 Topological Information
 ------------------------

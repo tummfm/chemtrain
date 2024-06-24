@@ -74,8 +74,10 @@ dynamic = ["version"]
     "orbax == 0.1.1"
 ]
 
-[tool.setuptools.packages]
-find = {namespaces = false}
+[tool.setuptools.packages.find]
+namespaces = false
+include = ["chemtrain*", "jax_md_mod*"]
+where = [""]
 
 [tool.setuptools.dynamic]
 version = {attr = "chemtrain.version.__version__"}

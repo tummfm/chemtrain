@@ -27,7 +27,7 @@ from jax_md import simulate, util as jax_md_util
 from jax_md.partition import NeighborList
 
 from chemtrain import util
-from chemtrain.jax_md_mod import custom_quantity
+from jax_md_mod import custom_quantity
 from chemtrain.typing import QuantityDict
 
 Array = jax_md_util.Array

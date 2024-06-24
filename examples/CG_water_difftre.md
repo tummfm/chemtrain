@@ -44,12 +44,10 @@ import haiku as hk
 from jax import numpy as jnp, random
 
 from jax_md import space, energy, partition, simulate
-```
+from jax_md_mod import io, custom_space, custom_energy
+from jax_md_mod.model import neural_networks, layers
 
-```{code-cell}
-from chemtrain.jax_md_mod import io, custom_space, custom_energy
 from chemtrain import trainers, trajectory, util, quantity
-from chemtrain.potential import neural_networks, layers
 ```
 
 ```{code-cell}

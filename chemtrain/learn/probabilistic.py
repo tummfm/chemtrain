@@ -18,16 +18,14 @@ from functools import partial
 
 from jax import (lax, vmap, pmap, checkpoint, random, device_count,
                  scipy as jscipy, numpy as jnp, jit)
-from jax_md import quantity
 from jax_sgmc import data, potential
 from scipy import stats
 import tree_math
 
 from chemtrain import (util)
 from chemtrain.data import data_processing
-from chemtrain.trajectory import traj_util
 from chemtrain.learn import force_matching, max_likelihood
-from chemtrain.potential import dropout
+from jax_md_mod.model import dropout
 
 
 # Modeling

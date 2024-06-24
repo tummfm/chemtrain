@@ -18,19 +18,18 @@ molecular state.
 The :class:`SparseDirectionalGraph` is the input to
 :class:`~chemtrain.neural_networks.DimeNetPP`.
 """
-import functools
 import inspect
 from typing import Optional, Callable, Tuple, TYPE_CHECKING
 
 import chex
 import numpy as onp
-from jax import numpy as jnp, vmap, lax, debug
+from jax import numpy as jnp, vmap, lax
 from jax_md import space, partition, smap
 
-from chemtrain.jax_md_mod import custom_space, custom_partition
+from jax_md_mod import custom_partition, custom_space
 
 if TYPE_CHECKING:
-    from chemtrain.potential.prior import Topology
+    from jax_md_mod.model.prior import Topology
 
 
 @chex.dataclass

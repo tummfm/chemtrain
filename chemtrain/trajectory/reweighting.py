@@ -31,20 +31,17 @@ import warnings
 import numpy as onp
 
 import jax_sgmc.util
-from jax import (checkpoint, lax, random, tree_util, vmap, numpy as jnp, jit,
-                 Array)
+from jax import (checkpoint, lax, random, tree_util, vmap, numpy as jnp, jit)
 
 import jax_md.util
 from jax_md import util as jax_md_util
-from numpy import ndarray, dtype, floating
 
 from chemtrain import util
 from chemtrain.trajectory import traj_util
-from chemtrain.jax_md_mod import custom_quantity
+from jax_md_mod import custom_quantity
 from chemtrain.quantity import constants, observables
 
-from typing import Dict, Any, Union, Callable, Tuple, Protocol, overload, \
-    Optional
+from typing import Dict, Any, Union, Callable, Tuple, Protocol
 
 try:
     from jax.typing import ArrayLike
@@ -52,7 +49,7 @@ except:
     ArrayLike = Any
 from jax_md.partition import NeighborFn
 from chemtrain.typing import EnergyFnTemplate
-from chemtrain.trajectory.traj_util import TrajectoryState, TimingClass, GenerateFn
+from chemtrain.trajectory.traj_util import TrajectoryState, TimingClass
 from chemtrain.typing import ComputeFn
 
 def checkpoint_quantities(compute_fns: dict[str, ComputeFn]) -> None:

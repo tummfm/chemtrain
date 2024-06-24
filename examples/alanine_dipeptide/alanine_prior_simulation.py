@@ -34,12 +34,12 @@ from jax import vmap, random, numpy as jnp
 from jax_md import space
 import numpy as onp
 
-from chemtrain.jax_md_mod import io, custom_space, custom_quantity
+from jax_md_mod import custom_quantity, io, custom_space
 from chemtrain.data import data_processing
 from chemtrain.trajectory import traj_util
 from util import Initialization
 import visualization
-from chemtrain.potential.prior import ForceField, Topology, init_prior_potential
+from jax_md_mod.model.prior import ForceField, Topology, init_prior_potential
 
 
 save_name = 'prior'

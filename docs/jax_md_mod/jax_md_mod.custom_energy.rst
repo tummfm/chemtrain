@@ -1,7 +1,7 @@
 :modulename:`custom_energy`
 ======================================
 
-.. currentmodule:: chemtrain.jax_md_mod.custom_energy
+.. currentmodule:: jax_md_mod.custom_energy
 
 Intramolecular Potentials
 -------------------------

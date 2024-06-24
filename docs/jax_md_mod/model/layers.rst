@@ -1,9 +1,9 @@
-:modulename:`potential.layers`
+:modulename:`model.layers`
 ========================================
 
-.. currentmodule:: chemtrain.potential.layers
+.. currentmodule:: jax_md_mod.model.layers
 
-.. automodule:: chemtrain.potential.layers
+.. automodule:: jax_md_mod.model.layers
 
 
 Initializers

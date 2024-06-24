@@ -20,8 +20,8 @@ from jax import vmap
 import jax.numpy as jnp
 from jax_md import space, partition, util, energy, smap
 
-from chemtrain.jax_md_mod import custom_interpolate, custom_quantity
-from chemtrain.potential import sparse_graph
+from jax_md_mod import custom_interpolate, custom_quantity
+from jax_md_mod.model import sparse_graph
 
 # Types
 f32 = util.f32

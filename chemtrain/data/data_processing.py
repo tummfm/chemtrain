@@ -25,7 +25,7 @@ Examples:
     >>> from pathlib import Path
     >>> root = Path.cwd().parent
 
-    >>> from chemtrain.jax_md_mod import io
+    >>> from jax_md_mod import io
     >>> from chemtrain.data.data_processing import (
     ...     get_dataset, scale_dataset_fractional, train_val_test_split,
     ...     init_dataloaders)
@@ -68,7 +68,7 @@ import jax.numpy as jnp
 
 from jax_sgmc.data import numpy_loader
 
-from chemtrain.jax_md_mod import custom_space
+from jax_md_mod import custom_space
 from chemtrain import util
 
 

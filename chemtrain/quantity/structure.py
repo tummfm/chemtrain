@@ -21,7 +21,7 @@ import jax.numpy as jnp
 from typing import Union, List
 
 from chemtrain.quantity.util import target_quantity, TargetInit
-from chemtrain.jax_md_mod import custom_quantity
+from jax_md_mod import custom_quantity
 from chemtrain.typing import ArrayLike
 from chemtrain.quantity import observables
 

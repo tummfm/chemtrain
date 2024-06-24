@@ -23,8 +23,8 @@ from jax import nn, ops, numpy as jnp, scipy as jsp
 from jax_md import util
 from sympy import symbols, utilities
 
-from chemtrain.potential import dimenet_basis_util
-from chemtrain.potential.dropout import Linear
+from jax_md_mod.model import dimenet_basis_util
+from jax_md_mod.model.dropout import Linear
 
 
 # util

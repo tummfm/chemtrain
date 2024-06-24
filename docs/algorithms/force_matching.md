@@ -29,7 +29,6 @@ import matplotlib.pyplot as plt
 
 from chemtrain.data import data_processing
 from chemtrain.trainers import ForceMatching
-from chemtrain import jax_md_mod
 
 base_path = Path("../_data")
 ```

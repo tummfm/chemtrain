@@ -58,8 +58,9 @@ from jax import tree_util
 from jax.typing import ArrayLike
 from jax_md import energy
 
-from chemtrain.potential import sparse_graph
-from chemtrain.jax_md_mod import custom_energy
+from jax_md_mod.model import sparse_graph
+from jax_md_mod import custom_energy
+
 
 @tree_util.register_pytree_node_class
 class ForceField:

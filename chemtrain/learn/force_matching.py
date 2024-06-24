@@ -26,7 +26,7 @@ from jax import vmap, value_and_grad, numpy as jnp
 from jax_sgmc.data.numpy_loader import NumpyDataLoader
 
 from chemtrain.learn import max_likelihood
-from chemtrain.jax_md_mod import custom_quantity
+from jax_md_mod import custom_quantity
 
 from chemtrain.typing import EnergyFnTemplate, ArrayLike, NeighborList, ErrorFn
 

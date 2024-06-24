@@ -1,9 +1,9 @@
-:modulename:`potential.sparse_graph`
+:modulename:`model.sparse_graph`
 ==============================================
 
-.. currentmodule:: chemtrain.potential.sparse_graph
+.. currentmodule:: jax_md_mod.model.sparse_graph
 
-.. automodule:: chemtrain.potential.sparse_graph
+.. automodule:: jax_md_mod.model.sparse_graph
 
 Graph dataclass
 ------------------------

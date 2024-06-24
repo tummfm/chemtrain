@@ -24,10 +24,11 @@ from scipy import interpolate as sci_interpolate
 
 from chemtrain import (util as chem_util)
 from chemtrain.trajectory import traj_util
-from chemtrain.potential import neural_networks, layers, dropout
+from jax_md_mod.model import dropout, layers, neural_networks
 from chemtrain.quantity import observables
-from chemtrain.jax_md_mod import (custom_energy, custom_space, custom_quantity,
-                                      custom_simulator, custom_interpolate)
+from jax_md_mod import (custom_simulator)
+from jax_md_mod import custom_interpolate, custom_energy, custom_quantity, \
+    custom_space
 
 from typing import Dict
 from chemtrain.typing import TargetDict, ComputeFn

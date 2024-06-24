@@ -24,14 +24,14 @@ import functools
 from typing import Dict, Any, Callable, Tuple
 
 import jax
-from jax import jit, grad, tree_util, vmap, numpy as jnp, lax
+from jax import jit, numpy as jnp, lax
 from jax.typing import ArrayLike
 
 import numpy as onp
 
 from chemtrain.learn import max_likelihood, force_matching
 from chemtrain.typing import TargetDict, EnergyFnTemplate, ComputeFn
-from chemtrain.jax_md_mod import custom_quantity
+from jax_md_mod import custom_quantity
 from chemtrain.trajectory import reweighting, traj_util
 
 def init_default_loss_fn(targets: TargetDict, l_H = 0.0, l_RE = None):

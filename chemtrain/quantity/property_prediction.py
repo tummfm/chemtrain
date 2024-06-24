@@ -22,7 +22,8 @@ import haiku as hk
 from jax import vmap, numpy as jnp
 from jax_md import nn, util as jax_md_util
 
-from chemtrain.potential import neural_networks, dropout, sparse_graph
+from jax_md_mod.model import (
+    dropout, sparse_graph, neural_networks)
 
 
 def build_dataset(targets, graph_dataset):
@@ -33,7 +34,7 @@ def build_dataset(targets, graph_dataset):
         targets: Dict containing all targets to be predicted. Can be retrieved
             in error_fn under the respective key.
         graph_dataset: Dataset of graphs, e.g. as obtained from
-            :func:`chemtrain.potential.sparse_graph.convert_dataset_to_graphs`.
+            :func:`jax_md_mod.model.sparse_graph.convert_dataset_to_graphs`.
 
     Returns:
         A dictionary containing the combined dataset and a list of target keys

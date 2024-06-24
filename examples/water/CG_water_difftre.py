@@ -27,7 +27,7 @@ import matplotlib.pyplot as plt
 import optax
 from pathlib import Path
 
-from chemtrain.jax_md_mod import io
+from jax_md_mod import io
 from chemtrain import trainers, util
 from chemtrain.trajectory import traj_util
 from util import Postprocessing, Initialization

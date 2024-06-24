@@ -55,7 +55,7 @@ These extensions are gathered in the
 
 
 .. toctree::
-   :maxdepth: 2
+   :titlesonly:
    :hidden:
    :caption: Jax, M.D. Extensions
 

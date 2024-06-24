@@ -1,9 +1,9 @@
 :modulename:`custom_partition`
 ==============================
 
-.. automodule:: chemtrain.jax_md_mod.custom_partition
+.. automodule:: jax_md_mod.custom_partition
 
-.. currentmodule:: chemtrain.jax_md_mod.custom_partition
+.. currentmodule:: jax_md_mod.custom_partition
 
 .. autofunction:: exclude_from_neighbor_list
 

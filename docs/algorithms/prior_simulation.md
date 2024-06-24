@@ -22,13 +22,14 @@ import jax.numpy as jnp
 from jax import random
 
 from jax_md import space, simulate, partition
+from jax_md_mod import custom_quantity
+from jax_md_mod.model import prior
 
 import numpy as onp
 
 from matplotlib import pyplot as plt
 
-from chemtrain.potential import prior
-from chemtrain import jax_md_mod, trajectory, quantity
+from chemtrain import trajectory, quantity
 
 base_path = Path("../_data")
 ```
@@ -178,7 +179,7 @@ square distance (rmsd) for this trajectory for every sampled conformation.
 ```{code-cell}
 quantities = {
     "energy": lambda state, *args, **kwargs: prior_energy_fn(state.position, *args, **kwargs),
-    "rmsd": jax_md_mod.custom_quantity.init_rmsd(r_init, displacement_fn, box),
+    "rmsd": custom_quantity.init_rmsd(r_init, displacement_fn, box),
     "force": lambda state, *args, **kwargs: -jax.grad(prior_energy_fn)(state.position, *args, **kwargs)
 }
 

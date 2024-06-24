@@ -32,7 +32,7 @@ import matplotlib.pyplot as plt
 import numpy as onp
 from scipy import interpolate as sci_interpolate
 
-from chemtrain.jax_md_mod import io
+from jax_md_mod import io
 from chemtrain import util
 from chemtrain.trajectory import traj_util
 from chemtrain.learn import ibi, max_likelihood

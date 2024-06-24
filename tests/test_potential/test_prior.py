@@ -7,7 +7,7 @@ import mdtraj
 
 from jax import tree_util
 
-from chemtrain.potential.prior import Topology, ForceField
+from jax_md_mod.model.prior import Topology, ForceField
 
 class TestForceField:
 

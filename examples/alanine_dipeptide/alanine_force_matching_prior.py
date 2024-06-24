@@ -38,8 +38,8 @@ from jax_md import partition
 
 from chemtrain import trainers, util
 from chemtrain.data import data_processing
-from chemtrain.jax_md_mod import custom_space, io
-from chemtrain.potential.prior import Topology, ForceField, init_prior_potential, constrain_ff_params, unconstrain_ff_params
+from jax_md_mod import io, custom_space
+from jax_md_mod.model.prior import Topology, ForceField, init_prior_potential, constrain_ff_params, unconstrain_ff_params
 
 Path('output/figures').mkdir(parents=True, exist_ok=True)
 Path('output/force_matching').mkdir(parents=True, exist_ok=True)

@@ -13,7 +13,6 @@
 import os
 import sys
 sys.path.insert(0, os.path.abspath('..'))
-sys.path.append(os.path.abspath('./_extensions'))
 
 from datetime import datetime
 from chemtrain.version import __version__ as chemtrain_version

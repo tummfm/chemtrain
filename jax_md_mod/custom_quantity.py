@@ -26,8 +26,8 @@ from jax.scipy.stats import norm
 
 from jax_md import space, util, dataclasses, quantity, simulate, partition
 
-from chemtrain.potential import sparse_graph
-from chemtrain.jax_md_mod import custom_partition
+from jax_md_mod.model import sparse_graph
+from jax_md_mod import custom_partition
 
 Array = util.Array
 

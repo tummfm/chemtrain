@@ -19,7 +19,7 @@ import sys
 from jax_md import space
 import optax
 
-from chemtrain.jax_md_mod import io
+from jax_md_mod import io
 from chemtrain import trainers, util
 from chemtrain.trajectory import traj_util
 from util import Postprocessing, Initialization

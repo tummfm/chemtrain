@@ -32,7 +32,7 @@ import optax
 
 from chemtrain import trainers, util
 from chemtrain.data import data_processing
-from chemtrain.jax_md_mod import custom_space, io
+from jax_md_mod import io, custom_space
 from util import Initialization
 
 Path('output/figures').mkdir(parents=True, exist_ok=True)

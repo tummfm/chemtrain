@@ -67,12 +67,6 @@ Divided into the respective submodules, it provides all the necessary
 ingredients to, e.g., setup force matching or differentiable trajectory
 reweighting.
 
-### ``potential`` --- **(Deep) Potential Models**
-
-Besides algorithms, **chemtrain** provides some deep potential 
-models, e.g., the DimeNet model.
-
-
 ### ``trajectory`` --- **Simulating and Sampling from Ensembles**
 
 While JAX, M. D. implements multiple simulators to sample

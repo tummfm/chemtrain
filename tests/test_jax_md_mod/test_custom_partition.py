@@ -13,12 +13,11 @@
 # limitations under the License.
 import itertools
 
-import jax
 from jax import numpy as jnp, Array
 
 from jax_md import partition, dataclasses
 
-from chemtrain.jax_md_mod import custom_partition
+from jax_md_mod import custom_partition
 
 import numpy as onp
 

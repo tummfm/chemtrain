@@ -15,8 +15,8 @@
 """Initialize thermodynamic quantities."""
 
 from chemtrain.quantity.util import target_quantity, TargetInit
-from chemtrain.jax_md_mod import custom_quantity
-from chemtrain.quantity import observables, constants
+from jax_md_mod import custom_quantity
+from chemtrain.quantity import observables
 from chemtrain.typing import ArrayLike, EnergyFnTemplate, Any
 
 

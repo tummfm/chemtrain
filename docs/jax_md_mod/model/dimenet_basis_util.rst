@@ -1,9 +1,9 @@
-:modulename:`potential.dimnet_basis_util`
+:modulename:`model.dimnet_basis_util`
 ==============================================
 
-.. currentmodule:: chemtrain.potential.dimenet_basis_util
+.. currentmodule:: jax_md_mod.model.dimenet_basis_util
 
-.. automodule:: chemtrain.potential.dimenet_basis_util
+.. automodule:: jax_md_mod.model.dimenet_basis_util
 
 .. autofunction:: Jn
 

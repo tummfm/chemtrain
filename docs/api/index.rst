@@ -7,7 +7,6 @@ API: ``chemtrain``
 
    data/index
    learn/index
-   potential/index
    quantity/index
    trajectory/index
    trainers
