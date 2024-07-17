@@ -27,9 +27,9 @@ import optax
 
 import matplotlib.pyplot as plt
 
-from chemtrain.data import data_processing
+from chemtrain.data import preprocessing
 from chemtrain.trainers import ForceMatching, RelativeEntropy
-from chemtrain import trajectory, quantity
+from chemtrain import ensemble, quantity
 
 base_path = Path("../_data")
 ```
@@ -108,8 +108,8 @@ train_ratio = 0.5
 box = jnp.asarray([1.0, 1.0, 1.0])
 kT = 2.56
 
-all_forces = data_processing.get_dataset(base_path / "forces_ethane.npy")
-all_positions = data_processing.get_dataset(base_path / "positions_ethane.npy")
+all_forces = preprocessing.get_dataset(base_path / "forces_ethane.npy")
+all_positions = preprocessing.get_dataset(base_path / "positions_ethane.npy")
 ```
 
 ## Compute Mapping
@@ -132,7 +132,7 @@ atoms.
 displacement_fn, shift_fn = space.periodic_general(box, fractional_coordinates=True)
 
 # Scale the position data into fractional coordinates
-position_dataset = data_processing.scale_dataset_fractional(all_positions, box)
+position_dataset = preprocessing.scale_dataset_fractional(all_positions, box)
 
 masses = jnp.asarray([15.035, 1.011, 1.011, 1.011])
 
@@ -141,7 +141,7 @@ weights = jnp.asarray([
     [0.0000, 1, 0.000, 0.000, 0.000, 0, 0, 0]
 ])
 
-position_dataset = data_processing.map_dataset(
+position_dataset = preprocessing.map_dataset(
     position_dataset, displacement_fn, shift_fn, weights, 
 )
 
@@ -244,12 +244,12 @@ optimizer = optax.chain(
 ```{code-cell}
 :tags: [hide-output]
 
-timings = trajectory.traj_util.process_printouts(
+timings = ensemble.sampling.process_printouts(
     time_step=0.002, total_time=1e3, t_equilib=1e2,
     print_every=0.1, t_start=0.0
 )
 
-init_ref_state, sim_template = trajectory.traj_util.initialize_simulator_template(
+init_ref_state, sim_template = ensemble.sampling.initialize_simulator_template(
     simulate.nvt_langevin, shift_fn=shift_fn, nbrs=nbrs_init,
     init_with_PRNGKey=True, extra_simulator_kwargs={"kT": kT, "gamma": 1.0, "dt": 0.002}
 )

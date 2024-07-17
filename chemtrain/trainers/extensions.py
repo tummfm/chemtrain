@@ -15,7 +15,7 @@
 """Simple extensions, e.g., to log trainer statistics to MLops frameworks."""
 import importlib
 
-from chemtrain.trainers import trainers
+from chemtrain.trainers import trainers, base
 
 def wandb_log_difftre(run, trainer: trainers.Difftre, plot_fns=None):
     """Logs DiffTRe training statistics to Weights & Biases.
@@ -75,5 +75,46 @@ def wandb_log_difftre(run, trainer: trainers.Difftre, plot_fns=None):
             },
             commit=True
         )
+
+    trainer.add_task("post_epoch", log_fn)
+
+
+def wandb_log_data_parallel(run, trainer: base.DataParallelTrainer):
+    """Logs DataParallel training statistics to Weights & Biases.
+
+    Args:
+        run: Active W&B run
+        trainer: Trainer to log to W&B
+
+    """
+    wandb = importlib.import_module("wandb")
+
+    def get_validation_loss(key):
+        try:
+            return trainer.val_target_losses[key][-1]
+        except IndexError:
+            return "N.A."
+
+    def log_fn(trainer: base.DataParallelTrainer, *args, **kwargs):
+        assert issubclass(type(trainer), base.DataParallelTrainer), (
+            f"Supports only DataParallalTrainer trainers."
+        )
+
+        duration = trainer.update_times[trainer._epoch]
+
+        statistics = {
+            "training": trainer.train_batch_losses[-1],
+            "validation": trainer.val_losses[-1],
+            "gradient_norm": trainer.gradient_norm_history[-1],
+            "duration": duration,
+            "targets": {
+                key: {
+                    "training": trainer.train_target_losses[key][-1],
+                    "validation": get_validation_loss(key),
+                } for key in trainer.train_target_losses.keys()
+            }
+        }
+
+        run.log(data=statistics, commit=True)
 
     trainer.add_task("post_epoch", log_fn)

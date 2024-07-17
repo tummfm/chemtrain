@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from . import (
-    traj_util,
+    sampling,
     reweighting,
     templates
 )

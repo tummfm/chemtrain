@@ -24,6 +24,8 @@ from jax_md import simulate
 import numpy as onp
 
 
+from jax_md import partition
+
 # freezing seems to give slight performance improvement
 @partial(chex.dataclass, frozen=True)
 class TrainerState:
@@ -42,7 +44,7 @@ def _get_box_kwargs_if_npt(state):
     return kwargs
 
 
-def neighbor_update(neighbors, state):
+def neighbor_update(neighbors, state, **kwargs):
     """Update neighbor lists irrespective of the ensemble.
 
     Fetches the box to the neighbor list update function in case of the
@@ -55,7 +57,7 @@ def neighbor_update(neighbors, state):
     Returns:
         Updated neighbor list
     """
-    kwargs = _get_box_kwargs_if_npt(state)
+    kwargs.update(_get_box_kwargs_if_npt(state))
     nbrs = neighbors.update(state.position, **kwargs)
     return nbrs
 

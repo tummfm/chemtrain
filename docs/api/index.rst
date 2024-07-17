@@ -8,6 +8,6 @@ API: ``chemtrain``
    data/index
    learn/index
    quantity/index
-   trajectory/index
+   ensemble/index
    trainers
    typing

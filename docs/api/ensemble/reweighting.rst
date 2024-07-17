@@ -1,9 +1,9 @@
-:modulename:`trajectory.reweighting`
+:modulename:`ensemble.reweighting`
 ==============================================
 
-.. currentmodule:: chemtrain.trajectory.reweighting
+.. currentmodule:: chemtrain.ensemble.reweighting
 
-.. automodule:: chemtrain.trajectory.reweighting
+.. automodule:: chemtrain.ensemble.reweighting
 
 Routines
 ---------

@@ -27,13 +27,15 @@ import optax
 
 import matplotlib.pyplot as plt
 
-from chemtrain.data import data_processing
+from chemtrain.data import preprocessing
 from chemtrain.trainers import ForceMatching
 
 base_path = Path("../_data")
 ```
 
 # Force Matching
+
+
 
 Force matching is a bottom-up method to derive coarse-grained potentials
 $U_\theta$ from atomistic reference data.
@@ -64,8 +66,8 @@ train_ratio = 0.5
 
 box = jnp.asarray([1.0, 1.0, 1.0])
 
-all_forces = data_processing.get_dataset(base_path / "forces_ethane.npy")
-all_positions = data_processing.get_dataset(base_path / "positions_ethane.npy")
+all_forces = preprocessing.get_dataset(base_path / "forces_ethane.npy")
+all_positions = preprocessing.get_dataset(base_path / "positions_ethane.npy")
 ```
 
 ## Compute Mapping
@@ -95,7 +97,7 @@ via the corresponding linear mapping [^Noid2008]
 displacement_fn, shift_fn = space.periodic_general(box, fractional_coordinates=True)
 
 # Scale the position data into fractional coordinates
-position_dataset = data_processing.scale_dataset_fractional(all_positions, box)
+position_dataset = preprocessing.scale_dataset_fractional(all_positions, box)
 
 masses = jnp.asarray([15.035, 1.011, 1.011, 1.011])
 
@@ -104,7 +106,7 @@ weights = jnp.asarray([
     [0.0000, 1, 0.000, 0.000, 0.000, 0, 0, 0]
 ])
 
-position_dataset, force_dataset = data_processing.map_dataset(
+position_dataset, force_dataset = preprocessing.map_dataset(
     position_dataset, displacement_fn, shift_fn, weights, weights, all_forces 
 )
 ```
@@ -219,12 +221,13 @@ print(f"Estimated potential parameters are {kb[0] :.1f} kJ/mol/nm^2 and {b0[0] :
 ## Setup Optimizer
 
 ```{code-cell}
-batch_per_device = 64
-epochs = 25
-initial_lr = 0.01
+subsample = 50
+batch_per_device = 10
+epochs = 35
+initial_lr = 0.05
 lr_decay = 0.1
 
-lrd = int(position_dataset.shape[0] / batch_per_device * epochs)
+lrd = int(position_dataset.shape[0] / subsample / batch_per_device * epochs)
 lr_schedule = optax.exponential_decay(initial_lr, lrd, lr_decay)
 optimizer = optax.chain(
     optax.scale_by_adam(),
@@ -239,15 +242,33 @@ optimizer = optax.chain(
 ```{code-cell}
 force_matching = ForceMatching(
     init_params=init_params, energy_fn_template=energy_fn_template,
-    nbrs_init=nbrs_init, optimizer=optimizer, position_data=position_dataset[::50, :, :],
-    force_data=force_dataset[::50, :, :], train_ratio=train_ratio
+    nbrs_init=nbrs_init, optimizer=optimizer, batch_per_device=batch_per_device,
 )
+
+# We can provide numpy arrays to initialize the datasets for training,
+# validation, and testing in a single step
+force_matching.set_datasets({
+    "F": force_dataset[1::subsample, :, :],
+    "R": position_dataset[1::subsample, :, :],
+}, train_ratio=train_ratio)
+
 ```
 
 ```{code-cell}
 :tags: [hide-output]
 
 force_matching.train(epochs, checkpoint_freq=1000)
+```
+
+```{code-cell}
+# We can also provide completely new samples for a single stage, e.g., testing
+force_matching.set_dataset({
+    "F": force_dataset[::subsample, :, :],
+    "R": position_dataset[::subsample, :, :],
+}, stage = "testing")
+
+mae_error = force_matching.evaluate_mae_testset()
+print(mae_error)
 ```
 
 ## Results
@@ -263,7 +284,7 @@ Finally, we compare the values obtained from a least-squares fit to those
 obtained from force-matching.
 
 ```{code-cell}
-pred_parameters = tree_util.tree_map(jnp.exp, force_matching.params)
+pred_parameters = tree_util.tree_map(jnp.exp, force_matching.best_params)
 
 b0_err = jnp.abs(b0[0] - pred_parameters["log_b0"])
 kb_err = jnp.abs(kb[0] - pred_parameters["log_kb"])

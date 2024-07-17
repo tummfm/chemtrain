@@ -17,7 +17,7 @@
 from jax_md import simulate
 from jax_md.partition import NeighborList
 
-from chemtrain.trajectory import traj_util
+from chemtrain.ensemble import sampling
 
 
 def init_nvt_langevin_simulator_template(shift_fn,
@@ -27,7 +27,7 @@ def init_nvt_langevin_simulator_template(shift_fn,
                                          gamma: float = 100.):
     """Initializes a NVT Langevin simulator template."""
     extra_kwargs = dict(dt=dt, kT=kT, gamma=gamma)
-    return traj_util.initialize_simulator_template(
+    return sampling.initialize_simulator_template(
         init_simulator_fn=simulate.nvt_langevin,
         shift_fn=shift_fn, nbrs=nbrs, init_with_PRNGKey=True,
         extra_simulator_kwargs=extra_kwargs

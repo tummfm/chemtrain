@@ -29,10 +29,10 @@ from jax.typing import ArrayLike
 
 import numpy as onp
 
-from chemtrain.learn import max_likelihood, force_matching
+from chemtrain.learn import max_likelihood
 from chemtrain.typing import TargetDict, EnergyFnTemplate, ComputeFn
 from jax_md_mod import custom_quantity
-from chemtrain.trajectory import reweighting, traj_util
+from chemtrain.ensemble import reweighting, evaluation, sampling
 
 def init_default_loss_fn(targets: TargetDict):
     """Initializes the MSE loss function for DiffTRe.
@@ -150,7 +150,7 @@ def init_difftre_gradient_and_propagation(
         weights, _, entropy, free_energy = weights_fn(
             params, traj_state, entropy_and_free_energy=True)
 
-        quantity_trajs = traj_util.quantity_traj(
+        quantity_trajs = sampling.quantity_traj(
             traj_state, quantities, params)
         quantity_trajs.update(entropy=entropy, free_energy=free_energy)
 
@@ -241,10 +241,10 @@ def init_rel_entropy_loss_fn(energy_fn_template, compute_weights, kbt, vmap_batc
 
         # Compute the potential predictions on the reference data
         ref_pos_traj_state = traj_state.replace(
-            trajectory=force_matching.State(position=reference_batch['R'])
+            trajectory=evaluation.SimpleState(position=reference_batch['R'])
         )
 
-        ref_energies = traj_util.quantity_traj(
+        ref_energies = sampling.quantity_traj(
             ref_pos_traj_state, ref_quantities, params, vmap_batch_size
         )["ref_energy"]
 

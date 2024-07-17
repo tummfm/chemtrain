@@ -12,117 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""This module contains methods for molecular property prediction, which build
-on the neural network architectures used for potential energy prediction.
+"""This module contains molecular properties, computed from features of a
+neural network used for potential energy prediction.
 """
+import functools
+import typing
 from functools import wraps
-from typing import ClassVar, Tuple, Callable, Any
+from typing import Tuple, Callable, Any
 
-import haiku as hk
-from jax import vmap, numpy as jnp
-from jax_md import nn, util as jax_md_util
+import jax
+from jax import numpy as jnp, Array
 
-from jax_md_mod.model import (
-    dropout, sparse_graph, neural_networks)
+from jax_md import partition
 
-
-def build_dataset(targets, graph_dataset):
-    """Builds dataset in format that is used for data loading and throughout
-    property predictions.
-
-    Args:
-        targets: Dict containing all targets to be predicted. Can be retrieved
-            in error_fn under the respective key.
-        graph_dataset: Dataset of graphs, e.g. as obtained from
-            :func:`jax_md_mod.model.sparse_graph.convert_dataset_to_graphs`.
-
-    Returns:
-        A dictionary containing the combined dataset and a list of target keys
-    """
-    target_keys = list(targets)
-    target_keys.append('species_mask')
-    return {**targets, **graph_dataset.to_dict()}, target_keys
-
-
-def init_model(prediction_model):
-    """Initializes a model that returns predictions for a single observation."""
-    def mol_prediction_model(params, observation):
-        graph = sparse_graph.SparseDirectionalGraph.from_dict(observation)
-        predictions = prediction_model(params, graph)
-        return predictions
-    return mol_prediction_model
-
-
-def init_loss_fn(error_fn):
-    """Returns a loss function to optimize model parameters.
-
-    Signature of error_fn::
-
-       error = error_fn(predictions, batch, mask)
-
-    where mask has the same shape as species to mask padded particles.
-
-    Args:
-        model: Molecular property prediction model (Haiku apply_fn).
-        error_fn: Error model quantifying the discrepancy between predictions
-            and respective targets.
-    """
-    def loss_fn(predictions, batch):
-        mask = jnp.ones_like(predictions) * batch['species_mask']
-        return error_fn(predictions, batch, mask)
-    return loss_fn
-
-
-def per_species_results(species, per_atom_quantities, species_idxs):
-    """Sorts per-atom results by species and returns a per-species mean.
-
-    Only real (non-masked) particles should be input.
-
-    Args:
-        species: An array storing for each atom the corresponding species.
-        per_atom_quantities: An array with the same shape as species, storing
-                             per-atom quantities to be evaluated per-species.
-        species_idxs: A (species,) array storing species-types for evaluation,
-                      e.g. jnp.unique(species).
-
-    Returns:
-        A (species,) array of per-species quantities.
-    """
-    @vmap
-    def process_single_species(species_idx):
-        species_mask = (species == species_idx)
-        species_members = jnp.count_nonzero(species_mask)
-        screened_results = jnp.where(species_mask, per_atom_quantities, 0.)
-        mean_if_species_exists = jnp.sum(screened_results) / species_members
-        return jnp.where(species_members == 0, 0., mean_if_species_exists)
-    return process_single_species(species_idxs)
-
-
-def per_species_box_errors(dataset, per_atom_errors):
-    """Computes for each snapshot in the provided graph dataset, the per-species
-    error.
-
-    Args:
-        dataset: Graph dataset containing the snapshots of interest.
-        per_atom_errors: Per-atom error for each atom in the dataset.
-            Has same shape as ``dataset['species']``.
-
-    Returns:
-        Mean per-species error for each snapshot in the dataset.
-    """
-    mask = dataset['species_mask']
-    species = dataset['species']
-    real_species = species[mask]
-    unique_species = jnp.unique(real_species)
-    species_masked = jnp.where(mask, species, 1000)  # species 1000 nonexistant
-    per_box_and_species_fn = vmap(per_species_results, in_axes=(0, 0, None))
-    per_box_species_errors = per_box_and_species_fn(
-        species_masked, per_atom_errors, unique_species)
-    distinct_per_box_species = jnp.sum(per_box_species_errors > 0., axis=1)
-    mean_per_box_species_errors = (jnp.sum(per_box_species_errors, axis=1)
-                                   / distinct_per_box_species)
-    return mean_per_box_species_errors
-
+from chemtrain.typing import ComputeFn
 
 def molecular_property_predictor(model, n_per_atom=0):
     """Wraps models that predict per-atom quantities to predict both global and
@@ -148,36 +51,311 @@ def molecular_property_predictor(model, n_per_atom=0):
     return property_wrapper
 
 
-def partial_charge_prediction(
-        r_cutoff: float,
-        n_species: int = 100,
-        model_class: ClassVar = neural_networks.DimeNetPP,
-        **model_kwargs) -> Tuple[nn.InitFn, Callable[[Any, jax_md_util.Array],
-                                                     jax_md_util.Array]]:
-    """Initializes a model that predicts partial charges.
+class PropertyPredictor(typing.Protocol):
+
+    def __call__(self, params, graph: Any, **kwargs) -> Tuple[Array, Array]:
+        """Predicts molecular properties from a molecular graph.
+
+        The form of the graph depends on the underlying model. E.g, for
+        property predictions with
+        :class:`jax_md_mod.model.neural_networks.DimeNetPP`, the graph is of
+        the form :class:`jax_md_mod.model.sparse_graph.SparseDirectionalGraph`.
+
+        Args:
+            graph: Molecular graph containing neighborhood information.
+            **kwargs: Additional arguments to the potential model,
+                extracting features from the molecular graph.
+
+        Returns:
+            A tuple of global and per-atom properties.
+
+        """
+
+
+class SinglePropertyPredictor(typing.Protocol):
+
+    @typing.overload
+    def __call__(self, params, graph: Any, **kwargs): ...
+    @typing.overload
+    def __call__(self, features, **kwargs): ...
+    @staticmethod
+    def __call__(params=None, graph=None, features=None, **kwargs):
+        """Predicts a molecular property from a molecular graph.
+
+        The form of the graph depends on the underlying model. E.g, for
+        property predictions with
+        :class:`jax_md_mod.model.neural_networks.DimeNetPP`, the graph is of
+        the form :class:`jax_md_mod.model.sparse_graph.SparseDirectionalGraph`.
+
+        Args:
+            graph: Molecular graph containing neighborhood information.
+                Required, if features should be computed from a model within
+                the predictor.
+            features: Features derived from the molecular graph.
+                Required if no model is provided to compute the features.
+            **kwargs: Additional arguments to the potential model,
+                extracting features from the molecular graph.
+
+        Returns:
+            Returns a single per-atom or molecular property.
+        """
+
+
+def apply_model(model: PropertyPredictor = None):
+    """Initializes a molecular property predictor.
+
+    If no model is provided, the global and per-atom features must be
+    pre-computed. The property predictor can then be called as::
+
+        property = property_predictor(global_features, per_atom_features, **kwargs)
+
+    Otherwise, the features are computed via calling the model within the
+    property predictor. Then, the property predictor must be called with
+    a molecular graph as input::
+
+        property = property_predictor(graph, **kwargs)
 
     Args:
-        r_cutoff: Radial cut-off distance of DimeNetPP and the neighbor list
-        n_species: Number of different atom species the network is supposed
-            to process.
-        model_class: Haiku model class that predicts per-atom quantities.
-            By default, DimeNetPP.
-        **model_kwargs: Kwargs to change the default structure of model_class.
+        model: Optional model to compute the molecular features within the
+            property predictor.
+
+    """
+    def decorator(fn) -> SinglePropertyPredictor:
+        def predictor(params=None, graph=None, features=None, **kwargs):
+            if model is not None:
+                assert graph is not None and params is not None, (
+                    "A graph is required to compute molecular features"
+                )
+                global_features, per_atom_features = model(params, graph, **kwargs)
+                features = {
+                    "global_features": global_features,
+                    "per_atom_features": per_atom_features
+                }
+            else:
+                assert features is not None, (
+                    "If molecular features are not pre-computed, a model must "
+                    "be provided to compute them."
+                )
+
+            return fn(features, **kwargs)
+        return predictor
+    return decorator
+
+
+def snapshot_quantity(property_predictor: SinglePropertyPredictor,
+                      graph_from_neighbor_list: Callable = None,
+                      features_key = "features") -> ComputeFn:
+    """Transforms a single property predictor to a snapshot compute function.
+
+    Args:
+        property_predictor: Function to predict a property from a molecular
+            graph or from pre-extracted features.
+        graph_from_neighbor_list: Function to build a molecular graph from
+            a neighbor list. Only necessary, when the features should be
+            extracted within the property predictor. Otherwise, pre-extracted
+            global and per-atom features are required as kwargs.
+        features_key: Key to the pre-computed features if no model is provided.
 
     Returns:
-        A tuple of 2 functions: A init_fn that initializes the model parameters
-        and an apply_function that predictions partial charges.
+        Returns a snapshot compute function for the corresponding property.
+
     """
-    @hk.without_apply_rng
-    @hk.transform
-    def property_predictor(
-            mol_graph: sparse_graph.SparseDirectionalGraph,
-            **dynamic_kwargs):
-        model = model_class(r_cutoff, n_species, 1, **model_kwargs)
-        per_atom_predictions = model(mol_graph, **dynamic_kwargs)
-        charges = per_atom_predictions[:, 0]
-        # ensure sum of partial charges is neutral
-        charge_correction = jnp.sum(charges) / mol_graph.n_particles
-        partial_charges = (charges - charge_correction) * mol_graph.species_mask
+
+    def compute_fn(state,
+                   neighbor=None,
+                   energy_params=None,
+                   **kwargs):
+
+        if graph_from_neighbor_list is None:
+            assert features_key in kwargs, (
+                f"Features {features_key} must be pre-computed if model is not "
+                f"provided."
+            )
+
+            return property_predictor(kwargs[features_key], **kwargs)
+
+        else:
+            assert neighbor is not None, (
+                "A neighbor list is required to build a molecular graph."
+            )
+
+            # Enables to remove processed arguments
+            mol_graph, kwargs = graph_from_neighbor_list(
+                state.position, neighbor, **kwargs)
+            return property_predictor(energy_params, mol_graph, **kwargs)
+
+    return compute_fn
+
+
+def init_feature_pre_computation(model: PropertyPredictor,
+                                 graph_from_neighbor_list: Callable = None
+                                 ) -> ComputeFn:
+    """Initializes a function to compute global and per-atom features.
+
+    Args:
+        model: Model to compute the features from a molecular graph.
+        graph_from_neighbor_list: Function to construct a molecular graph
+            from the neighbor list.
+
+    Returns:
+        Returns a function to compute the features from a molecular graph.
+
+    """
+
+    def feature_computation_fn(state, neighbor=None, energy_params=None, **kwargs):
+        graph = graph_from_neighbor_list(state.position, neighbor, **kwargs)
+        global_features, per_atom_features = model(energy_params, graph, **kwargs)
+        return {
+            "global_features": global_features,
+            "per_atom_features": per_atom_features
+        }
+
+    return feature_computation_fn
+
+
+def potential_energy_prediction(model: PropertyPredictor = None,
+                                feature_number: int = 0
+                                ) -> SinglePropertyPredictor:
+    """Initializes a prediction of the potential energy.
+
+    This wrapper allows to use the same features for the prediction of the
+    potential energy for a simulation and for other molecular properties.
+
+    Args:
+        model: Particle property prediction model.
+        feature_number: Number of the global features to interpret as
+            potential energy.
+
+    Example::
+
+        init_property_predictor, property_predictor = neural_networks.dimenetpp_property_prediction(
+            r_cutoff = 1.0, n_targets = 2, n_species = 2, n_per_atom = 0)
+
+        # Initialize the prediction of potential energy (the first global property)
+        potential_energy_predictor = property_prediction.potential_energy_prediction(
+            model=property_predictor, feature_number=0
+        )
+
+        # Initialize a function to compute the potential energy for a simulator
+        # snapshot. The snapshot function first constructs a molecular graph
+        # from a provided neighbor list.
+        energy_snapshot_fn = property_prediction.snapshot_quantity(
+            potential_energy_predictor, graph_from_neighbor_list
+        )
+
+        # The snapshot function can be used as learnable model or as
+        # compute function for traj_util.quantity_traj
+        def energy_fn_template(energy_params):
+            def energy_fn(position, neighbor=None, **kwargs):
+                # Wrap positions in pseudo simulator state
+                state = force_matching.State(position)
+                return energy_snapshot_fn(position, neighbor, energy_params=energy_params)
+            return energy_fn
+
+    Returns:
+        Returns a function to predict the potential energy from a molecular graph.
+
+    """
+
+    @apply_model(model)
+    def potential_energy(features, **kwargs) -> Array:
+        return features["global_features"][feature_number]
+    return potential_energy
+
+
+def partial_charge_prediction(model: PropertyPredictor = None,
+                              feature_number: int = 1,
+                              total_charge: Array = 0.0,
+                              ) -> SinglePropertyPredictor:
+    """Initializes a prediction of partial charges.
+
+    For a usage with or without model, see the decorator
+    :func:`apply_model`.
+
+    Args:
+        model: Model extracting particle properties. If not provided, the
+            global and per-atom features must be pre-computed.
+        feature_number: Number of the per-atom features to base the prediction on.
+        total_charge: Total charge of the system. By default, the system should
+            be charge neutral.
+
+    Returns:
+        Returns a function to predict partial charges from a molecular graph.
+
+    """
+    @apply_model(model)
+    def partial_charge(features, **kwargs) -> Array:
+        raw_partial_charges = features["per_atom_features"][:, feature_number]
+
+        # If masked particles are present, remove their partial charges
+        mask = kwargs.get("mask", jnp.ones_like(raw_partial_charges))
+
+        # Correct the charges to ensure charge_neutrality
+        charge_correction = jnp.sum(raw_partial_charges * mask)
+        charge_correction -= total_charge
+        charge_correction /= jnp.sum(mask)
+
+        partial_charges = (raw_partial_charges - charge_correction) * mask
         return partial_charges
-    return dropout.model_init_apply(property_predictor, model_kwargs)
+    return partial_charge
+
+
+def init_dipole_moment(displacement_fn: Callable,
+                       model: PropertyPredictor = None,
+                       graph_from_neighbor_list: Callable = None,
+                       partial_charge_feature: int = 1,
+                       reference_position_fn: Callable = None,
+                       features_key: str = "features"):
+    """Computes the dipole moment from partial charges of a molecule.
+
+    Args:
+        displacement_fn: Function to compute displacement between reference
+            point and particle positions.
+        model: Model to predict the partial charges.
+        graph_from_neighbor_list: Function to create molecular graph from
+            neighbor list.
+        partial_charge_feature: Number of the per-atom feature corresponding
+            to the partial charge.
+        reference_position_fn: Function to compute the reference position for
+            the dipole moment. If None, the origin of the box is used.
+        features_key: Key to the pre-computed features if no model is provided.
+
+    Returns:
+        Returns a function to compute dipole moment snapshots.
+
+    """
+
+    # Initialize the partial charge as a snapshot function
+    partial_charge_predictor = partial_charge_prediction(
+        model, partial_charge_feature)
+
+    partial_charge_snapshot_fn = snapshot_quantity(
+        partial_charge_predictor, graph_from_neighbor_list, features_key
+    )
+
+    def dipole_moment_snapshot(state, mask=None, **kwargs):
+        if mask is None:
+            mask = jnp.ones(state.position.shape[0])
+
+        # Use the origin as reference position
+        if reference_position_fn is None:
+            ref_position = jnp.zeros(state.position.shape[1])
+        else:
+            ref_position = reference_position_fn(state, **kwargs)
+
+        dynamic_displacement = functools.partial(displacement_fn, **kwargs)
+
+        # Compute the dipole moment with respect to a user-defined reference
+        # point.
+        partial_charges = partial_charge_snapshot_fn(state, mask=mask, **kwargs)
+        displacements = jax.vmap(
+            dynamic_displacement, (0, None)
+        )(state.position, ref_position)
+
+        moment = jnp.sum(
+            partial_charges[:, None] * displacements * mask[:, None],
+            axis=0
+        )
+
+        return moment
+    return dipole_moment_snapshot

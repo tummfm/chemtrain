@@ -14,16 +14,142 @@
 
 """Custom functions to analyze the neighborlist graph."""
 import importlib
+import warnings
 from typing import Union, Tuple, Callable
 
 import functools
 
 import jax
 import jax.numpy as jnp
+from jax import Array
 
 import numpy as onp
 
-from jax_md import space, util, partition
+from jax_md import partition
+
+@functools.wraps(partition.neighbor_list)
+def masked_neighbor_list(displacement_or_metric,
+                         box,
+                         r_cutoff: float,
+                         dr_threshold: float = 0.0,
+                         capacity_multiplier: float = 1.25,
+                         disable_cell_list: bool = False,
+                         fractional_coordinates: bool = False,
+                         format = partition.NeighborListFormat.Dense,
+                         **static_kwargs) -> partition.NeighborFn:
+    """Extension of JAX, M.D. neighbor list with masking functionality."""
+
+    if dr_threshold > 0.0:
+        warnings.warn(
+            "Mask will only be applied if neighbor list must be re-computed. "
+            "Setting a too high threshold might lead to unexpected behavior."
+        )
+
+    def custom_neighbor_list_fn(position, neighbors=None, mask=None, **kwargs):
+        # Enforce neighbor list re-computation if mask changes
+        if mask is not None:
+            position = jnp.where(mask[:, None], position, 0.0)
+
+        @jax.jit
+        def custom_mask_fn(idx):
+            # Mask out edges to self
+            self_mask = idx == jnp.reshape(
+                jnp.arange(idx.shape[0]),(idx.shape[0], 1))
+
+            # Only mask edges to self
+            if mask is None:
+                return jnp.where(self_mask, idx.shape[0], idx)
+
+            # Mask out all senders
+            sender_mask = jax.vmap(
+                jnp.logical_or, in_axes=(None, 1), out_axes=1
+            )(jnp.logical_not(mask), self_mask)
+
+            # Mask out all receivers
+            total_mask = jax.vmap(jnp.logical_or)(
+                sender_mask, jnp.logical_not(mask[idx])
+            )
+
+            return jnp.where(total_mask, idx.shape[0], idx)
+
+        neighbor_fns = partition.neighbor_list(
+            displacement_or_metric,
+            box,
+            r_cutoff,
+            dr_threshold,
+            capacity_multiplier,
+            disable_cell_list,
+            False,
+            custom_mask_function=custom_mask_fn,
+            fractional_coordinates=fractional_coordinates,
+            format=format,
+            **static_kwargs
+        )
+
+        return neighbor_fns.allocate(position, neighbors=neighbors, **kwargs)
+
+    def init_neighbor_fn(position, extra_capacity: int = 0, mask=None, **kwargs):
+        return custom_neighbor_list_fn(position, extra_capacity=extra_capacity, mask=mask, **kwargs)
+
+    @jax.jit
+    def update_neighbor_fn(position, nbrs, mask=None, **kwargs):
+        return custom_neighbor_list_fn(position, neighbors=nbrs, mask=mask, **kwargs)
+
+    return partition.NeighborListFns(init_neighbor_fn, update_neighbor_fn)
+
+
+def mask_neighbor_list(nbrs: partition.NeighborList,
+                       mask: Array) -> partition.NeighborList:
+    """Masks the neighbor list indices.
+
+    Args:
+        nbrs: Dense or sparse neighbor list.
+        mask: Boolean array masking valid particles (True). Edges from and to
+            invalid particles (False) are removed from the neighbor list.
+
+    Returns:
+        Returns a neighbor list without edges to invalid particles.
+
+    """
+
+    def mask_dense(idx, mask):
+        # Mask out edges to self
+        self_mask = idx == jnp.reshape(
+            jnp.arange(idx.shape[0]), (idx.shape[0], 1))
+
+        # Only mask edges to self
+        if mask is None:
+            return jnp.where(self_mask, idx.shape[0], idx)
+
+        # Mask out all senders
+        sender_mask = jax.vmap(
+            jnp.logical_or, in_axes=(None, 1), out_axes=1
+        )(jnp.logical_not(mask), self_mask)
+
+        # Mask out all receivers
+        total_mask = jax.vmap(jnp.logical_or)(
+            sender_mask, jnp.logical_not(mask[idx])
+        )
+
+        return jnp.where(total_mask, idx.shape[0], idx)
+
+    def mask_sparse(idx, mask):
+        # Mask out all invalid edges
+        edge_mask = jnp.logical_or(
+            jnp.logical_not(mask[idx[0]]),
+            jnp.logical_not(mask[idx[1]])
+        )
+
+        return jnp.where(edge_mask[:, None], nbrs.reference_position.shape[0], idx)
+
+    if nbrs.format == partition.NeighborListFormat.Dense:
+        new_idx = mask_dense(nbrs.idx, mask)
+    else:
+        new_idx = mask_sparse(nbrs.idx, mask)
+
+    new_position = jnp.where(mask[:, None], nbrs.reference_position, 0.0)
+
+    return nbrs.set(idx=new_idx, reference_position=new_position)
 
 
 def exclude_from_neighbor_list(neighbor: partition.NeighborList,
@@ -35,6 +161,53 @@ def exclude_from_neighbor_list(neighbor: partition.NeighborList,
         neighbor: Neighbor list
         exclude_idx: Indices of the edges that should be excluded, if contained.
         exclude_mask: Boolean array whether specified edges should be excluded.
+
+    Example:
+
+        >>> import mdtraj
+        >>> from jax_md import space
+        >>> from jax import numpy as jnp
+        >>> from jax_md_mod.custom_partition import masked_neighbor_list
+
+        >>> pdb = mdtraj.load("_data/ethane.pdb")
+        >>> r_init = jnp.asarray(pdb.xyz[0], dtype=jnp.float32)
+        >>> box = jnp.array(1.0)
+
+        >>> displacement_fn, shift_fn = space.periodic_general(box, fractional_coordinates=True)
+        >>> neighbor_fns = masked_neighbor_list(
+        ...     displacement_fn, box, r_cutoff=1.0, dr_threshold=0.05, disable_cell_list=False
+        ... )
+
+        We can now exclude, e.g., the first C atom from the neighbor list
+
+        >>> mask = jnp.array([0, 1, 1, 1, 1, 1, 1, 1])
+        >>> nbrs_init = neighbor_fns.allocate(r_init, mask=mask)
+        >>>
+        >>> print(nbrs_init.idx)
+        [[8 8 8 8 8 8 8]
+         [2 3 4 5 6 7 8]
+         [1 3 4 5 6 7 8]
+         [1 2 4 5 6 7 8]
+         [1 2 3 5 6 7 8]
+         [1 2 3 4 6 7 8]
+         [1 2 3 4 5 7 8]
+         [1 2 3 4 5 6 8]]
+
+
+        Whenever the neighbor list must be recomputed (dR threshold), a new
+        mask is applied
+
+        >>> mask = jnp.array([1, 0, 1, 1, 1, 1, 1, 1])
+        >>> print(neighbor_fns.update(r_init, nbrs_init, mask=mask).idx)
+        [[2 3 4 5 6 7 8]
+         [8 8 8 8 8 8 8]
+         [0 3 4 5 6 7 8]
+         [0 2 4 5 6 7 8]
+         [0 2 3 5 6 7 8]
+         [0 2 3 4 6 7 8]
+         [0 2 3 4 5 7 8]
+         [0 2 3 4 5 6 8]]
+
 
     Returns:
         Returns a neighbor list of the same format with excluded edges.
@@ -148,8 +321,10 @@ def to_networkx(neighbor: partition.NeighborList):
 
                 graph.add_edge(int(i), int(neighbor.idx[i, j]))
     else:
-        raise NotImplementedError(
-            f"Neighbor list format {neighbor.format} not yet supported."
-        )
+        for i, j in neighbor.idx.T:
+            if i == neighbor.reference_position.shape[0]: continue
+            if j == neighbor.reference_position.shape[0]: continue
+
+            graph.add_edge(int(i), int(j))
 
     return graph

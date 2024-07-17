@@ -303,6 +303,7 @@ def dimenetpp_property_prediction(
         r_cutoff: float,
         n_targets: int = 1,
         n_species: int = 100,
+        n_per_atom: int = None,
         **model_kwargs) -> Tuple[nn.InitFn, Callable[[Any, jnp.ndarray],
                                                      jnp.ndarray]]:
     """Initializes a model that predicts global molecular properties.
@@ -312,6 +313,9 @@ def dimenetpp_property_prediction(
         n_targets: Number of different molecular properties to predict.
         n_species: Number of different atom species the network is supposed
             to process.
+        n_per_atom: Number of per-atom predictions, i.e., predicted quantity
+            equals the number of atoms. The remaining predictions are considered
+            global, i.e., one prediction per molecule.
         **model_kwargs: Kwargs to change the default structure of DimeNet++.
 
     Returns:
@@ -335,7 +339,15 @@ def dimenetpp_property_prediction(
         """
         model = DimeNetPP(r_cutoff, n_species, n_targets, **model_kwargs)
         per_atom_predictions = model(mol_graph, **dynamic_kwargs)
-        return jnp.sum(per_atom_predictions, axis=0)
+
+        # Split the global predictions from the per-atom predictions.
+        # Assume that the global predictions are a sum of the per-atom
+        # predictions.
+        n_predicted = per_atom_predictions.shape[1]
+        n_global = n_predicted - n_per_atom
+        per_atom_properties = per_atom_predictions[:, n_global:]
+        global_properties = jnp.sum(per_atom_predictions[:, :n_global], axis=0)
+        return global_properties, per_atom_properties
     return dropout.model_init_apply(property_predictor, model_kwargs)
 
 

@@ -14,7 +14,7 @@ import pytest
 
 from jax_md import space, energy, partition
 
-from chemtrain.data import data_processing
+from chemtrain.data import preprocessing
 from chemtrain.trainers import ForceMatching
 
 
@@ -27,9 +27,9 @@ class TestForceMatching:
 
         box = jnp.asarray([1.0, 1.0, 1.0])
 
-        all_forces = data_processing.get_dataset(
+        all_forces = preprocessing.get_dataset(
             datafiles / "forces_ethane.npy")
-        all_positions = data_processing.get_dataset(
+        all_positions = preprocessing.get_dataset(
             datafiles / "positions_ethane.npy")
 
 
@@ -37,7 +37,7 @@ class TestForceMatching:
             box, fractional_coordinates=True)
 
         # Scale the position data into fractional coordinates
-        position_dataset = data_processing.scale_dataset_fractional(
+        position_dataset = preprocessing.scale_dataset_fractional(
             all_positions, box)
 
         # Weights for the mapping
@@ -46,7 +46,7 @@ class TestForceMatching:
             [0.0000, 1, 0.000, 0.000, 0.000, 0, 0, 0]
         ])
 
-        position_dataset, force_dataset = data_processing.map_dataset(
+        position_dataset, force_dataset = preprocessing.map_dataset(
             position_dataset, displacement_fn, shift_fn, weights, weights,
             all_forces,
         )
@@ -98,9 +98,9 @@ class TestForceMatching:
 
         # ## Setup Optimizer
 
-        batch_per_device = 64
+        batch_per_device = 10
         epochs = 25
-        initial_lr = 0.01
+        initial_lr = 0.1
         lr_decay = 0.1
 
         lrd = int(position_dataset.shape[0] / batch_per_device * epochs)
@@ -118,9 +118,13 @@ class TestForceMatching:
         force_matching = ForceMatching(
             init_params=init_params, energy_fn_template=energy_fn_template,
             nbrs_init=nbrs_init, optimizer=optimizer,
-            position_data=position_dataset[::50, :, :],
-            force_data=force_dataset[::50, :, :], train_ratio=train_ratio
+            batch_per_device=batch_per_device
         )
+
+        force_matching.set_datasets({
+            "R": position_dataset[::50, :, :],
+            "F": force_dataset[::50, :, :],
+        }, train_ratio=train_ratio)
 
         return force_matching, b0, kb, epochs
 

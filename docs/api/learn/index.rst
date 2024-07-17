@@ -26,6 +26,14 @@ These modules enable to learn potential by matching of single snapshots.
    force_matching
    probabilistic
 
+Learning Molecular Properties
+------------------------------
+
+.. toctree::
+   :titlesonly:
+
+   property_prediction
+
 Advanced Learning
 ------------------
 

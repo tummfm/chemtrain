@@ -13,7 +13,8 @@
 # limitations under the License.
 import itertools
 
-from jax import numpy as jnp, Array
+import networkx
+from jax import numpy as jnp, Array, random
 
 from jax_md import partition, dataclasses
 
@@ -83,9 +84,10 @@ fc_graph_sparse = jnp.asarray([
 class NeighborIdx:
     idx: Array
     format: partition.NeighborListFormat
+    reference_position: Array = None
 
 
-class TestMasking:
+class TestEdgeMasking:
 
     @pytest.mark.parametrize("graph", (star_graph_dense, fc_graph_dense))
     @pytest.mark.parametrize("exclude", (
@@ -161,6 +163,7 @@ class TestMasking:
                     i == neighbor.idx[1, :]
                 )
             )
+
 
 class TestTriplets:
 

@@ -29,7 +29,7 @@ import numpy as onp
 
 from matplotlib import pyplot as plt
 
-from chemtrain import trajectory, quantity
+from chemtrain import ensemble, quantity
 
 base_path = Path("../_data")
 ```
@@ -151,12 +151,12 @@ to the hydrogen atoms.
 
 
 ```{code-cell}
-timings = trajectory.traj_util.process_printouts(
+timings = ensemble.sampling.process_printouts(
     time_step=0.001, total_time=1e3, t_equilib=1e2,
     print_every=0.1, t_start=0.0
 )
 
-init_ref_state, sim_template = trajectory.traj_util.initialize_simulator_template(
+init_ref_state, sim_template = ensemble.sampling.initialize_simulator_template(
     simulate.nvt_langevin, shift_fn=shift_fn, nbrs=nbrs_init,
     init_with_PRNGKey=True, extra_simulator_kwargs={"kT": 2.56, "gamma": 1.0, "dt": 0.001}
 )
@@ -183,7 +183,7 @@ quantities = {
     "force": lambda state, *args, **kwargs: -jax.grad(prior_energy_fn)(state.position, *args, **kwargs)
 }
 
-simulate_fn = trajectory.traj_util.trajectory_generator_init(
+simulate_fn = ensemble.sampling.trajectory_generator_init(
     simulator_template=sim_template,
     energy_fn_template=lambda _: prior_energy_fn,
     ref_timings=timings,

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Utility functions to generate MD trajectories. """
+"""Utility functions to sample from ensembles. """
 import functools
 from functools import partial
 from typing import Any, Dict, Callable, Mapping, Tuple, Union, Protocol
@@ -23,12 +23,12 @@ import chex
 
 from jax import lax, jit, vmap, numpy as jnp, random, tree_util
 
-from jax_md import simulate, util as jax_md_util
+from jax_md import util as jax_md_util
 from jax_md.partition import NeighborList
+from jax_md_mod import custom_quantity
 
 from chemtrain import util
-from jax_md_mod import custom_quantity
-from chemtrain.typing import QuantityDict
+from chemtrain.ensemble import evaluation
 
 Array = jax_md_util.Array
 
@@ -41,7 +41,7 @@ class SimulatorState:
         nbrs: ``jax_md`` neighbor list state
 
     """
-    sim_state: Any
+    sim_state: evaluation.State
     nbrs: NeighborList
 
 
@@ -85,7 +85,7 @@ class TrajectoryState:
             e.g., via DiffTRe optimization
     """
     sim_state: SimulatorState
-    trajectory: Any
+    trajectory: evaluation.State
     overflow: Array = False
     dynamic_kwargs: Dict[str, Array] = None
     aux: Dict[str, Any] = None
@@ -558,144 +558,8 @@ def quantity_traj(traj_state, quantities, energy_params=None, batch_size=1):
         A dict of quantity trajectories saved under the same key as the
         input quantity function.
     """
-    return quantity_multimap(
+    return evaluation.quantity_multimap(
         traj_state.trajectory, quantities=quantities,
-         nbrs=traj_state.reference_nbrs, state_kwargs=traj_state.dynamic_kwargs,
-         energy_params=energy_params, batch_size=batch_size)
-
-
-def quantity_map(trajectory: Any,
-                 quantities: QuantityDict,
-                 nbrs: NeighborList = None,
-                 state_kwargs: Dict[str, Array] = None,
-                 energy_params: Any = None,
-                 batch_size: int = 1):
-    """Computes quantities of interest for all states in a trajectory.
-
-    Arbitrary quantity functions can be provided via the quantities-dict.
-    The quantities dict provides the function to compute the quantity on
-    a single snapshot. The resulting quantity trajectory will be saved in
-    a dict under the same key as the input quantity function.
-
-    Example usage:
-        .. code-block:: python
-
-            def custom_compute_fn(state, neighbor=None, **kwargs):
-                ...
-                return quantity_snapshot
-
-
-            quantities = {
-                'energy': custom_quantity.energy_wrapper(energy_template_fn),
-                'custom_quantity': custom_compute_fn
-            }
-
-            quantity_trajs = quantity_traj(
-                trajectory, quantities, reference_nbrs, dynamic_kwargs,
-                energy_params
-            )
-            custom_quantity = quantity_trajs['custom_quantity']
-
-
-    Args:
-        trajectory: Trajectory of simulator states
-        quantities: The quantity dict containing for each target quantity
-            the snapshot compute function
-        nbrs: Reference neighbor list to compute new neighbor list
-        state_kwargs: Kwargs to supply reference ``'kT'`` and/or ``'pressure'``
-            to the energy function or the quantity functions.
-        energy_params: Energy params for energy_fn_template to initialize
-            the current energy_fn
-        batch_size: Number of batches for vmap
-
-    Returns:
-        A dict of quantity trajectories saved under the same key as the
-        input quantity function.
-    """
-    return quantity_multimap(
-        trajectory, quantities=quantities, nbrs=nbrs,
-         state_kwargs=state_kwargs, energy_params=energy_params,
-         batch_size=batch_size)
-
-
-def quantity_multimap(*trajectories,
-                      quantities: QuantityDict,
-                      nbrs: NeighborList = None,
-                      state_kwargs: Dict[str, Array] = None,
-                      energy_params: Any = None,
-                      batch_size: int = 1):
-    """Computes quantities of interest for all states in a trajectory.
-
-    This function extends :func:`quantity_traj`
-    to quantities with respect to multiple reference states.
-    Therefore, the quantity function signature changes to
-
-    .. code-block:: python
-
-            def quantity_fn(*states, neighbor=None, energy_params=None, **kwargs):
-                ...
-
-    The keywords arguments, i.e. the neighbor list, are with respect to the
-    first state of `*states`.
-
-    Args:
-        trajectories: Trajectories of simulator states
-        quantities: The quantity dict containing for each target quantity
-            the snapshot compute function
-        nbrs: Reference neighbor list to compute new neighbor list
-        state_kwargs: Kwargs to supply reference ``'kT'`` and/or ``'pressure'``
-            to the energy function or the quantity functions.
-        energy_params: Energy params for energy_fn_template to initialize
-            the current energy_fn
-        batch_size: Number of batches for vmap
-
-    Returns:
-        A dict of quantity trajectories saved under the same key as the
-        input quantity function.
-    """
-    # Check that all states have the same format
-    if state_kwargs is None:
-        state_kwargs = {}
-
-    assert len(trajectories) > 0, 'Need at least one trajectory.'
-    ref_leaves, ref_struct = tree_util.tree_flatten(trajectories[0])
-    for traj in trajectories:
-        assert ref_struct == tree_util.tree_structure(traj), (
-            "All trajectory states must have the same tree structure."
-        )
-        assert onp.all([
-            jnp.shape(l) == jnp.shape(r)
-            for r, l in zip(ref_leaves, tree_util.tree_leaves(traj))
-        ]), "All trajectory state leaves must be of identical shape."
-
-    @vmap
-    def single_state_quantities(single_snapshot):
-        states, kwargs = single_snapshot
-
-        kwargs.update(energy_params=energy_params)
-
-        if nbrs is not None:
-            kwargs["neighbor"] = util.neighbor_update(nbrs, states[0])
-        if util.is_npt_ensemble(states):
-            box = simulate.npt_box(states[0])
-            kwargs['box'] = box
-
-        if len(states) == 1:
-            computed_quantities = {
-                quantity_fn_key: quantities[quantity_fn_key](states[0], **kwargs)
-                for quantity_fn_key in quantities
-            }
-        else:
-            computed_quantities = {
-                quantity_fn_key: quantities[quantity_fn_key](*states, **kwargs)
-                for quantity_fn_key in quantities
-            }
-        return computed_quantities
-
-    batched_samples = util.tree_vmap_split(
-        (trajectories, state_kwargs), batch_size
+        nbrs=traj_state.reference_nbrs, state_kwargs=traj_state.dynamic_kwargs,
+        energy_params=energy_params, batch_size=batch_size
     )
-
-    bachted_quantity_trajs = lax.map(single_state_quantities, batched_samples)
-
-    return util.tree_combine(bachted_quantity_trajs)

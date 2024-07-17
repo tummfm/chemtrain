@@ -15,28 +15,27 @@
 
 """This file contains several Trainer classes as a quickstart for users."""
 import functools
-import gc
 import os
 import pickle
 import time
+import warnings
 from os import PathLike
+from typing import Any, Mapping, Dict, Callable
 
 import jax.tree_util
-import warnings
-
-from blackjax import nuts, stan_warmup
-from jax import random, numpy as jnp, lax, tree_util, jit
+import numpy as onp
+from jax import numpy as jnp, tree_util, jit
 from jax_sgmc import data
 from jax_sgmc.data import numpy_loader
 
-import numpy as onp
-
 from chemtrain import (util)
+from chemtrain.learn import (
+    force_matching, max_likelihood, difftre, property_prediction
+)
 from chemtrain.quantity import property_prediction
-from chemtrain.learn import force_matching, max_likelihood, probabilistic, difftre
 from chemtrain.trainers import base as tt
-
-from typing import Any, Mapping, Dict, Union, Callable
+from chemtrain.ensemble import sampling
+from jax_md_mod import custom_quantity
 
 try:
     from jax.typing import ArrayLike
@@ -45,7 +44,6 @@ except:
 from optax import GradientTransformationExtraArgs
 from jax_md.partition import NeighborFn, NeighborList
 from chemtrain.typing import EnergyFnTemplate
-from chemtrain.trajectory.traj_util import TrajectoryState, TimingClass
 
 class PropertyPrediction(tt.DataParallelTrainer):
     """Trainer for direct prediction of molecular properties."""
@@ -54,53 +52,54 @@ class PropertyPrediction(tt.DataParallelTrainer):
                  train_ratio=0.7, val_ratio=0.1, test_error_fn=None,
                  shuffle=False, convergence_criterion='window_median',
                  checkpoint_folder='Checkpoints'):
-
         # TODO documentation
 
         # TODO build graph on-the-fly as memory moving might be bottleneck here
         model = property_prediction.init_model(prediction_model)
         checkpoint_path = 'output/property_prediction/' + str(checkpoint_folder)
-        dataset_dict = {'targets': targets, 'graph_dataset': graph_dataset}
         loss_fn = property_prediction.init_loss_fn(error_fn)
 
-        super().__init__(dataset_dict, loss_fn, model, init_params, optimizer,
-                         checkpoint_path, batch_per_device, batch_cache,
-                         train_ratio, val_ratio, shuffle=shuffle,
-                         convergence_criterion=convergence_criterion)
+        super().__init__(
+            loss_fn, model, init_params, optimizer, checkpoint_path,
+            batch_per_device, batch_cache,
+            convergence_criterion=convergence_criterion
+        )
+
+        dataset_dict, _ = property_prediction.build_dataset(targets, graph_dataset)
+        self.set_datasets(
+            dataset_dict, train_ratio=train_ratio, val_ratio=val_ratio,
+            shuffle=shuffle
+        )
 
         self.test_error_fn = test_error_fn
-        self._init_test_fn()
-
-    @staticmethod
-    def _build_dataset(targets, graph_dataset):
-        return property_prediction.build_dataset(targets, graph_dataset)
 
     def predict(self, single_observation):
         """Prediction for a single input graph using the current param state."""
-        # TODO jit somewhere?
-        return self.model(self.best_inference_params, single_observation)
+        batched_observation = tree_util.tree_map(
+            functools.partial(jnp.expand_dims, axis=0), single_observation
+        )
+        batched_prediction = self.batched_model(
+            self.best_inference_params, batched_observation)
+        single_prediction = tree_util.tree_map(
+            functools.partial(jnp.squeeze, axis=0), batched_prediction
+        )
+        return single_prediction
 
     def evaluate_testset_error(self, best_params=True):
-        assert self.test_loader is not None, ('No test set available. Check'
-                                              ' train and val ratios.')
-        assert self._test_fn is not None, ('"test_error_fn" is necessary'
-                                           ' during initialization.')
+        assert "testing" in self._batch_states.keys(), (
+            'No test set available. Check train and val ratios.'
+        )
+        assert self._test_fn is not None, (
+            '"test_error_fn" is necessary during initialization.'
+        )
 
         params = (self.best_inference_params_replicated
                   if best_params else self.state.params)
-        error = self._test_fn(params)
+
+        error = self.evaluate("testing", self._test_fn, params=params)
+
         print(f'Error on test set: {error}')
         return error
-
-    def _init_test_fn(self):
-        if self.test_error_fn is not None and self.test_loader is not None:
-            test_loss_fn = property_prediction.init_loss_fn(self.test_error_fn)
-            self._test_fn, data_release_fn = max_likelihood.init_val_loss_fn(
-                self.batched_model, test_loss_fn, self.test_loader,
-                self.target_keys, self.batch_size, self.batch_cache)
-            self.release_fns.append(data_release_fn)
-        else:
-            self._test_fn = None
 
 
 class ForceMatching(tt.DataParallelTrainer):
@@ -146,77 +145,60 @@ class ForceMatching(tt.DataParallelTrainer):
     """
     def __init__(self,
                  init_params,
+                 optimizer,
                  energy_fn_template: EnergyFnTemplate,
                  nbrs_init: NeighborList,
-                 optimizer,
-                 position_data: ArrayLike,
-                 energy_data: ArrayLike = None,
-                 force_data: ArrayLike = None,
-                 virial_data: ArrayLike = None,
-                 kt_data: ArrayLike = None,
-                 box_tensor: ArrayLike = None,
-                 gamma_f: float = 1.,
-                 gamma_p: float = 1.e-6,
+                 additional_targets: Dict[str, Dict] = None,
+                 feature_extract_fns: Dict[str, Callable] = None,
                  batch_per_device: int = 1,
                  batch_cache: int = 10,
-                 train_ratio: float = 0.7,
-                 val_ratio: float = 0.1,
-                 shuffle: bool = False,
                  full_checkpoint: bool = False,
                  disable_shmap: bool = False,
                  penalty_fn: Callable = None,
                  convergence_criterion: str = 'window_median',
-                 checkpoint_path: PathLike = 'checkpoints'):
+                 checkpoint_path: PathLike = 'checkpoints',
+                 **unused):
 
-        dataset_dict = {'position_data': position_data,
-                        'energy_data': energy_data,
-                        'force_data': force_data,
-                        'virial_data': virial_data,
-                        'kt_data': kt_data
-                        }
+        # These are common quantities to train on
+        quantities = {
+            "F": custom_quantity.force_wrapper(energy_fn_template),
+            "U": custom_quantity.energy_wrapper(energy_fn_template)
+        }
 
-        virial_fn = force_matching.init_virial_fn(
-            virial_data, energy_fn_template, box_tensor)
-        model = force_matching.init_model(nbrs_init, energy_fn_template,
-                                          virial_fn)
-        loss_fn = force_matching.init_loss_fn(gamma_f=gamma_f, gamma_p=gamma_p)
+        # Add additional trainable targets
+        gammas = {}
+        if additional_targets is not None:
+            for key, target in additional_targets.items():
+                quantities[key] = target['compute_fn']
+                gammas[key] = target['gamma']
 
-        super().__init__(dataset_dict, loss_fn, model, init_params, optimizer,
+        model = force_matching.init_model(
+            nbrs_init, quantities, feature_extract_fns
+        )
+
+        loss_fn = force_matching.init_loss_fn(**gammas)
+
+        super().__init__(loss_fn, model, init_params, optimizer,
                          checkpoint_path, batch_per_device, batch_cache,
-                         train_ratio, val_ratio, shuffle=shuffle,
                          disable_shmap=disable_shmap, penalty_fn=penalty_fn,
                          convergence_criterion=convergence_criterion,
                          full_checkpoint=full_checkpoint,
                          energy_fn_template=energy_fn_template)
-        self._virial_fn = virial_fn
-        self._nbrs_init = nbrs_init
-        self._init_test_fn()
 
-    @staticmethod
-    def _build_dataset(position_data, energy_data=None, force_data=None,
-                       virial_data=None, kt_data=None):
-        return force_matching.build_dataset(position_data, energy_data,
-                                            force_data, virial_data, kt_data)
+        self._nbrs_init = nbrs_init
 
     def evaluate_mae_testset(self):
         """Prints the Mean Absolute Error for every target on the test set."""
-        assert self.test_loader is not None, ('No test set available. Check'
-                                              ' train and val ratios or add a'
-                                              ' test_loader manually.')
-        maes = self.mae_fn(self.best_inference_params)
+        mae_loss_fn = force_matching.init_loss_fn(
+                max_likelihood.mae_loss, individual=True
+            )
+
+        _, maes = self.evaluate(
+            "testing", mae_loss_fn, params=self.best_inference_params
+        )
+
         for key, mae_value in maes.items():
             print(f'{key}: MAE = {mae_value:.4f}')
-
-    def _init_test_fn(self):
-        if self.test_loader is not None:
-            self.mae_fn, data_release_fn = force_matching.init_mae_fn(
-                self.test_loader, self._nbrs_init,
-                self.reference_energy_fn_template, self.batch_size,
-                self.batch_cache, self._virial_fn
-            )
-            self.release_fns.append(data_release_fn)
-        else:
-            self.mae_fn = None
 
 
 class Difftre(tt.PropagationBase):
@@ -319,7 +301,7 @@ class Difftre(tt.PropagationBase):
                        energy_fn_template: EnergyFnTemplate,
                        simulator_template: Callable,
                        neighbor_fn: NeighborFn,
-                       timings: TimingClass,
+                       timings: sampling.TimingClass,
                        state_kwargs: Dict[str, ArrayLike],
                        quantities: Dict[str, Dict],
                        reference_state,
@@ -680,7 +662,7 @@ class RelativeEntropy(tt.PropagationBase):
                        energy_fn_template: EnergyFnTemplate,
                        simulator_template: Callable,
                        neighbor_fn: NeighborFn,
-                       timings: TimingClass,
+                       timings: sampling.TimingClass,
                        state_kwargs: Dict[str, ArrayLike],
                        reference_state,
                        reference_batch_size: int = None,
@@ -823,8 +805,7 @@ class RelativeEntropy(tt.PropagationBase):
         batch_norm = util.tree_norm(batch_grad)
         self.gradient_norm_history.append(onp.asarray(batch_norm))
         self.step_size_history.append(onp.asarray(alpha))
-        del grads
-        gc.collect()
+
 
     def _evaluate_convergence(self, *args, thresh=None, **kwargs):
         curr_grad_norm = self.gradient_norm_history[-1]

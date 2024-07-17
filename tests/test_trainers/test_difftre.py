@@ -10,7 +10,7 @@ import optax
 import matplotlib.pyplot as plt
 import pytest
 
-from chemtrain import quantity, trainers, trajectory
+from chemtrain import quantity, trainers, ensemble
 
 
 
@@ -54,7 +54,7 @@ class TestDifftre:
         displacement_fn, shift_fn = space.periodic_general(box)
 
         dt = 0.01
-        timings = trajectory.traj_util.process_printouts(dt, 1100, 100, 1.0)
+        timings = ensemble.sampling.process_printouts(dt, 1100, 100, 1.0)
 
         simulator_template = partial(
             simulate.nvt_langevin, shift_fn=shift_fn,
@@ -103,7 +103,7 @@ class TestDifftre:
 
         # We now created a numerical representation of the system and can run the trainer.
         state_kwargs = {"kT": 2.56}
-        reference_state = trajectory.traj_util.SimulatorState(
+        reference_state = ensemble.sampling.SimulatorState(
             sim_state=simulator_init_state, nbrs=nbrs_init
         )
 

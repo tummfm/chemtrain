@@ -22,19 +22,20 @@ import warnings
 from abc import abstractmethod
 from os import PathLike
 import inspect
+from typing import Callable, Dict, Any
 
 import cloudpickle as pickle
 import numpy as onp
 from jax import tree_map, numpy as jnp, random, vmap, device_count, jit
 from jax_sgmc import data
 
+import chemtrain.data.data_loaders
 from chemtrain import util
-from chemtrain.data import data_processing
-from chemtrain.learn.max_likelihood import pmap_update_fn, \
-    init_val_loss_fn, step_optimizer, shmap_update_fn
+from chemtrain.data import data_loaders
+from chemtrain.learn import max_likelihood
 from jax_md_mod.model import dropout
-from chemtrain.trajectory.reweighting import init_pot_reweight_propagation_fns
-from chemtrain.trajectory import traj_util
+from chemtrain.ensemble.reweighting import init_pot_reweight_propagation_fns
+from chemtrain.ensemble import sampling
 from chemtrain.typing import EnergyFnTemplate
 from chemtrain.util import format_not_recognized_error
 
@@ -229,7 +230,7 @@ class MLETrainerTemplate(TrainerInterface):
         # completion of the batch, hence losing the advantage of asynchronous
         # dispatch, which can become the bottleneck in high-throughput learning.
 
-        self.release_fns = []
+        self.release_fns = {}
 
     def add_task(self, trigger, fn_or_method):
         """Adds a tasks to perform regularly during training.
@@ -341,7 +342,7 @@ class MLETrainerTemplate(TrainerInterface):
             Returns the parameters after an update of the optimizer, but
             without updating the internal states.
         """
-        new_params, _ = step_optimizer(
+        new_params, _ = max_likelihood.step_optimizer(
             self.params, self.state.opt_state, curr_grad, self.optimizer)
         return new_params
 
@@ -349,10 +350,8 @@ class MLETrainerTemplate(TrainerInterface):
         """Wrapper around step_optimizer that is useful whenever the
         update of the optimizer can be done outside of jit-compiled functions.
         """
-        new_params, new_opt_state = step_optimizer(self.params,
-                                                   self.state.opt_state,
-                                                   curr_grad,
-                                                   self.optimizer)
+        new_params, new_opt_state = max_likelihood.step_optimizer(
+            self.params, self.state.opt_state, curr_grad, self.optimizer)
 
         # Do an optimized update
         new_params = tree_map(
@@ -466,9 +465,9 @@ class MLETrainerTemplate(TrainerInterface):
         self.state = tree_map(jnp.array, self.state)  # move on device
 
     def _release_data_references(self):
-        for release in self.release_fns:
+        for release in self.release_fns.values():
             release()
-        self.release_fns = []
+        self.release_fns = {}
 
 
 class PropagationBase(MLETrainerTemplate):
@@ -525,7 +524,7 @@ class PropagationBase(MLETrainerTemplate):
                 "Use trajectory.traj_util.SimulatorState instead.",
                 DeprecationWarning
             )
-            reference_state = traj_util.SimulatorState(
+            reference_state = sampling.SimulatorState(
                 sim_state=reference_state[0], nbrs=reference_state[1])
 
         if set_key is not None:
@@ -638,24 +637,31 @@ class DataParallelTrainer(MLETrainerTemplate):
     atoms needs to be padded and to be compatible with this trainer.
     """
 
-    def __init__(self, dataset_dict, loss_fn, model, init_params, optimizer,
-                 checkpoint_path, batch_per_device, batch_cache,
-                 train_ratio=0.7, val_ratio=0.1, shuffle=False,
-                 full_checkpoint=True, penalty_fn=None,
+    _train_loader: data.DataLoader
+    _val_loader: data.DataLoader
+    _test_loader: data.DataLoader
+
+    def __init__(self, loss_fn, model, init_params, optimizer, checkpoint_path,
+                 batch_per_device: int,  batch_cache: int = 1,
+                 full_checkpoint=True, penalty_fn=None, energy_fn_template=None,
                  convergence_criterion='window_median',
-                 energy_fn_template=None,
                  disable_shmap: bool = False):
-        self.model = model
-        self.batched_model = vmap(model, in_axes=(None, 0))
+
+        self._disable_shmap = disable_shmap
+        self.batched_model = model
         if disable_shmap:
-            self._update_fn = pmap_update_fn(
+            self._update_fn = max_likelihood.pmap_update_fn(
                 self.batched_model, loss_fn, optimizer, penalty_fn)
+            self._evaluate_fn = None
         else:
             # shmap performs better, but some replication rules are missing
-            self._update_fn = shmap_update_fn(
+            self._update_fn = max_likelihood.shmap_update_fn(
                 self.batched_model, loss_fn, optimizer, penalty_fn)
-        self.batch_cache = batch_cache
+            self._evaluate_fn = max_likelihood.shmap_loss_fn(
+                self.batched_model, loss_fn, penalty_fn)
+
         self._loss_fn = loss_fn
+        self.batch_cache = batch_cache
         self.batch_size = batch_per_device * device_count()
 
         # replicate params and optimizer states for pmap
@@ -671,109 +677,245 @@ class DataParallelTrainer(MLETrainerTemplate):
         self.train_batch_losses = self.checkpoint('train_batch_losses', [])
         self.train_losses = self.checkpoint('train_losses', [])
         self.val_losses = self.checkpoint('val_losses', [])
+        self.train_target_losses = self.checkpoint('train_target_losses', {})
+        self.val_target_losses = self.checkpoint('val_target_losses', {})
+
+        self._batch_states: Dict[str, Any] = {}
+        self._batches_per_epoch: Dict[str, int] = {}
+        self._get_batch_fns: Dict[str, Callable] = {}
 
         self._early_stop = EarlyStopping(self.params, convergence_criterion)
 
-        (self._batches_per_epoch, self._get_train_batch,
-         self._train_batch_state, self.train_loader, self.val_loader,
-         self.test_loader, self.target_keys
-         ) = self._process_dataset(dataset_dict, train_ratio, val_ratio,
-                                   shuffle=shuffle)
+    def reset_convergence_losses(self):
+        """Resets early stopping convergence monitoring."""
+        self._early_stop.reset_convergence_losses()
 
-        if self.val_loader is not None:  # no validation dataset
-            self._val_loss_fn, data_release_fn = init_val_loss_fn(
-                self.batched_model, self._loss_fn, self.val_loader,
-                self.target_keys, self.batch_size, self.batch_cache
-            )
-            self.release_fns.append(data_release_fn)
-
-    def update_dataset(self, train_ratio=0.7, val_ratio=0.1, shuffle=False,
-                       **dataset_kwargs):
-        """Allows changing dataset on the fly, which is particularly
-        useful for active learning applications.
+    def limit_batches_per_epoch(self, max_batches: int = 1):
+        """Limits the number of batches per epoch.
 
         Args:
+            max_batches: Maximum number of batches to use within one epoch.
+
+        """
+
+        assert self._batches_per_epoch["training"] >= max_batches, (
+            "The number of batches per epoch is smaller than the requested "
+            "maximum."
+        )
+
+        self._batches_per_epoch["training"] = max_batches
+
+    def set_datasets(self, dataset, train_ratio=0.7, val_ratio=0.1, shuffle=False):
+        """Sets the datasets for training, testing and validation.
+
+        Args:
+            dataset: Dictionary containing input and target data as numpy
+                arrays.
             train_ratio: Percentage of dataset to use for training.
             val_ratio: Percentage of dataset to use for validation.
             shuffle: Whether to shuffle data before splitting into
                 train-val-test.
-            dataset_kwargs: Kwargs to supply to ``self._build_dataset`` to
-                re-build the dataset
         """
-        # reset convergence criterion as loss might not be comparable
-        self._early_stop.reset_convergence_losses()
-
         # release all references before allocating new data to avoid memory leak
         self._release_data_references()
 
-        (self._batches_per_epoch, self._get_train_batch,
-         self._train_batch_state, self.train_loader, self.val_loader,
-         self.test_loader, target_keys
-         ) = self._process_dataset(dataset_kwargs, train_ratio, val_ratio,
-                                   shuffle=shuffle)
+        # Initialize the data loaders
+        loaders = data_loaders.init_dataloaders(
+            dataset, train_ratio, val_ratio, shuffle=shuffle)
 
-        if self.val_loader is not None:
-            self._val_loss_fn, data_release_fn = init_val_loss_fn(
-                self.batched_model, self._loss_fn, self.val_loader, target_keys,
-                self.batch_size, self.batch_cache
-            )
-            self.release_fns.append(data_release_fn)
+        self.set_loader(loaders.train_loader, stage="training")
+        self.set_loader(loaders.val_loader, stage="validation")
+        self.set_loader(loaders.test_loader, stage="testing")
 
-    def _process_dataset(self, dataset_dict, train_ratio=0.7, val_ratio=0.1,
-                         shuffle=False):
-        # considers case of re-training with different number of GPUs
-        dataset, target_keys = self._build_dataset(**dataset_dict)
-        train_loader, val_loader, test_loader = \
-            data_processing.init_dataloaders(dataset, train_ratio, val_ratio,
-                                             shuffle=shuffle)
+    def set_dataset(self, dataset, stage = "testing", shuffle = False):
+        """Sets the dataset for a single stage, e.g., training.
+
+        Args:
+            dataset: Dictionary containing input and target data as numpy
+                arrays.
+            stage: Stage for which to set the dataset. Can be ``"training"``,
+                ``"validation"``, or ``"testing"``.
+            shuffle: Whether the data should be shuffled.
+
+        """
+        # Will only return one data loader
+        loaders = data_loaders.init_dataloaders(
+            dataset, train_ratio=1.0, val_ratio=0.0, shuffle=shuffle
+        )
+
+        self.set_loader(loaders.train_loader, stage=stage)
+
+    def set_loader(self, data_loader, stage="training"):
+        """Sets a data loader for a specific stage, e.g., training.
+
+        If the dataset consists of numpy arrays, it is simpler to use
+        :func:`set_dataset` or :func:`set_datasets` to set the data loaders.
+
+        Args:
+            data_loader: The data loader to set.
+            stage: The stage for which to set the data loader. Can be
+                ``"training"``, ``"validation"``, or ``"testing"``.
+
+        """
+        if stage in self.release_fns.keys():
+            self.release_fns[stage]()
+
+        observation_count = data_loader.static_information['observation_count']
+
+        assert observation_count > 0
+
+        batch_size = observation_count
+        if self.batch_size < observation_count:
+            batch_size = self.batch_size
+
+        # Initialize the access functions
         init_train_state, get_train_batch, release = data.random_reference_data(
-             train_loader, self.batch_cache, self.batch_size)
-        self.release_fns.append(release)
+            data_loader, self.batch_cache, batch_size)
+
         train_batch_state = init_train_state(shuffle=True)
 
-        observation_count = train_loader.static_information['observation_count']
-        batches_per_epoch = observation_count // self.batch_size
-        return (batches_per_epoch, get_train_batch, train_batch_state,
-                train_loader, val_loader, test_loader, target_keys)
+        self._get_batch_fns[stage] = get_train_batch
+        self._batch_states[stage] = train_batch_state
+        self._batches_per_epoch[stage] = observation_count // batch_size
+        self.release_fns[stage] = release
+
+    def _get_batch_stage(self, stage):
+        for _ in range(self._batches_per_epoch[stage]):
+            self._batch_states[stage], train_batch = self._get_batch_fns[stage](
+                self._batch_states[stage])
+            yield train_batch
 
     def _get_batch(self):
-        for _ in range(self._batches_per_epoch):
-            self._train_batch_state, train_batch = self._get_train_batch(
-                self._train_batch_state)
-            yield train_batch
+        return self._get_batch_stage("training")
 
     def _update(self, batch):
         """Function to iterate, optimizing parameters and saving
         training and validation loss values.
         """
-        params, opt_state, train_loss, curr_grad = self._update_fn(
-            self.state.params, self.state.opt_state, batch)
+        params, opt_state, train_loss, curr_grad, per_target_losses = self._update_fn(
+            self.state.params, self.state.opt_state, batch, per_target=True)
+
+        # Save the statistics
+        for key, val in per_target_losses.items():
+            if key not in self.train_target_losses.keys():
+                self.train_target_losses[key] = []
+
+            self.train_target_losses[key].append(onp.asarray(val))
 
         self.state = self.state.replace(params=params, opt_state=opt_state)
         self.train_batch_losses.append(train_loss)  # only from single device
 
         self.gradient_norm_history.append(util.tree_norm(curr_grad))
 
+    def evaluate(self, stage = "validation", loss_fn = None, params=None):
+        """Computes the loss on the whole dataset.
+
+        Args:
+            stage: Stage for which to evaluate the loss. Can be ``"testing"``,
+                ``"validation"``, or ``"training"``.
+            loss_fn: Loss function to evaluate. If None, evaluates the loss
+                function used for training.
+            params: Parameters for the model. If None, uses the current
+                parameters.
+
+        Returns:
+            Returns the total loss and the loss for each individual target.
+
+        """
+
+        assert stage in self._batch_states, (
+            f"A dataloader (dataset) is required to evaluate the loss on "
+            f"stage {stage}."
+        )
+
+        if params is None:
+            params = self.params
+
+        # Option to define a new loss function, e.g., for MAE error
+        if loss_fn is None:
+            loss_fn = self._evaluate_fn
+        elif not self._disable_shmap:
+            loss_fn = max_likelihood.shmap_loss_fn(self.batched_model, loss_fn)
+        else:
+            raise NotImplementedError
+
+        total_loss, per_target_losses = 0.0, {}
+        for batch in self._get_batch_stage(stage):
+            # Compute the total loss and the individual contributions per
+            # target
+            val_loss, per_target_loss = loss_fn(
+                self.state.params, batch, per_target=True)
+
+            total_loss += onp.asarray(val_loss)
+            for key, val in per_target_loss.items():
+                if key not in per_target_losses:
+                    per_target_losses[key] = []
+
+                per_target_losses[key].append(onp.asarray(val))
+
+        total_loss /= self._batches_per_epoch[stage]
+        per_target_losses = {
+            key: sum(val) / len(val) for key, val in per_target_losses.items()
+        }
+
+        return total_loss, per_target_losses
+
     def _evaluate_convergence(self, *args, thresh=None, **kwargs):
         """Prints progress, saves best obtained params and signals converged if
         validation loss improvement over the last epoch is less than the thesh.
         """
-        mean_train_loss = sum(self.train_batch_losses[-self._batches_per_epoch:]
-                              ) / self._batches_per_epoch
+        batches_per_epoch = self._batches_per_epoch["training"]
+        mean_train_loss = sum(
+            self.train_batch_losses[-batches_per_epoch:]
+        ) / batches_per_epoch
         self.train_losses.append(mean_train_loss)
         duration = self.update_times[self._epoch]
 
-        if self.val_loader is not None:
-            val_loss = self._val_loss_fn(self.state.params)
-            self.val_losses.append(val_loss)
+        if "validation" in self._batch_states:
+            val_loss, val_target_losses = self.evaluate("validation")
+
+            self.val_losses.append(onp.asarray(val_loss))
+
+            for key, val in val_target_losses.items():
+                if key not in self.val_target_losses:
+                    self.val_target_losses[key] = []
+
+                self.val_target_losses[key].append(val)
+
+            print(f"Validation loss {val_loss:.5f}")
+
             self._converged = self._early_stop.early_stopping(
                 val_loss, thresh, self.params)
         else:
             val_loss = None
-        print(f'Epoch {self._epoch}: Average train loss: {mean_train_loss:.5f} '
-              f'Average val loss: {val_loss} Gradient norm:'
-              f' {self.gradient_norm_history[-1]}'
-              f' Elapsed time = {duration:.3f} min')
+
+        log_str = (
+            f'[Epoch {self._epoch}]:\n'
+            f'\tAverage train loss: {mean_train_loss:.5f}\n'
+            f'\tAverage val loss: {val_loss}\n'
+            f'\tGradient norm: {self.gradient_norm_history[-1]}\n'
+            f'\tElapsed time = {duration:.3f} min\n'
+            f'\tPer-target losses:\n'
+        )
+
+        for key in self.train_target_losses:
+            train_batches_per_epoch = self._batches_per_epoch["training"]
+
+            mean_train_loss = sum(
+                self.train_target_losses[key][-train_batches_per_epoch:]
+            ) / train_batches_per_epoch
+
+            try:
+                target_val_loss = self.val_target_losses[key][-1]
+            except IndexError or KeyError:
+                target_val_loss = "N.A."
+
+            log_str += (
+                f"\t\t{key} | train loss: {mean_train_loss} | "
+                f"val loss: {target_val_loss}\n"
+            )
+
+        print(log_str)
 
     def update_with_samples(self, **sample):
         """A single params update step, where a batch is taken from the training
@@ -789,46 +931,13 @@ class DataParallelTrainer(MLETrainerTemplate):
                 pytree. Analogous usage as update_dataset, but the dataset
                 only consists of a few observations.
         """
-        ordered_samples, _ = self._build_dataset(**sample)
-        n_samples = util.tree_multiplicity(ordered_samples)
+        n_samples = util.tree_multiplicity(sample)
         assert n_samples <= self.batch_size, ('Number of provided samples must'
                                               ' not exceed trainer batch size.')
         batch = next(self._get_batch())
-        updated_batch = util.tree_set(batch, ordered_samples, n_samples)
+        updated_batch = util.tree_set(batch, sample, n_samples)
         self._update_with_dropout(updated_batch)
 
-    def set_testloader(self, testdata):
-        """Set testloader to use provided test data.
-
-        Args:
-            testdata: Kwargs storing the sample daata to supply to
-                ``self._build_dataset`` to build the sample in the correct
-                pytree. Analogous usage as update_dataset, but the
-                dataset only consists of a single observation.
-        """
-        dataset, _ = self._build_dataset(**testdata)
-        _, _, test_loader = data_processing.init_dataloaders(dataset, 0., 0.)
-        self.test_loader = test_loader
-        self._init_test_fn()  # re-init test function to adjust to new data set
-
-    @abc.abstractmethod
-    def _build_dataset(self, *args, **kwargs):
-        """Function that returns a tuple (dataset, target_keys).
-
-        The ``'dataset'`` is a dictionary for the specific problem at hand.
-        The data for each leaf of the dataset is assumed to be stacked along
-        axis 0. 'target_keys' is a list of keys that are necessary to evaluate
-        the loss_fn, assuming the model prediction is available. In the simplest
-        case, the same keys as in 'dataset' can be provided. For a memory
-        expensive dataset, keys that are only needed as model input can be
-        omitted to save GPU memory.
-        """
-
-    @abc.abstractmethod
-    def _init_test_fn(self):
-        """Function that sets self._test_fn and self._test_state to evalaute
-        test set loss.
-        """
 
     @property
     def params(self):
@@ -849,7 +958,7 @@ class DataParallelTrainer(MLETrainerTemplate):
         """
         #  if no validation data given, _early_stop.best_params are simply
         #  init_params
-        if self.val_loader is None:
+        if "validation" in self._batch_states.keys() is None:
             return self.params
         else:
             return self._early_stop.best_params
@@ -1038,6 +1147,8 @@ class EarlyStopping:
                                         ' be provided in early_stopping.')
             improvement = self.best_loss - curr_epoch_loss
             if improvement > 0.:
+                print(f"Improvement detected")
+
                 self.best_loss = curr_epoch_loss
                 self.best_params = copy.copy(params)
 

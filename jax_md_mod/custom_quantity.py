@@ -53,6 +53,28 @@ def energy_wrapper(energy_fn_template, fixed_energy_params=None):
     return energy
 
 
+def force_wrapper(energy_fn_template, fixed_energy_params=None):
+    """Wrapper around energy_fn to allow force computation via
+    traj_util.quantity_traj.
+
+    Args:
+        energy_fn_template: Function creating an energy function when called
+            with energy parameters.
+        fixed_energy_params: Always use the energy function obtained when
+            using the fixed energy params. If not given, the function uses
+            dynamially specified parameters.
+
+    """
+    def energy(state, neighbor, energy_params, **kwargs):
+        if fixed_energy_params is None:
+            energy_fn = energy_fn_template(energy_params)
+        else:
+            energy_fn = energy_fn_template(fixed_energy_params)
+        force_fn = quantity.force(energy_fn)
+        return force_fn(state.position, neighbor=neighbor, **kwargs)
+    return energy
+
+
 def kinetic_energy_wrapper(state, **unused_kwargs):
     """Wrapper around kinetic_energy to allow kinetic energy computation via
     traj_util.quantity_traj.

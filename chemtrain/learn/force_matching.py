@@ -18,7 +18,7 @@ Directly learnable quantities are, for example, energy, forces, or virial
 pressure.
 
 """
-from typing import NamedTuple, Callable, TypedDict, Tuple, List
+from typing import Callable, TypedDict, Tuple, List, Dict
 from typing_extensions import Required
 
 from jax import vmap, value_and_grad, numpy as jnp
@@ -26,9 +26,12 @@ from jax import vmap, value_and_grad, numpy as jnp
 from jax_sgmc.data.numpy_loader import NumpyDataLoader
 
 from chemtrain.learn import max_likelihood
+from chemtrain.ensemble import evaluation
 from jax_md_mod import custom_quantity
 
-from chemtrain.typing import EnergyFnTemplate, ArrayLike, NeighborList, ErrorFn
+from chemtrain.typing import EnergyFnTemplate, ArrayLike, NeighborList, ErrorFn, \
+    ComputeFn
+
 
 # Note:
 #  Computing the neighbor list in each snapshot is not efficient for DimeNet++,
@@ -37,14 +40,6 @@ from chemtrain.typing import EnergyFnTemplate, ArrayLike, NeighborList, ErrorFn
 #  neighbor list as many cut-off interactions are otherwise computed.
 #  For the sake of a simpler implementation, the slight inefficiency
 #  in the case of DimeNet++ is accepted for now.
-
-class State(NamedTuple):
-    """Emulates state of a jax-md simulator.
-
-    Args:
-        position: Particle positions
-    """
-    position: ArrayLike = None
 
 
 class AtomisticDataset(TypedDict, total=False):
@@ -68,15 +63,9 @@ def build_dataset(position_data: ArrayLike,
                   energy_data: ArrayLike = None,
                   force_data: ArrayLike = None,
                   virial_data: ArrayLike = None,
-                  kt_data: ArrayLike = None
-                  ) -> Tuple[AtomisticDataset, List[str]]:
+                  kt_data: ArrayLike = None,
+                  **extra_data) -> Tuple[AtomisticDataset]:
     """Builds the force-matching dataset depending on available data.
-
-    Building the dataset involves separating the reference data into inputs
-    to the model and target predictions of the model.
-    For example, the positions of the particles act as input, while forces
-    are targets.
-    Additionally, this function canonicalizes the keys of the reference data.
 
     Example:
 
@@ -89,12 +78,10 @@ def build_dataset(position_data: ArrayLike,
 
         The dataset for training is can be created via:
 
-        >>> dataset, target_keys = build_dataset(
+        >>> dataset = build_dataset(
         ...     position_data=position_data, force_data=force_data)
         >>> print(dataset)
         {'R': [Ellipsis], 'F': [Ellipsis]}
-        >>> print(target_keys)
-        ['F']
 
     Args:
         position_data: Reference particle positions
@@ -117,62 +104,46 @@ def build_dataset(position_data: ArrayLike,
         dataset['p'] = virial_data
     if kt_data is not None:
         dataset['kT'] = kt_data
-    return dataset, _dataset_target_keys(dataset)
+
+    dataset.update(extra_data)
+
+    return dataset
 
 
-def _dataset_target_keys(dataset):
-    """Dataset keys excluding particle positions for validation loss with
-    possibly masked atoms.
-    """
-    target_key_list = list(dataset)
-    target_key_list.remove('R')
-    if 'kT' in target_key_list:
-        target_key_list.remove('kT')
-    assert target_key_list, 'At least one target quantity needs to be supplied.'
-    return target_key_list
+def _split_targets_inputs(observation, quantities):
+    dynamic_kwargs, targets = {}, {}
+    for key in observation.keys():
+        if key in quantities:
+            targets[key] = observation[key]
+        else:
+            dynamic_kwargs[key] = observation[key]
+
+    assert set(quantities.keys()) == set(targets.keys()), (
+        'All trainig targets must be present in the observation data.'
+    )
+
+    return dynamic_kwargs, targets
 
 
-def init_virial_fn(virial_data: ArrayLike,
-                   energy_fn_template: EnergyFnTemplate,
-                   box_tensor: ArrayLike):
-    """Initializes the virial function corresponding to the reference data.
-
-    The virial data can be scalar (e.g. for matching pressure) or a 3x3 tensor
-    (e.g. for matching stresses).
-    This function selects the correct computing function matching the shape of
-    the reference data.
+def state_from_positions(input_dict: Dict[str, ArrayLike]):
+    """Extracts the state of the system from the particle positions.
 
     Args:
-        virial_data: Data determining the form of virial prediction
-        energy_fn_template: Energy_fn_template to get energy_fn from params
-        box_tensor: Box to initialize virial prediction
+        input_dict: Dictionary containing particle positions under 'R'.
 
+    Returns:
+        State of the system.
     """
-    if virial_data is not None:
-        assert box_tensor is not None, ('If the virial is to be matched, '
-                                        'box_tensor is a mandatory input.')
-        if virial_data.ndim == 3:
-            virial_fn = custom_quantity.init_virial_stress_tensor(
-                energy_fn_template, box_tensor, include_kinetic=False,
-                pressure_tensor=True
-            )
-        elif virial_data.ndim in [1, 2]:
-            if virial_data.ndim == 2:
-                assert virial_data.shape[-1] == 1, (
-                    'Scalar pressure is required. Otherwise, [3,3] tensor.')
-            virial_fn = custom_quantity.init_pressure(
-                energy_fn_template, box_tensor, include_kinetic=False)
-        else:
-            raise ValueError('Format of virial dataset incompatible.')
-    else:
-        virial_fn = None
+    state = evaluation.SimpleState(input_dict.pop('R'))
+    return state, input_dict
 
-    return virial_fn
 
+# TODO: Initialize predictions for all kinds of quantities
 
 def init_model(nbrs_init: NeighborList,
-               energy_fn_template: EnergyFnTemplate,
-               virial_fn = None):
+               quantities: Dict[str, ComputeFn],
+               state_from_input: Callable = None,
+               feature_extract_fns: Dict[str, Callable] = None):
     """Initialize prediction function for a single snapshot.
 
     The prediction function computed the energy, force, and virial (if provided)
@@ -185,48 +156,55 @@ def init_model(nbrs_init: NeighborList,
 
     Args:
         nbrs_init: Initial neighbor list.
-        energy_fn_template: Energy_fn_template to get energy_fn from params.
-        virial_fn: Function to compute virial pressure. If None, no virial
-            pressure is predicted.
+        quantities: Dictionary of snapshot functions, e.g., energy and forces.
+        state_from_input: Function to build a system state from the input data.
+            Not necessary, if the state is already a key in the observations.
+        feature_extract_fns: Additional quantities, computed before the
+            snapshots and available to all snapshot compute functions.
 
     Returns:
-        A function(params, single_observation) returning a dict of predictions
-        containing energy (``'U'``), forces(``'F'``) and, if applicable,
-        virial (``'p'``).
-        The single_observation is assumed to be a dict contain particle
-        positions under 'R'.
+        Returns a function that computes snapshots given energy parameters and
+        observations (inputs).
+
     """
-    def fm_model(params, single_observation):
-        if 'kT' in single_observation:
-            aux_kwargs = {'kT': single_observation['kT']}
+    if feature_extract_fns is None:
+        feature_extract_fns = {}
+    if state_from_input is None:
+        state_from_input = state_from_positions
+
+    def fm_model(energy_params, observations):
+        # Remove default arguments if not provided in dataset
+        if 'F' not in observations.keys():
+            quantities.pop('F', None)
+        if 'U' not in observations.keys():
+            quantities.pop('U', None)
+
+        dynamic_kwargs, _ = _split_targets_inputs(observations, quantities)
+
+        # Provides the possibility to add a more detailed state of the
+        # system, i.e., with velocities, box, etc.
+        if 'state' in dynamic_kwargs:
+            states = dynamic_kwargs.pop('state')
         else:
-            aux_kwargs = {}
-        positions = single_observation['R']
-        energy_fn = energy_fn_template(params)
-        # TODO check for neighborlist overflow and hand through
-        nbrs = nbrs_init.update(positions)
-        energy, negative_forces = value_and_grad(energy_fn)(positions,
-                                                            neighbor=nbrs,
-                                                            **aux_kwargs)
-        predictions = {'U': energy, 'F': -negative_forces}
-        if virial_fn is not None:
-            predictions['p'] = virial_fn(State(positions), nbrs, params,
-                                         **aux_kwargs)
+            states, dynamic_kwargs = vmap(state_from_input)(dynamic_kwargs)
+
+        batch_size = states.position.shape[0]
+
+        predictions = evaluation.quantity_map(
+            states, quantities, nbrs_init, dynamic_kwargs, energy_params,
+            batch_size, feature_extract_fns
+        )
+
         return predictions
     return fm_model
 
 
-def init_loss_fn(gamma_u: float = 1.,
-                 gamma_f: float = 1.,
-                 gamma_p: float = 1.e-6,
-                 error_fn: ErrorFn = max_likelihood.mse_loss,
-                 individual: bool = False):
+def init_loss_fn(error_fn: ErrorFn = max_likelihood.mse_loss,
+                 individual: bool = True,
+                 **kwargs: float):
     """Initializes loss function for energy/force matching.
 
     Args:
-        gamma_u: Weight for potential energy loss component
-        gamma_f: Weight for force loss component
-        gamma_p: Weight for virial loss component
         error_fn: Function quantifying the deviation of the model and the
             targets. By default, a mean-squared error.
         individual: Return the loss values for the individual targets, e.g., for
@@ -238,63 +216,26 @@ def init_loss_fn(gamma_u: float = 1.,
         Returns a function ``loss_fn(predictions, targets)``, which returns a
         scalar loss value for a batch of predictions and targets.
     """
-    def loss_fn(predictions, targets, mask=None):
+    def loss_fn(predictions, targets):
         errors = {}
         loss_val = 0.
-        if 'U' in targets.keys():  # energy loss component
-            errors['energy'] = error_fn(predictions['U'], targets['U'])
-            loss_val += gamma_u * errors['energy']
-        if 'F' in targets.keys():  # forces loss component
-            if mask is None:  # only forces need mask, U and p are unchanged
-                mask = jnp.ones_like(predictions['F'])
-            errors['forces'] = error_fn(predictions['F'], targets['F'], mask)
-            loss_val += gamma_f * errors['forces']
-        if 'p' in targets.keys():  # virial loss component
-            errors['pressure'] = error_fn(predictions['p'], targets['p'])
-            loss_val += gamma_p * errors['pressure']
+
+        # Always present. Per-species targets should be masked correctly and
+        # not contribute to the loss.
+        if 'U' in targets.keys():
+            errors['U'] = error_fn(predictions['U'], targets['U'])
+            loss_val += kwargs.pop('U', 1.0) * errors['U']
+        if 'F' in targets.keys():
+            errors['F'] = error_fn(predictions['F'], targets['F'])
+            loss_val += kwargs.pop('F', 1.0) * errors['F']
+
+        for key, gamma in kwargs.items():
+            errors[key] = error_fn(predictions[key], targets[key])
+            loss_val += gamma * errors[key]
 
         if individual:
-            return errors
+            return loss_val, errors
         else:
             return loss_val
 
     return loss_fn
-
-
-def init_mae_fn(val_loader: NumpyDataLoader,
-                nbrs_init: NeighborList,
-                energy_fn_template: EnergyFnTemplate,
-                batch_size: int = 1,
-                batch_cache: int = 1,
-                virial_fn: Callable = None):
-    """Computes the Mean Absolute Error for each observable.
-
-    The MAE for each observable are usually better interpretable than a
-    (combined) MSE loss value.
-
-    Args:
-        val_loader: DataLoader with validation data
-        nbrs_init: State of the neighbor list
-        energy_fn_template: Energy_fn_template to get energy_fn from params
-        batch_size: Batch site for batched loss computation
-        batch_cache: Numbers of batches stored on device
-        virial_fn: Function to compute virial pressure. If ``None``, no virial
-            pressure is predicted.
-
-    Returns:
-        Returns a function that computes for each observable - energy, forces,
-        and virial (if applicable) - the individual mean absolute error on the
-        validation set.
-
-    """
-    model = init_model(nbrs_init, energy_fn_template, virial_fn)
-    batched_model = vmap(model, in_axes=(None, 0))
-
-    abs_error = init_loss_fn(error_fn=max_likelihood.mae_loss, individual=True)
-
-    target_keys = _dataset_target_keys(val_loader.reference_data)
-    mean_abs_error, data_release_fn = max_likelihood.init_val_loss_fn(
-        batched_model, abs_error, val_loader, target_keys, batch_size,
-        batch_cache)
-
-    return mean_abs_error, data_release_fn

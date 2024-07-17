@@ -31,14 +31,21 @@ from chemtrain import util
 def _get_param_loss_fn(loss_fn, batched_model, penalty_fn=None):
     def params_loss_fn(params, batch):
         predictions = batched_model(params, batch)
-        loss = loss_fn(predictions, batch)
+        out = loss_fn(predictions, batch)
+
+        # Canonicalize output
+        if isinstance(out, tuple):
+            loss, per_target_loss = out
+        else:
+            loss = out
+            per_target_loss = None
+
 
         # Add a penalty if provided
-        if penalty_fn is None:
-            return loss
-        else:
-            penalty = penalty_fn(params)
-            return loss + penalty
+        if penalty_fn is not None:
+            loss += penalty_fn(params)
+
+        return loss, per_target_loss
     return params_loss_fn
 
 
@@ -70,21 +77,28 @@ def pmap_update_fn(batched_model, loss_fn, optimizer, penalty_fn=None):
 
     @partial(jax.pmap, in_axes=(None, None, 0), axis_name='batch')
     def pmap_batch_update(params, opt_state, batch):
-        loss, grad = value_and_grad(param_loss_fn)(params, batch)
+        (loss, per_target_loss), grad = value_and_grad(
+            param_loss_fn, has_aux=True
+        )(params, batch)
 
         # step optimizer within pmap to minimize communication overhead
         grad = lax.psum(grad, 'batch')
         loss = lax.psum(loss, 'batch')
+        per_target_loss = lax.psum(per_target_loss, 'batch')
 
         new_params, opt_state = step_optimizer(params, opt_state, grad,
                                                optimizer)
-        return new_params, opt_state, loss, grad
+        return new_params, opt_state, loss, grad, per_target_loss
 
-    def batch_update(params, opt_state, batch):
+    def batch_update(params, opt_state, batch, per_target_loss=False):
         batch = util.tree_pmap_split(batch, len(jax.devices()))
         out = pmap_batch_update(params, opt_state, batch)
         new_params, opt_state, loss, grad = util.tree_get_single(out)
-        return new_params, opt_state, loss, grad
+
+        if per_target_loss:
+            return new_params, opt_state, loss, grad, per_target_loss
+        else:
+            return new_params, opt_state, loss, grad
     return batch_update
 
 
@@ -123,21 +137,88 @@ def shmap_update_fn(batched_model, loss_fn, optimizer, penalty_fn=None):
         @partial(shard_map, mesh=mesh, in_specs=PartitionSpec('batch'),
                  out_specs=PartitionSpec())
         def _inner(batch):
-            loss, grad = value_and_grad(param_loss_fn)(params, batch)
+            (loss, per_target_loss), grad = value_and_grad(
+                param_loss_fn, has_aux=True)(params, batch)
             # step optimizer within pmap to minimize communication overhead
-            grad = lax.pmean(grad, axis_name='batch')
-            loss = lax.pmean(loss, axis_name='batch')
-            new_params, new_opt_state = step_optimizer(params, opt_state, grad,
-                                                   optimizer)
-            return new_params, new_opt_state, loss, grad
+            grad = lax.psum(grad, axis_name='batch')
+            loss = lax.psum(loss, axis_name='batch')
+            per_target_loss = lax.psum(per_target_loss, axis_name='batch')
+
+            new_params, new_opt_state = step_optimizer(
+                params, opt_state, grad, optimizer)
+
+            return new_params, new_opt_state, loss, grad, per_target_loss
         return _inner(data)
 
-    def update_fn(params, opt_state, batch):
+    def update_fn(params, opt_state, batch, per_target=False):
         params = device_put(params, replicate)
         opt_state = device_put(opt_state, replicate)
         batch = device_put(batch, split)
 
-        return batch_update(params, opt_state, batch)
+        *outs, per_target_loss = batch_update(params, opt_state, batch)
+
+        if per_target:
+            return *outs, per_target_loss
+        else:
+            return outs
+
+    return update_fn
+
+
+def shmap_loss_fn(batched_model, loss_fn, penalty_fn=None):
+    """Initializes a shmapped function for computing a loss.
+
+    Usage:
+        .. code-block :: python
+
+            params, opt_state, loss, grad = update_fn(params, opt_state, batch)
+
+    Loss and grad are only a single instance, no n_device replica.
+    Params and opt_state need to be N_devices times duplicated along axis 0.
+    Batch is reshaped by this function.
+
+    Args:
+        batched_model: A model with signature model(params, batch), which
+                       predicts a batch of outputs used in loss function.
+        loss_fn: Loss function(predictions, targets) returning the scalar loss
+                 value for a batch.
+        optimizer: Optax optimizer
+
+    Returns:
+        A function that computes the gradient and updates the parameters via the
+        optimizer.
+    """
+    # loss as function of params and batch for optimization.
+    mesh = Mesh(jax.devices(), axis_names=('batch'))
+    replicate = NamedSharding(mesh, PartitionSpec())
+    split = NamedSharding(mesh, PartitionSpec('batch'))
+
+    param_loss_fn = _get_param_loss_fn(loss_fn, batched_model, penalty_fn)
+
+    @jit
+    def batch_update(params, data):
+        @partial(shard_map, mesh=mesh, in_specs=PartitionSpec('batch'),
+                 out_specs=PartitionSpec())
+        def _inner(batch):
+            loss, per_target_loss = param_loss_fn(params, batch)
+
+            loss = lax.psum(loss, axis_name='batch')
+            per_target_loss = lax.psum(per_target_loss, axis_name='batch')
+
+            return loss, per_target_loss
+        return _inner(data)
+
+    def update_fn(params, batch, per_target=False):
+        params = device_put(params, replicate)
+        batch = device_put(batch, split)
+
+        *outs, per_target_loss = batch_update(params, batch)
+
+        if per_target:
+            return *outs, per_target_loss
+        else:
+            return outs
+
     return update_fn
 
 

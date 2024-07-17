@@ -22,8 +22,9 @@ from jax_sgmc import data, potential
 from scipy import stats
 import tree_math
 
+import chemtrain.data.data_loaders
 from chemtrain import (util)
-from chemtrain.data import data_processing
+from chemtrain.data import preprocessing
 from chemtrain.learn import force_matching, max_likelihood
 from jax_md_mod.model import dropout
 
@@ -200,7 +201,7 @@ def init_force_matching(
     """
     dataset, _ = force_matching.build_dataset(position_data, energy_data,
                                               force_data, virial_data, kt_data)
-    train_loader, val_loader, test_loader = data_processing.init_dataloaders(
+    train_loader, val_loader, test_loader = chemtrain.data.data_loaders.init_dataloaders(
         dataset, train_ratio, val_ratio, shuffle=shuffle)
 
     virial_fn = force_matching.init_virial_fn(virial_data, energy_fn_template,

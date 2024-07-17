@@ -1,9 +1,9 @@
-:modulename:`trajectory.traj_util`
+:modulename:`ensemble.sampling`
 ============================================
 
-.. currentmodule:: chemtrain.trajectory.traj_util
+.. currentmodule:: chemtrain.ensemble.sampling
 
-.. automodule:: chemtrain.trajectory.traj_util
+.. automodule:: chemtrain.ensemble.sampling
 
 Initialize Simulation
 ---------------------
@@ -44,8 +44,6 @@ Compute Quantities
    :template: function.rst
 
    quantity_traj
-   quantity_map
-   quantity_multimap
 
 
 Utilities

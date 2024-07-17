@@ -1,9 +1,9 @@
-:modulename:`data.data_processing`
+:modulename:`data.preprocessing`
 ============================================
 
-.. currentmodule:: chemtrain.data.data_processing
+.. currentmodule:: chemtrain.data.preprocessing
 
-.. automodule:: chemtrain.data.data_processing
+.. automodule:: chemtrain.data.preprocessing
 
 Load Data
 ---------
@@ -19,9 +19,8 @@ Preprocess Data
 .. autofunction:: map_dataset
 
 
-Create Splits and Dataloaders
-------------------------------
+Create Splits
+--------------
 
 .. autofunction:: train_val_test_split
 
-.. autofunction:: init_dataloaders

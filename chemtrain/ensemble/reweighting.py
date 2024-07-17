@@ -37,7 +37,7 @@ import jax_md.util
 from jax_md import util as jax_md_util
 
 from chemtrain import util
-from chemtrain.trajectory import traj_util
+from chemtrain.ensemble import sampling
 from jax_md_mod import custom_quantity
 from chemtrain.quantity import constants, observables
 
@@ -49,7 +49,6 @@ except:
     ArrayLike = Any
 from jax_md.partition import NeighborFn
 from chemtrain.typing import EnergyFnTemplate
-from chemtrain.trajectory.traj_util import TrajectoryState, TimingClass
 from chemtrain.typing import ComputeFn
 
 def checkpoint_quantities(compute_fns: dict[str, ComputeFn]) -> None:
@@ -224,7 +223,7 @@ def init_reference_trajectory_reweight_fns(energy_fn_template: EnergyFnTemplate,
     beta = 1. / ref_kbt
     checkpoint_quantities(compute_fns)
 
-    def init_reference_reweighting(reference_trajectory: TrajectoryState,
+    def init_reference_reweighting(reference_trajectory: sampling.TrajectoryState,
                                    reference_quantities: Dict[str, Any],
                                    extra_acpacity: int = 0,
                                    reference_params: Any = None,
@@ -247,8 +246,8 @@ def init_reference_trajectory_reweight_fns(energy_fn_template: EnergyFnTemplate,
         else:
             barostat = None
 
-        initial_state = traj_util.TrajectoryState(
-            sim_state=traj_util.SimulatorState(
+        initial_state = sampling.TrajectoryState(
+            sim_state=sampling.SimulatorState(
                 sim_state=first_frame, nbrs=nbrs_state
             ),
             trajectory=reference_trajectory,
@@ -277,7 +276,7 @@ def init_reference_trajectory_reweight_fns(energy_fn_template: EnergyFnTemplate,
 
         return initial_state
 
-    def compute_reweighted_quantities(reference_state: TrajectoryState,
+    def compute_reweighted_quantities(reference_state: sampling.TrajectoryState,
                                       energy_params: Any,
                                       dropout_key: ArrayLike = None
                                       ) -> Dict[str, Union[Any, ArrayLike]]:
@@ -308,7 +307,7 @@ def init_reference_trajectory_reweight_fns(energy_fn_template: EnergyFnTemplate,
                 )
 
 
-            ref_quantities = traj_util.quantity_traj(
+            ref_quantities = sampling.quantity_traj(
                 reference_state, reference_compute_fns, reference_state.energy_params,
                 energy_batch_size, dropout_keys
             )
@@ -321,7 +320,7 @@ def init_reference_trajectory_reweight_fns(energy_fn_template: EnergyFnTemplate,
             )
 
         # reweighting properties (U and pressure) under perturbed potential
-        quantities = traj_util.quantity_traj(
+        quantities = sampling.quantity_traj(
             reference_state, compute_fns, energy_params,
             energy_batch_size, dropout_keys)
 
@@ -371,7 +370,7 @@ def init_reference_trajectory_reweight_fns(energy_fn_template: EnergyFnTemplate,
 class ComputeWeightsFn(Protocol):
     def __call__(self,
                  params: Any,
-                 traj_state: TrajectoryState,
+                 traj_state: sampling.TrajectoryState,
                  entropy_and_free_energy: bool = False
                  )-> Tuple[ArrayLike, ArrayLike] | Any:
         """Computes weights for the reweighting approach.
@@ -397,10 +396,10 @@ class ComputeWeightsFn(Protocol):
 class PropagateFn(Protocol):
     def __call__(self,
                  params: Any,
-                 traj_state: TrajectoryState,
+                 traj_state: sampling.TrajectoryState,
                  *args,
                  **kwargs
-                 ) -> TrajectoryState | Tuple[TrajectoryState, ...]:
+                 ) -> sampling.TrajectoryState | Tuple[sampling.TrajectoryState, ...]:
         """Samples from a new reference ensemble if the ESS is insufficient.
 
         This function computes the ESS and decides whether to update the
@@ -432,7 +431,7 @@ ReweightingFns = Union[
 def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
                                       simulator_template: Callable,
                                       neighbor_fn: NeighborFn,
-                                      timings: TimingClass,
+                                      timings: sampling.TimingClass,
                                       state_kwargs: Dict[str, ArrayLike],
                                       reweight_ratio: float = 0.9,
                                       npt_ensemble: bool = False,
@@ -520,7 +519,7 @@ def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
         pressure_fn = custom_quantity.init_pressure(energy_fn_template)
         reweighting_quantities['pressure'] = pressure_fn
 
-    trajectory_generator = traj_util.trajectory_generator_init(
+    trajectory_generator = sampling.trajectory_generator_init(
         simulator_template, energy_fn_template, timings, reweighting_quantities,
         vmap_batch=energy_batch_size, vmap_sim_batch=energy_batch_size
     )
@@ -566,7 +565,7 @@ def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
         new_sim_state = new_sim_state.set(momentum=new_momentum)
 
         new_traj_state = traj_state.replace(
-            sim_state=traj_util.SimulatorState(
+            sim_state=sampling.SimulatorState(
                 sim_state=new_sim_state, nbrs=new_nbrs
             ), key=key
         )
@@ -578,7 +577,7 @@ def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
         """Computes weights for the reweighting approach."""
 
         # reweighting properties (U and pressure) under perturbed potential
-        reweight_properties = traj_util.quantity_traj(
+        reweight_properties = sampling.quantity_traj(
             traj_state, reweighting_quantities, params, energy_batch_size)
 
         # Note: Difference in pot. Energy is difference in total energy
@@ -714,7 +713,7 @@ def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
                         enlarged_nbrs = util.neighbor_allocate(
                             neighbor_fn, last_state)
                     reset_traj_state = traj_state.replace(
-                        sim_state=traj_util.SimulatorState(
+                        sim_state=sampling.SimulatorState(
                             sim_state=last_state, nbrs=enlarged_nbrs
                         )
                     )
@@ -733,7 +732,7 @@ def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
                                'capacity multiplier.')
         return wrapped
 
-    def propagate(params, traj_state: TrajectoryState, **kwargs) -> TrajectoryState:
+    def propagate(params, traj_state: sampling.TrajectoryState, **kwargs) -> sampling.TrajectoryState:
         """Wrapper around jitted propagation function that ensures that
         if neighbor list buffer overflowed, the trajectory is recomputed and
         the neighbor list size is increased until valid trajectory was obtained.
@@ -795,7 +794,7 @@ def init_bar(energy_fn_template: EnergyFnTemplate,
              ref_kbt: ArrayLike,
              energy_batch_size: int = 10,
              iter_bisection: int = 25
-             ) -> Callable[[TrajectoryState, TrajectoryState], Tuple[ArrayLike, ArrayLike]]:
+             ) -> Callable[[sampling.TrajectoryState, sampling.TrajectoryState], Tuple[ArrayLike, ArrayLike]]:
     """Initializes the free energy and entropy computation via the BAR approach.
 
     The algorithm [#wyczalkowski2010]_ uses the BAR method to derive
@@ -846,7 +845,7 @@ def init_bar(energy_fn_template: EnergyFnTemplate,
         def _inner(pair):
             vmap_batch_size = max([1, energy_batch_size // 2])
             traj_state, params = pair
-            reweighting_properties = traj_util.quantity_traj(
+            reweighting_properties = sampling.quantity_traj(
                 traj_state, reweighting_quantities, params, vmap_batch_size)
             return reweighting_properties
         # The BAR method requires the energy difference between the potential
@@ -965,8 +964,8 @@ def init_bar(energy_fn_template: EnergyFnTemplate,
 
         return (df_p, df_0), _bisection_step
 
-    def bennett_free_energy(old_traj: TrajectoryState,
-                            new_traj: TrajectoryState):
+    def bennett_free_energy(old_traj: sampling.TrajectoryState,
+                            new_traj: sampling.TrajectoryState):
         """Compute the free energy and entropy difference.
 
          The algorithm from [#wyczalkowski2010] uses the BAR method to derive

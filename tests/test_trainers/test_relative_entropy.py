@@ -8,9 +8,9 @@ import pytest
 
 from jax_md import space, energy, partition, simulate
 
-from chemtrain.data import data_processing
+from chemtrain.data import preprocessing
 from chemtrain.trainers import RelativeEntropy
-from chemtrain import trajectory, quantity
+from chemtrain import ensemble, quantity
 
 class TestRelativeEntropy:
 
@@ -20,7 +20,7 @@ class TestRelativeEntropy:
         box = jnp.asarray([1.0, 1.0, 1.0])
         kT = 2.56
 
-        all_positions = data_processing.get_dataset(
+        all_positions = preprocessing.get_dataset(
             datafiles / "positions_ethane.npy")
 
 
@@ -28,7 +28,7 @@ class TestRelativeEntropy:
             box, fractional_coordinates=True)
 
         # Scale the position data into fractional coordinates
-        position_dataset = data_processing.scale_dataset_fractional(
+        position_dataset = preprocessing.scale_dataset_fractional(
             all_positions, box)
 
         # Weights for the mapping
@@ -39,7 +39,7 @@ class TestRelativeEntropy:
             [0.0000, 1, 0.000, 0.000, 0.000, 0, 0, 0]
         ])
 
-        position_dataset = data_processing.map_dataset(
+        position_dataset = preprocessing.map_dataset(
             position_dataset, displacement_fn, shift_fn, weights
         )
 
@@ -100,12 +100,12 @@ class TestRelativeEntropy:
 
         # Setup simulation
 
-        timings = trajectory.traj_util.process_printouts(
+        timings = ensemble.sampling.process_printouts(
             time_step=0.002, total_time=1e3, t_equilib=1e2,
             print_every=0.1, t_start=0.0
         )
 
-        init_ref_state, sim_template = trajectory.traj_util.initialize_simulator_template(
+        init_ref_state, sim_template = ensemble.sampling.initialize_simulator_template(
             simulate.nvt_langevin, shift_fn=shift_fn, nbrs=nbrs_init,
             init_with_PRNGKey=True,
             extra_simulator_kwargs={"kT": kT, "gamma": 1.0, "dt": 0.002}

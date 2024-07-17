@@ -26,9 +26,9 @@ Examples:
     >>> root = Path.cwd().parent
 
     >>> from jax_md_mod import io
-    >>> from chemtrain.data.data_processing import (
-    ...     get_dataset, scale_dataset_fractional, train_val_test_split,
-    ...     init_dataloaders)
+    >>> from chemtrain.data.data_loaders import init_dataloaders
+    >>> from chemtrain.data.preprocessing import (
+    ...     get_dataset, scale_dataset_fractional, train_val_test_split )
 
     We only get a subset of 10 conformations from the training data and scale the
     conformations to fractional coordinates:
@@ -65,8 +65,6 @@ import numpy as onp
 import jax
 from jax import lax, tree_util
 import jax.numpy as jnp
-
-from jax_sgmc.data import numpy_loader
 
 from jax_md_mod import custom_space
 from chemtrain import util
@@ -164,39 +162,6 @@ def train_val_test_split(dataset, train_ratio=0.7, val_ratio=0.1, shuffle=False,
         val_data = retreive_datasubset(train_size, train_size + val_size)
         test_data = retreive_datasubset(train_size + val_size, None)
     return train_data, val_data, test_data
-
-
-def init_dataloaders(dataset, train_ratio=0.7, val_ratio=0.1, shuffle=False):
-    """Splits dataset and initializes dataloaders.
-
-    If the validation or test ratios are 0, returns None for the respective
-    dataloaders.
-
-    Args:
-        dataset: Dictionary containing the whole dataset. The NumpyDataLoader
-            returns batches with the same kwargs as provided in dataset.
-        train_ratio: Fraction of dataset to use for training.
-        val_ratio: Fraction of dataset to use for validation.
-        shuffle: Whether to shuffle data before splitting into train-val-test.
-
-    Returns:
-        Returns a tuple ``(train_loader, val_loader, test_loader)`` of
-        NumpyDataLoaders.
-
-    """
-    def init_subloader(data_subset):
-        if data_subset is None:
-            loader = None
-        else:
-            loader = numpy_loader.NumpyDataLoader(**data_subset, copy=False)
-        return loader
-
-    train_set, val_set, test_set = train_val_test_split(
-        dataset, train_ratio, val_ratio, shuffle=shuffle)
-    train_loader = init_subloader(train_set)
-    val_loader = init_subloader(val_set)
-    test_loader = init_subloader(test_set)
-    return train_loader, val_loader, test_loader
 
 
 def scale_dataset_fractional(traj, box):

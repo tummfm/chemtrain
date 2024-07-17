@@ -26,8 +26,6 @@ functions.
 
 .. autofunction:: init_model
 
-.. autofunction:: init_virial_fn
-
 
 Loss
 ----
@@ -36,5 +34,3 @@ These are functions to initialize advanced loss functions, e.g., combining the
 losses for force and energy predictions into a single loss value.
 
 .. autofunction:: init_loss_fn
-
-.. autofunction:: init_mae_fn

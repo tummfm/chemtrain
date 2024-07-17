@@ -26,7 +26,7 @@ import optax
 
 import matplotlib.pyplot as plt
 
-from chemtrain import quantity, trainers, trajectory
+from chemtrain import quantity, trainers, ensemble
 ```
 
 # Differentiable Trajectory Reweighting (DiffTRe)
@@ -160,7 +160,7 @@ r_init = jnp.asarray([[0.0, 0.0, 0.0], [0.11, 0.09, 0.12]])
 displacement_fn, shift_fn = space.periodic_general(box)
 
 dt = 0.01
-timings = trajectory.traj_util.process_printouts(dt, 1100, 100, 1.0)
+timings = ensemble.sampling.process_printouts(dt, 1100, 100, 1.0)
 
 simulator_template = partial(
     simulate.nvt_langevin, shift_fn=shift_fn,
@@ -172,7 +172,7 @@ simulator_init, _ = simulator_template(energy_fn_template(init_params))
 simulator_init_state = simulator_init(jax.random.PRNGKey(0), r_init)
 nbrs_init = neighbor_fn.allocate(r_init)
 
-reference_state = trajectory.traj_util.SimulatorState(
+reference_state = ensemble.sampling.SimulatorState(
     sim_state=simulator_init_state, nbrs=nbrs_init)
 
 system = {
