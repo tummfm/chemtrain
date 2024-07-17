@@ -679,6 +679,13 @@ def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
         def wrapped(params, traj_state, *args, **kwargs):
             recompute = kwargs.pop("recompute", False)
 
+            if jnp.any(jnp.isnan(traj_state.sim_state.sim_state.position)):
+                raise RuntimeError(
+                    'Last state is NaN. Currently, there is no recovering from '
+                    'this. Restart from the last non-overflown state might '
+                    'help, but comes at the cost that the reference state is '
+                    'likely not representative.')
+
             for reset_counter in range(max_retry):
                 # When only propagating then only the trajectory is returned
                 if multiple_arguments:
@@ -719,13 +726,6 @@ def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
                         return traj_state, *returns
                     else:
                         return traj_state
-
-            if jnp.any(jnp.isnan(traj_state.sim_state.sim_state.position)):
-                raise RuntimeError(
-                    'Last state is NaN. Currently, there is no recovering from '
-                    'this. Restart from the last non-overflown state might '
-                    'help, but comes at the cost that the reference state is '
-                    'likely not representative.')
 
             raise RuntimeError('Multiple neighbor list re-computations did '
                                'not yield a trajectory without overflow. '

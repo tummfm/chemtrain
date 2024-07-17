@@ -37,4 +37,3 @@ Utilities
    :titlesonly:
 
    constants
-   util

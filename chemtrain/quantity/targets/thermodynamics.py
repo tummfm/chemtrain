@@ -14,11 +14,23 @@
 
 """Initialize thermodynamic quantities."""
 
-from chemtrain.quantity.util import target_quantity, TargetInit
+__all__ = (
+    "init_pressure_target",
+    "init_reference_energy_target",
+    "init_relative_entropy_target",
+    "init_volume_target",
+    "init_heat_capacity_nvt",
+    "init_heat_capacity_npt"
+)
+
+
 from jax_md_mod import custom_quantity
+
+from chemtrain.learn import max_likelihood
 from chemtrain.quantity import observables
 from chemtrain.typing import ArrayLike, EnergyFnTemplate, Any
 
+from .util import target_quantity, TargetInit
 
 def init_pressure_target(energy_fn_template: EnergyFnTemplate,
                          include_kinetic: bool = True,
@@ -72,7 +84,7 @@ def init_reference_energy_target(energy_fn_template: EnergyFnTemplate,
 
 
 def init_relative_entropy_target(reference_energy_key: str,
-                                 ref_kbt: float,
+                                 ref_kT = None,
                                  gamma: float = 1.0,
                                  target: float = 0.0,
                                  ) -> TargetInit:
@@ -80,23 +92,30 @@ def init_relative_entropy_target(reference_energy_key: str,
 
      Args:
          reference_energy_key: Key of the reference potential.
-         ref_kbt: Reference temperature.
-         gamma: Scale constant for the target.
+         ref_kT: Reference temperature. Value of 1.0 corresponds to the
+             relative entropy of information theory.
+         gamma: Scale constant for the target. A positive value maximizes
+             the negative relative entropy.
          target: Target in the loss.
 
      """
-    @target_quantity()
+    @target_quantity(optional=['reference_kT'])
     def initialize(key, compute_fns, init_args):
-        del init_args
         assert reference_energy_key in compute_fns.keys(), (
-            f"Computing the entropy requires a reference energy, but not "
+            f"Computing the entropy requires a reference energy, but no "
             f"compute function for the quantity {reference_energy_key} "
             f"was found.")
 
+        nonlocal ref_kT
+        if ref_kT is None:
+            ref_kT = init_args.get('reference_kT', 1.0)
+
+        # Flip the sign of gamma to maximize the relative entropy
         target_dict = {
-            'target': target, 'gamma': gamma,
+            'target': target, 'gamma': - 1.0 * gamma,
             'traj_fn': observables.init_relative_entropy_traj_fn(
-                ref_kbt, reference_key=reference_energy_key)
+                ref_kT, reference_key=reference_energy_key
+            ), 'loss_fn': max_likelihood.identity_loss
         }
 
         return target_dict, None

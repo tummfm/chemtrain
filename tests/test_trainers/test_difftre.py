@@ -93,9 +93,9 @@ class TestDifftre:
         # with slightly coarser bins.
 
         # +
-        target_builder = quantity.TargetBuilder()
+        target_builder = quantity.targets.TargetBuilder()
 
-        target_builder['rdf'] = quantity.structure.init_radial_distribution_target(
+        target_builder['rdf'] = quantity.targets.init_radial_distribution_target(
             target, rdf_start=0.00, rdf_cut=1.0, nbins=50)
         r_eval = onp.linspace(0, 1, 50)
 

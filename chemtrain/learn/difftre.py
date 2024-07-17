@@ -34,7 +34,7 @@ from chemtrain.typing import TargetDict, EnergyFnTemplate, ComputeFn
 from jax_md_mod import custom_quantity
 from chemtrain.trajectory import reweighting, traj_util
 
-def init_default_loss_fn(targets: TargetDict, l_H = 0.0, l_RE = None):
+def init_default_loss_fn(targets: TargetDict):
     """Initializes the MSE loss function for DiffTRe.
 
     The default loss for DiffTRe minimizes the mean squared error (MSE)
@@ -73,6 +73,7 @@ def init_default_loss_fn(targets: TargetDict, l_H = 0.0, l_RE = None):
                    'target': <target-value>,
                    'gamma': <coefficient>,
                    'traj_fn': <compute-function>
+                   'loss_fn': <loss-function> (optional)
                },
               ...
            }
@@ -80,9 +81,6 @@ def init_default_loss_fn(targets: TargetDict, l_H = 0.0, l_RE = None):
     Args:
         targets: Dictionary containing the target values, weighting factors
             and compute functions.
-        l_H: Coefficient of the maximum entropy penalty
-        l_RE: Interpolation coefficient between relative entropy and difftre
-            loss.
 
     Returns:
         Returns a DiffTRe loss_fn accepting trajectories of instantaneous
@@ -91,29 +89,22 @@ def init_default_loss_fn(targets: TargetDict, l_H = 0.0, l_RE = None):
         observations.
 
     """
-    # Interpolate between the default loss and the relative entropy loss
-    if l_RE is None:
-        alpha = 1.0
-        beta = 1.0
-    else:
-        alpha = l_RE
-        beta = 1.0 - l_RE
-
     def loss_fn(quantity_trajs, weights):
-        loss = 0.
         predictions = {
             key: target['traj_fn'](quantity_trajs, weights=weights)
             for key, target in targets.items()
         }
 
-        # Maximize the entropy (minimize the negative entropy)
-        loss -= l_H * quantity_trajs.get('entropy', 0.0)
-        loss -= alpha * predictions.get('relative_entropy', 0.0) * targets.pop('relative_entropy', {}).get('gamma', 0.0)
-
         # MSE loss for the remaining targets
+        loss = 0.
         for target_key, target in targets.items():
-            loss += beta * target['gamma'] * max_likelihood.mse_loss(
-                predictions[target_key], target['target'])
+            target_value = target.get('target', None)
+            loss_fn = target.get('loss_fn', max_likelihood.mse_loss)
+            gamma = target.get('gamma', 1.0)
+
+            # Skip targets without a target value but still compute predictions.
+            if target_value is not None:
+                loss += gamma * loss_fn(predictions[target_key], target_value)
 
         return loss, predictions
     return loss_fn
@@ -180,6 +171,7 @@ def init_difftre_gradient_and_propagation(
     #       loss grad
 
     @safe_propagate
+    @jit
     def difftre_grad_and_propagation(params, traj_state):
         """The main DiffTRe function that recomputes trajectories
         when needed and computes gradients of the loss wrt. energy function

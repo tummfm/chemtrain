@@ -14,17 +14,26 @@
 
 """Initializes structural targets."""
 
+__all__ = (
+    "init_radial_distribution_target",
+    "init_angular_distribution_target",
+    "init_dihedral_distribution_target",
+    "init_tetrahedral_order_coefficient",
+    "initialize_local_structure_index",
+    "initialize_rmsd"
+)
+
 from scipy import interpolate
 from jax_md import util
 import jax.numpy as jnp
 
 from typing import Union, List
 
-from chemtrain.quantity.util import target_quantity, TargetInit
 from jax_md_mod import custom_quantity
 from chemtrain.typing import ArrayLike
 from chemtrain.quantity import observables
 
+from.util import target_quantity, TargetInit
 
 def init_radial_distribution_target(target: Union[ArrayLike, List[ArrayLike]],
                                     rdf_start: float = 0.0,

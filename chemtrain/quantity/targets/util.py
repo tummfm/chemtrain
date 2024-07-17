@@ -15,10 +15,12 @@
 """Create quantity targets for training. """
 import functools
 
+from jax.typing import ArrayLike
+
 from jax_md.partition import NeighborList
 
-from typing import TypedDict, Callable, Dict, Any, Tuple, List, Protocol
-from chemtrain.typing import ArrayLike, ComputeFn, EnergyFnTemplate, TargetDict
+from typing import TypedDict, Callable, Dict, Tuple, Protocol, List
+from chemtrain.typing import ComputeFn, EnergyFnTemplate, TargetDict
 
 InitReturn = Tuple[Dict[str, TargetDict], Dict[str, ComputeFn]]
 ComputeFnInit = Callable[..., ComputeFn]

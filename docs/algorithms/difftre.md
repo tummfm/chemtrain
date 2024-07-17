@@ -203,9 +203,9 @@ Since we only have two particles in a box, we approximate the distribution
 with slightly coarser bins.
 
 ```{code-cell} ipython3
-target_builder = quantity.TargetBuilder()
+target_builder = quantity.targets.TargetBuilder()
 
-target_builder['rdf'] = quantity.structure.init_radial_distribution_target(
+target_builder['rdf'] = quantity.targets.init_radial_distribution_target(
     target, rdf_start=0.00, rdf_cut=1.0, nbins=50)
 
 targets, compute_fns = target_builder.build(system)

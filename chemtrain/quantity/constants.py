@@ -12,35 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Chemtrain standard units and conversion routines.
+"""Chemtrain unit conversion utilities.
 
-.. list-table::
-   :header-rows: 1
-
-   * - Unit
-     - MD
-   * - :math:`[\mathrm{energy}]`
-     - :math:`\\frac{kJ}{mol}`
-   * - :math:`[\mathrm{length}]`
-     - :math:`nm`
-   * - :math:`[\mathrm{mass}]`
-     - :math:`u`
-   * - :math:`[\mathrm{area}]`
-     - :math:`\mathrm{nm}^2`
-   * - :math:`[\mathrm{volume}]`
-     - :math:`\mathrm{nm}^3`
-   * - :math:`[\mathrm{time}]`
-     - :math`ps`
-   * - :math:`[\mathrm{velocity}]`
-     - :math:`nm/ps`
-   * - :math:`[\mathrm{force}]`
-     - :math:`\\frac{kJ}{mol\cdot nm}`
-   * - :math:`[\mathrm{pressure}]`
-     - :math:`0.1660539067\ bar`
-   * - :math:`[\mathrm{charge}]`
-     - :math:`0.0848385920\ e`
-   * - :math:`k` (Boltzmann's constant)
-     - :math:`0.0083145107 \\frac{kJ}{mol\cdot K}`
+This module provides classes to convert between different units in chemistry.
+Through JAX, M.D., chemtrain mostly relies on a
+`self-consistent unit system <https://hoomd-blue.readthedocs.io/en/stable/units.html>`_.
 
 """
 

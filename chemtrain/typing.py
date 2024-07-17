@@ -16,7 +16,7 @@
 
 import typing
 from typing import Callable, Any, Optional, Protocol, TypedDict, Dict, TypeAlias
-from enum import Enum
+from typing_extensions import NotRequired
 
 try:
     from jax.typing import ArrayLike
@@ -83,9 +83,10 @@ class TrajFn(Protocol):
 
 
 class SingleTarget(TypedDict):
-    gamma: ArrayLike
-    target: ArrayLike
     traj_fn: TrajFn
+    loss_fn: NotRequired[Callable[[ArrayLike, ArrayLike], ArrayLike]]
+    target: NotRequired[ArrayLike]
+    gamma: NotRequired[ArrayLike]
 
 
 class QuantityComputeFunction(Protocol):

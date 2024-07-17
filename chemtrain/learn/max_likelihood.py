@@ -275,6 +275,22 @@ def mae_loss(predictions, targets, mask=None):
     return _masked_loss(abs_err, mask)
 
 
+def identity_loss(predictions, *args, **kwargs):
+    """Considers the prediction itself as loss value.
+
+    For example, the relative entropy can be used directly as loss in DiffTRe.
+
+    Args:
+        predictions: Array of predictions (scalar)
+
+    Returns:
+        Returns the prediction itself as loss value.
+
+    """
+    del args, kwargs
+    return predictions
+
+
 def step_optimizer(params, opt_state, grad, optimizer):
     """Steps optimizer and updates state using the gradient."""
     scaled_grad, new_opt_state = optimizer.update(grad, opt_state)

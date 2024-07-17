@@ -4,30 +4,44 @@
 This module creates DiffTRe targets, initializing the required observables
 and the computations of necessary snapshot quantities.
 
+.. currentmodule:: chemtrain.quantity.targets
+
 
 Intramolecular
 --------------
 
-.. autofunction:: chemtrain.quantity.structure.init_dihedral_distribution_target
+.. autosummary::
+   :toctree: _autosummary
+   :template: function.rst
+
+   init_dihedral_distribution_target
 
 
 Intermolecular
 --------------
 
-.. autofunction:: chemtrain.quantity.structure.init_radial_distribution_target
+.. autosummary::
+   :toctree: _autosummary
+   :template: function.rst
 
-.. autofunction:: chemtrain.quantity.structure.init_angular_distribution_target
+   init_radial_distribution_target
+   init_angular_distribution_target
 
 
 Thermodynamic
 --------------
 
-.. autofunction:: chemtrain.quantity.thermodynamics.init_relative_entropy_target
+.. autosummary::
+   :toctree: _autosummary
+   :template: function.rst
+
+   init_relative_entropy_target
 
 
 Build Targets and Compute Functions
 ------------------------------------
 
-.. autoclass:: chemtrain.quantity.TargetBuilder
+.. autoclass:: TargetBuilder
 
-
+.. autoclass:: InitArguments
+   :members:
