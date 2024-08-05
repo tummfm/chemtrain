@@ -254,7 +254,7 @@ def run_to_next_printout_neighbors(apply_fn,
         # Step the simulator and update the neighbor list to new positions
         new_state = apply_fn(
             state.sim_state, neighbor=state.nbrs, **apply_kwargs)
-        new_nbrs = util.neighbor_update(state.nbrs, new_state)
+        new_nbrs = util.neighbor_update(state.nbrs, new_state, **apply_kwargs)
 
         return SimulatorState(sim_state=new_state, nbrs=new_nbrs), t
 

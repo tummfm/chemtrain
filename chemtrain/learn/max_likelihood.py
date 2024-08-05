@@ -63,10 +63,11 @@ def pmap_update_fn(batched_model, loss_fn, optimizer, penalty_fn=None):
 
     Args:
         batched_model: A model with signature model(params, batch), which
-                       predicts a batch of outputs used in loss function.
+            predicts a batch of outputs used in loss function.
         loss_fn: Loss function(predictions, targets) returning the scalar loss
-                 value for a batch.
+            value for a batch.
         optimizer: Optax optimizer
+        penalty_fn: A penalty function based on the model parameters.
 
     Returns:
         A function that computes the gradient and updates the parameters via the
@@ -82,8 +83,8 @@ def pmap_update_fn(batched_model, loss_fn, optimizer, penalty_fn=None):
         )(params, batch)
 
         # step optimizer within pmap to minimize communication overhead
-        grad = lax.psum(grad, 'batch')
-        loss = lax.psum(loss, 'batch')
+        grad = lax.pmean(grad, 'batch')
+        loss = lax.pmean(loss, 'batch')
         per_target_loss = lax.psum(per_target_loss, 'batch')
 
         new_params, opt_state = step_optimizer(params, opt_state, grad,
@@ -103,23 +104,20 @@ def pmap_update_fn(batched_model, loss_fn, optimizer, penalty_fn=None):
 
 
 def shmap_update_fn(batched_model, loss_fn, optimizer, penalty_fn=None):
-    """Initializes a pmapped function for updating parameters.
+    """Initializes a shmapped function for updating parameters.
 
     Usage:
         .. code-block :: python
 
             params, opt_state, loss, grad = update_fn(params, opt_state, batch)
 
-    Loss and grad are only a single instance, no n_device replica.
-    Params and opt_state need to be N_devices times duplicated along axis 0.
-    Batch is reshaped by this function.
-
     Args:
         batched_model: A model with signature model(params, batch), which
-                       predicts a batch of outputs used in loss function.
+            predicts a batch of outputs used in loss function.
         loss_fn: Loss function(predictions, targets) returning the scalar loss
-                 value for a batch.
+            value for a batch.
         optimizer: Optax optimizer
+        penalty_fn: A penalty function based on the model parameters.
 
     Returns:
         A function that computes the gradient and updates the parameters via the
@@ -134,26 +132,40 @@ def shmap_update_fn(batched_model, loss_fn, optimizer, penalty_fn=None):
 
     @jit
     def batch_update(params, opt_state, data):
-        @partial(shard_map, mesh=mesh, in_specs=PartitionSpec('batch'),
-                 out_specs=PartitionSpec())
-        def _inner(batch):
-            (loss, per_target_loss), grad = value_and_grad(
-                param_loss_fn, has_aux=True)(params, batch)
-            # step optimizer within pmap to minimize communication overhead
-            grad = lax.psum(grad, axis_name='batch')
-            loss = lax.psum(loss, axis_name='batch')
-            per_target_loss = lax.psum(per_target_loss, axis_name='batch')
 
-            new_params, new_opt_state = step_optimizer(
-                params, opt_state, grad, optimizer)
+        if mesh.size > 1:
+            @partial(shard_map, mesh=mesh, in_specs=PartitionSpec('batch'),
+                     out_specs=PartitionSpec())
+            def _inner(batch):
+                (loss, per_target_loss), grad = value_and_grad(
+                    param_loss_fn, has_aux=True)(params, batch)
+                # step optimizer within pmap to minimize communication overhead
+                grad = lax.pmean(grad, axis_name='batch')
+                loss = lax.pmean(loss, axis_name='batch')
+                per_target_loss = lax.pmean(per_target_loss, axis_name='batch')
 
-            return new_params, new_opt_state, loss, grad, per_target_loss
+                new_params, new_opt_state = step_optimizer(
+                    params, opt_state, grad, optimizer)
+
+                return new_params, new_opt_state, loss, grad, per_target_loss
+
+        else:
+            def _inner(batch):
+                (loss, per_target_loss), grad = value_and_grad(
+                    param_loss_fn, has_aux=True)(params, batch)
+
+                new_params, new_opt_state = step_optimizer(
+                    params, opt_state, grad, optimizer)
+
+                return new_params, new_opt_state, loss, grad, per_target_loss
+
         return _inner(data)
 
     def update_fn(params, opt_state, batch, per_target=False):
-        params = device_put(params, replicate)
-        opt_state = device_put(opt_state, replicate)
-        batch = device_put(batch, split)
+        if mesh.size > 1:
+            params = device_put(params, replicate)
+            opt_state = device_put(opt_state, replicate)
+            batch = device_put(batch, split)
 
         *outs, per_target_loss = batch_update(params, opt_state, batch)
 
@@ -171,22 +183,19 @@ def shmap_loss_fn(batched_model, loss_fn, penalty_fn=None):
     Usage:
         .. code-block :: python
 
-            params, opt_state, loss, grad = update_fn(params, opt_state, batch)
+            loss, per_target_losses = loss_fn(params, batch, per_target=True)
 
-    Loss and grad are only a single instance, no n_device replica.
-    Params and opt_state need to be N_devices times duplicated along axis 0.
-    Batch is reshaped by this function.
 
     Args:
         batched_model: A model with signature model(params, batch), which
-                       predicts a batch of outputs used in loss function.
+            predicts a batch of outputs used in loss function.
         loss_fn: Loss function(predictions, targets) returning the scalar loss
-                 value for a batch.
-        optimizer: Optax optimizer
+            value for a batch.
+        penalty_fn: A penalty function based on the model parameters.
 
     Returns:
-        A function that computes the gradient and updates the parameters via the
-        optimizer.
+        A function that computes the total loss and per-target loss
+        contributions.
     """
     # loss as function of params and batch for optimization.
     mesh = Mesh(jax.devices(), axis_names=('batch'))
@@ -197,20 +206,28 @@ def shmap_loss_fn(batched_model, loss_fn, penalty_fn=None):
 
     @jit
     def batch_update(params, data):
-        @partial(shard_map, mesh=mesh, in_specs=PartitionSpec('batch'),
-                 out_specs=PartitionSpec())
-        def _inner(batch):
-            loss, per_target_loss = param_loss_fn(params, batch)
+        if mesh.size > 1:
+            @partial(shard_map, mesh=mesh, in_specs=PartitionSpec('batch'),
+                     out_specs=PartitionSpec())
+            def _inner(batch):
+                loss, per_target_loss = param_loss_fn(params, batch)
 
-            loss = lax.psum(loss, axis_name='batch')
-            per_target_loss = lax.psum(per_target_loss, axis_name='batch')
+                loss = lax.pmean(loss, axis_name='batch')
+                per_target_loss = lax.psum(per_target_loss, axis_name='batch')
 
-            return loss, per_target_loss
+                return loss, per_target_loss
+
+        else:
+            def _inner(batch):
+                loss, per_target_loss = param_loss_fn(params, batch)
+                return loss, per_target_loss
+
         return _inner(data)
 
-    def update_fn(params, batch, per_target=False):
-        params = device_put(params, replicate)
-        batch = device_put(batch, split)
+    def loss_fn(params, batch, per_target=False):
+        if mesh.size > 1:
+            params = device_put(params, replicate)
+            batch = device_put(batch, split)
 
         *outs, per_target_loss = batch_update(params, batch)
 
@@ -219,7 +236,7 @@ def shmap_loss_fn(batched_model, loss_fn, penalty_fn=None):
         else:
             return outs
 
-    return update_fn
+    return loss_fn
 
 
 def init_val_predictions(batched_model, val_loader, batch_size=1,

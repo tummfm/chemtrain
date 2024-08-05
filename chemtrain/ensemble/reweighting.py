@@ -27,6 +27,7 @@ provided here: :doc:`/algorithms/difftre`.
 
 import time
 import warnings
+from functools import partial
 
 import numpy as onp
 
@@ -34,7 +35,7 @@ import jax_sgmc.util
 from jax import (checkpoint, lax, random, tree_util, vmap, numpy as jnp, jit)
 
 import jax_md.util
-from jax_md import util as jax_md_util
+from jax_md import util as jax_md_util, simulate
 
 from chemtrain import util
 from chemtrain.ensemble import sampling
@@ -528,45 +529,35 @@ def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
     beta = 1. / state_kwargs['kT']
     checkpoint_quantities(reweighting_quantities)
 
-    # TODO: The following steps would be necessary to enable a
-    #       parallel/vectorized version of the reweighting framework:
-    #       1. Compute weights for all samples
-    #       2. Select n samples (weighted) without replacement
-    #       3. Shuffle the velocities and reasign randomly
-    #       4. Run vectorized simulations
-
     def resample_new_simstate(params, traj_state):
-        momentum = traj_state.trajectory.momentum
-        n_chains = traj_state.sim_state.sim_state.position.shape[0]
+        ref_sim_state = traj_state.sim_state.sim_state
+        ref_trajectory = traj_state.trajectory
+        n_chains = ref_sim_state.position.shape[0]
 
         # Position shape ends with [n_samples, n_particles, 3]
         weights, *_ = compute_weights(params, traj_state)
         num_samples = weights.size
 
-
-        # Choose new initial positions from the reweighted probability
-        # distribution.
+        # Choose new initial positions from the reweighted
+        # distribution of all samples.
         key, split1, split2 = random.split(traj_state.key, 3)
         new_position_idx = random.choice(
             split1, jnp.arange(num_samples), shape=(n_chains,),
-            replace=True, p=weights
+            replace=False, p=weights
+        )
+        new_sim_state = ref_sim_state.set(
+            position=ref_trajectory.position[new_position_idx, ...]
         )
 
-        new_sim_state = tree_util.tree_map(
-            lambda x: x[new_position_idx, ...], traj_state.trajectory
-        )
-        new_nbrs = tree_util.tree_map(
-            lambda x: x[new_position_idx, ...], traj_state.sim_state.nbrs
-        )
-
-        # Since velocities are independent of the potential, we can simply
-        # draw from the already sampled velocity distribution
-        new_momentum = random.shuffle(split2, momentum)[:n_chains, ...]
-        new_sim_state = new_sim_state.set(momentum=new_momentum)
+        # Since velocities are independent of the potential, we can
+        # redraw the velocities from the maxwell boltzmann distribution
+        new_sim_state = vmap(
+            partial(simulate.initialize_momenta, kT=state_kwargs["kT"])
+        )(new_sim_state, random.split(split2, n_chains))
 
         new_traj_state = traj_state.replace(
-            sim_state=sampling.SimulatorState(
-                sim_state=new_sim_state, nbrs=new_nbrs
+            sim_state=traj_state.sim_state.replace(
+                sim_state=new_sim_state
             ), key=key
         )
 
@@ -843,10 +834,9 @@ def init_bar(energy_fn_template: EnergyFnTemplate,
         """Performs the reweighting procedure vectorized."""
         @jax_sgmc.util.list_vmap
         def _inner(pair):
-            vmap_batch_size = max([1, energy_batch_size // 2])
             traj_state, params = pair
             reweighting_properties = sampling.quantity_traj(
-                traj_state, reweighting_quantities, params, vmap_batch_size)
+                traj_state, reweighting_quantities, params, energy_batch_size)
             return reweighting_properties
         # The BAR method requires the energy difference between the potential
         # for both the perturbed and unperturbed trajectories. We thus have to

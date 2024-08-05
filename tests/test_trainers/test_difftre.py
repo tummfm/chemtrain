@@ -106,6 +106,9 @@ class TestDifftre:
         reference_state = ensemble.sampling.SimulatorState(
             sim_state=simulator_init_state, nbrs=nbrs_init
         )
+        reference_state = jax.tree_util.tree_map(
+            lambda x: jnp.repeat(x[None, ...], 2, axis=0), reference_state
+        )
 
         trainer = trainers.Difftre(
             init_params, optimizer, reweight_ratio=0.99
@@ -113,7 +116,8 @@ class TestDifftre:
 
         trainer.add_statepoint(
           energy_fn_template, simulator_template, neighbor_fn, timings, state_kwargs,
-          compute_fns, reference_state, targets=targets)
+          compute_fns, reference_state, targets=targets, vmap_batch=2,
+          resample_simstates=True)
 
         return trainer, radial_distribution, r_eval
 

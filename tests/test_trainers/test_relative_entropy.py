@@ -126,7 +126,6 @@ class TestRelativeEntropy:
             energy_fn_template=energy_fn_template,
         )
 
-        subsampled_dataset = position_dataset[::100, ...]
         state_kwargs = {"kT": kT}
 
         relative_entropy.add_statepoint(

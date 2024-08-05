@@ -7,3 +7,5 @@ Numpy Data Loaders
 -------------------
 
 .. autofunction:: init_dataloaders
+
+.. autofunction:: init_batch_functions

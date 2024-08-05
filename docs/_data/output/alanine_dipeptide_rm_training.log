@@ -1,0 +1,2403 @@
+/home/paul/miniconda3/envs/chemtrain/lib/python3.10/site-packages/jax/_src/numpy/lax_numpy.py:166: UserWarning: Explicitly requested dtype float64 requested in asarray is not available, and will be truncated to dtype float32. To enable more dtypes, set the jax_enable_x64 configuration option or the JAX_ENABLE_X64 shell environment variable. See https://github.com/google/jax#current-gotchas for more.
+  return asarray(x, dtype=self.dtype)
+[Step Size] Found optimal step size 1.0 with residual 0.5133256912231445
+
+[RE] Epoch 0
+	Mean Delta RE loss = 15.55159
+	Gradient norm: 96.93727111816406
+	Elapsed time = 4.626 min
+[Statepoint 0]
+	kT = 2.437 ref_kT = 2.494
+[Step Size] Found optimal step size 0.4760661721229553 with residual 2.002716064453125e-05
+
+[RE] Epoch 1
+	Mean Delta RE loss = 1.08074
+	Gradient norm: 137.0275115966797
+	Elapsed time = 2.807 min
+[Statepoint 0]
+	kT = 2.445 ref_kT = 2.494
+[Step Size] Found optimal step size 0.6170003414154053 with residual 4.76837158203125e-06
+
+[RE] Epoch 2
+	Mean Delta RE loss = 21.52986
+	Gradient norm: 106.283935546875
+	Elapsed time = 2.806 min
+[Statepoint 0]
+	kT = 2.441 ref_kT = 2.494
+[Step Size] Found optimal step size 0.660409152507782 with residual 0.0017538070678710938
+
+[RE] Epoch 3
+	Mean Delta RE loss = -3.91214
+	Gradient norm: 113.38748931884766
+	Elapsed time = 2.807 min
+[Statepoint 0]
+	kT = 2.429 ref_kT = 2.494
+[Step Size] Found optimal step size 0.6870999336242676 with residual 6.67572021484375e-06
+
+[RE] Epoch 4
+	Mean Delta RE loss = 17.00693
+	Gradient norm: 105.7552719116211
+	Elapsed time = 2.806 min
+[Statepoint 0]
+	kT = 2.437 ref_kT = 2.494
+[Step Size] Found optimal step size 0.7570856809616089 with residual 0.0
+
+[RE] Epoch 5
+	Mean Delta RE loss = 2.61738
+	Gradient norm: 111.17361450195312
+	Elapsed time = 2.803 min
+[Statepoint 0]
+	kT = 2.450 ref_kT = 2.494
+[Step Size] Found optimal step size 0.8894212245941162 with residual 4.76837158203125e-06
+
+[RE] Epoch 6
+	Mean Delta RE loss = 9.81270
+	Gradient norm: 97.30440521240234
+	Elapsed time = 2.814 min
+[Statepoint 0]
+	kT = 2.438 ref_kT = 2.494
+[Step Size] Found optimal step size 0.5134966373443604 with residual 1.9073486328125e-06
+
+[RE] Epoch 7
+	Mean Delta RE loss = -0.06169
+	Gradient norm: 139.3147430419922
+	Elapsed time = 2.802 min
+[Statepoint 0]
+	kT = 2.435 ref_kT = 2.494
+[Step Size] Found optimal step size 0.6901571154594421 with residual 9.5367431640625e-07
+
+[RE] Epoch 8
+	Mean Delta RE loss = -5.11360
+	Gradient norm: 101.60511016845703
+	Elapsed time = 2.811 min
+[Statepoint 0]
+	kT = 2.432 ref_kT = 2.494
+[Step Size] Found optimal step size 0.6171561479568481 with residual 8.58306884765625e-06
+
+[RE] Epoch 9
+	Mean Delta RE loss = 8.26843
+	Gradient norm: 85.58795166015625
+	Elapsed time = 2.818 min
+[Statepoint 0]
+	kT = 2.428 ref_kT = 2.494
+[Step Size] Found optimal step size 0.7128217220306396 with residual 4.76837158203125e-06
+
+[RE] Epoch 10
+	Mean Delta RE loss = -0.11033
+	Gradient norm: 104.84606170654297
+	Elapsed time = 2.808 min
+[Statepoint 0]
+	kT = 2.440 ref_kT = 2.494
+[Step Size] Found optimal step size 0.7688767910003662 with residual 1.71661376953125e-05
+
+[RE] Epoch 11
+	Mean Delta RE loss = 8.21784
+	Gradient norm: 67.1654281616211
+	Elapsed time = 2.814 min
+[Statepoint 0]
+	kT = 2.438 ref_kT = 2.494
+[Step Size] Found optimal step size 0.7536853551864624 with residual 9.5367431640625e-07
+
+[RE] Epoch 12
+	Mean Delta RE loss = -6.37949
+	Gradient norm: 104.87371063232422
+	Elapsed time = 2.800 min
+[Statepoint 0]
+	kT = 2.437 ref_kT = 2.494
+[Step Size] Found optimal step size 0.8751465082168579 with residual 8.678436279296875e-05
+
+[RE] Epoch 13
+	Mean Delta RE loss = 12.61337
+	Gradient norm: 67.4656982421875
+	Elapsed time = 2.800 min
+[Statepoint 0]
+	kT = 2.433 ref_kT = 2.494
+[Step Size] Found optimal step size 0.5794134736061096 with residual 4.76837158203125e-06
+
+[RE] Epoch 14
+	Mean Delta RE loss = -4.73479
+	Gradient norm: 135.21231079101562
+	Elapsed time = 2.810 min
+[Statepoint 0]
+	kT = 2.443 ref_kT = 2.494
+[Step Size] Found optimal step size 0.8236280679702759 with residual 3.147125244140625e-05
+
+[RE] Epoch 15
+	Mean Delta RE loss = -6.40148
+	Gradient norm: 82.7475357055664
+	Elapsed time = 2.797 min
+[Statepoint 0]
+	kT = 2.436 ref_kT = 2.494
+[Step Size] Found optimal step size 0.49512144923210144 with residual 0.0008697509765625
+
+[RE] Epoch 16
+	Mean Delta RE loss = 14.93187
+	Gradient norm: 742.11328125
+	Elapsed time = 2.800 min
+[Statepoint 0]
+	kT = 2.441 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.7817850112915039
+
+[RE] Epoch 17
+	Mean Delta RE loss = -6.88844
+	Gradient norm: 26.336462020874023
+	Elapsed time = 2.801 min
+[Statepoint 0]
+	kT = 2.439 ref_kT = 2.494
+[Step Size] Found optimal step size 0.6675190925598145 with residual 2.09808349609375e-05
+
+[RE] Epoch 18
+	Mean Delta RE loss = -0.64498
+	Gradient norm: 59.67079544067383
+	Elapsed time = 2.805 min
+[Statepoint 0]
+	kT = 2.433 ref_kT = 2.494
+[Step Size] Found optimal step size 0.6281028985977173 with residual 0.027362823486328125
+
+[RE] Epoch 19
+	Mean Delta RE loss = 5.45560
+	Gradient norm: 78.32058715820312
+	Elapsed time = 2.810 min
+[Statepoint 0]
+	kT = 2.435 ref_kT = 2.494
+[Step Size] Found optimal step size 0.6948614716529846 with residual 4.76837158203125e-06
+
+[RE] Epoch 20
+	Mean Delta RE loss = -4.98043
+	Gradient norm: 121.29708862304688
+	Elapsed time = 2.803 min
+[Statepoint 0]
+	kT = 2.444 ref_kT = 2.494
+[Step Size] Found optimal step size 0.9090918898582458 with residual 0.1527996063232422
+
+[RE] Epoch 21
+	Mean Delta RE loss = -0.50538
+	Gradient norm: 80.84854888916016
+	Elapsed time = 2.813 min
+[Statepoint 0]
+	kT = 2.438 ref_kT = 2.494
+[Step Size] Found optimal step size 0.6651963591575623 with residual 5.7220458984375e-06
+
+[RE] Epoch 22
+	Mean Delta RE loss = 10.83423
+	Gradient norm: 161.53802490234375
+	Elapsed time = 2.802 min
+[Statepoint 0]
+	kT = 2.442 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.0035572052001953125
+
+[RE] Epoch 23
+	Mean Delta RE loss = -10.31681
+	Gradient norm: 75.61251831054688
+	Elapsed time = 2.809 min
+[Statepoint 0]
+	kT = 2.441 ref_kT = 2.494
+[Step Size] Found optimal step size 0.7169185876846313 with residual 9.5367431640625e-06
+
+[RE] Epoch 24
+	Mean Delta RE loss = 13.33256
+	Gradient norm: 103.60093688964844
+	Elapsed time = 2.810 min
+[Statepoint 0]
+	kT = 2.435 ref_kT = 2.494
+[Step Size] Found optimal step size 0.8926562070846558 with residual 2.86102294921875e-06
+
+[RE] Epoch 25
+	Mean Delta RE loss = 1.66043
+	Gradient norm: 94.72576141357422
+	Elapsed time = 2.803 min
+[Statepoint 0]
+	kT = 2.437 ref_kT = 2.494
+[Step Size] Found optimal step size 0.9090917706489563 with residual 0.10210132598876953
+
+[RE] Epoch 26
+	Mean Delta RE loss = 5.99860
+	Gradient norm: 91.15232849121094
+	Elapsed time = 2.807 min
+[Statepoint 0]
+	kT = 2.438 ref_kT = 2.494
+[Step Size] Found optimal step size 0.9090918898582458 with residual 0.10687541961669922
+
+[RE] Epoch 27
+	Mean Delta RE loss = -5.87194
+	Gradient norm: 71.79827117919922
+	Elapsed time = 2.808 min
+[Statepoint 0]
+	kT = 2.435 ref_kT = 2.494
+[Step Size] Found optimal step size 0.8650107383728027 with residual 1.049041748046875e-05
+
+[RE] Epoch 28
+	Mean Delta RE loss = 13.88129
+	Gradient norm: 92.39842224121094
+	Elapsed time = 2.815 min
+[Statepoint 0]
+	kT = 2.434 ref_kT = 2.494
+[Step Size] Found optimal step size 0.8888239860534668 with residual 2.86102294921875e-06
+
+[RE] Epoch 29
+	Mean Delta RE loss = -3.47547
+	Gradient norm: 62.35525131225586
+	Elapsed time = 2.811 min
+[Statepoint 0]
+	kT = 2.436 ref_kT = 2.494
+[Step Size] Found optimal step size 0.7858091592788696 with residual 0.0001430511474609375
+
+[RE] Epoch 30
+	Mean Delta RE loss = 0.57253
+	Gradient norm: 81.09686279296875
+	Elapsed time = 2.811 min
+[Statepoint 0]
+	kT = 2.428 ref_kT = 2.494
+[Step Size] Found optimal step size 0.5332456827163696 with residual 4.38690185546875e-05
+
+[RE] Epoch 31
+	Mean Delta RE loss = 17.92849
+	Gradient norm: 985.3696899414062
+	Elapsed time = 2.812 min
+[Statepoint 0]
+	kT = 2.437 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.42342185974121094
+
+[RE] Epoch 32
+	Mean Delta RE loss = -0.82799
+	Gradient norm: 67.9967041015625
+	Elapsed time = 2.816 min
+[Statepoint 0]
+	kT = 2.440 ref_kT = 2.494
+[Step Size] Found optimal step size 0.7722020149230957 with residual 5.7220458984375e-06
+
+[RE] Epoch 33
+	Mean Delta RE loss = -5.77036
+	Gradient norm: 184.03330993652344
+	Elapsed time = 2.814 min
+[Statepoint 0]
+	kT = 2.438 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.5139884948730469
+
+[RE] Epoch 34
+	Mean Delta RE loss = 8.40198
+	Gradient norm: 65.53007507324219
+	Elapsed time = 2.810 min
+[Statepoint 0]
+	kT = 2.432 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.12154388427734375
+
+[RE] Epoch 35
+	Mean Delta RE loss = 5.26617
+	Gradient norm: 50.0479736328125
+	Elapsed time = 2.813 min
+[Statepoint 0]
+	kT = 2.442 ref_kT = 2.494
+[Step Size] Found optimal step size 0.8334397077560425 with residual 9.5367431640625e-07
+
+[RE] Epoch 36
+	Mean Delta RE loss = -1.50474
+	Gradient norm: 123.94695281982422
+	Elapsed time = 2.814 min
+[Statepoint 0]
+	kT = 2.431 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.11067676544189453
+
+[RE] Epoch 37
+	Mean Delta RE loss = 3.79112
+	Gradient norm: 63.76511764526367
+	Elapsed time = 2.821 min
+[Statepoint 0]
+	kT = 2.435 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.24468135833740234
+
+[RE] Epoch 38
+	Mean Delta RE loss = 4.72279
+	Gradient norm: 65.70954132080078
+	Elapsed time = 2.812 min
+[Statepoint 0]
+	kT = 2.438 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.3696174621582031
+
+[RE] Epoch 39
+	Mean Delta RE loss = -5.27173
+	Gradient norm: 64.77185821533203
+	Elapsed time = 2.817 min
+[Statepoint 0]
+	kT = 2.437 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.7153329849243164
+
+[RE] Epoch 40
+	Mean Delta RE loss = 8.82955
+	Gradient norm: 23.156465530395508
+	Elapsed time = 2.807 min
+[Statepoint 0]
+	kT = 2.435 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.1040639877319336
+
+[RE] Epoch 41
+	Mean Delta RE loss = 3.31318
+	Gradient norm: 38.906402587890625
+	Elapsed time = 2.820 min
+[Statepoint 0]
+	kT = 2.439 ref_kT = 2.494
+[Step Size] Found optimal step size 0.8872209787368774 with residual 9.5367431640625e-07
+
+[RE] Epoch 42
+	Mean Delta RE loss = 3.52039
+	Gradient norm: 193.62661743164062
+	Elapsed time = 2.806 min
+[Statepoint 0]
+	kT = 2.440 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.7865314483642578
+
+[RE] Epoch 43
+	Mean Delta RE loss = -4.98360
+	Gradient norm: 55.876502990722656
+	Elapsed time = 2.820 min
+[Statepoint 0]
+	kT = 2.435 ref_kT = 2.494
+[Step Size] Found optimal step size 0.7853994369506836 with residual 2.86102294921875e-05
+
+[RE] Epoch 44
+	Mean Delta RE loss = 8.80803
+	Gradient norm: 266.0081787109375
+	Elapsed time = 2.808 min
+[Statepoint 0]
+	kT = 2.441 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.5308856964111328
+
+[RE] Epoch 45
+	Mean Delta RE loss = -6.23033
+	Gradient norm: 63.01469802856445
+	Elapsed time = 2.803 min
+[Statepoint 0]
+	kT = 2.436 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.45696067810058594
+
+[RE] Epoch 46
+	Mean Delta RE loss = -5.34688
+	Gradient norm: 66.3212890625
+	Elapsed time = 2.810 min
+[Statepoint 0]
+	kT = 2.429 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.47913169860839844
+
+[RE] Epoch 47
+	Mean Delta RE loss = 10.37193
+	Gradient norm: 98.99707794189453
+	Elapsed time = 2.809 min
+[Statepoint 0]
+	kT = 2.431 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.787907600402832
+
+[RE] Epoch 48
+	Mean Delta RE loss = -1.24822
+	Gradient norm: 29.28422737121582
+	Elapsed time = 2.810 min
+[Statepoint 0]
+	kT = 2.434 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.3275461196899414
+
+[RE] Epoch 49
+	Mean Delta RE loss = -4.19336
+	Gradient norm: 48.07207107543945
+	Elapsed time = 2.807 min
+[Statepoint 0]
+	kT = 2.448 ref_kT = 2.494
+[Step Size] Found optimal step size 0.9090918302536011 with residual 0.10510540008544922
+
+[RE] Epoch 50
+	Mean Delta RE loss = 5.16327
+	Gradient norm: 329.21014404296875
+	Elapsed time = 2.802 min
+[Statepoint 0]
+	kT = 2.440 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.030961036682129
+
+[RE] Epoch 51
+	Mean Delta RE loss = -2.42466
+	Gradient norm: 39.47947311401367
+	Elapsed time = 2.813 min
+[Statepoint 0]
+	kT = 2.444 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.7131185531616211
+
+[RE] Epoch 52
+	Mean Delta RE loss = -5.45385
+	Gradient norm: 15.80764389038086
+	Elapsed time = 2.810 min
+[Statepoint 0]
+	kT = 2.440 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.4964456558227539
+
+[RE] Epoch 53
+	Mean Delta RE loss = -4.83926
+	Gradient norm: 36.51105880737305
+	Elapsed time = 2.813 min
+[Statepoint 0]
+	kT = 2.434 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.4060630798339844
+
+[RE] Epoch 54
+	Mean Delta RE loss = -4.79245
+	Gradient norm: 118.2083969116211
+	Elapsed time = 2.813 min
+[Statepoint 0]
+	kT = 2.439 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.8322153091430664
+
+[RE] Epoch 55
+	Mean Delta RE loss = 5.63864
+	Gradient norm: 52.263309478759766
+	Elapsed time = 2.818 min
+[Statepoint 0]
+	kT = 2.428 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.9380807876586914
+
+[RE] Epoch 56
+	Mean Delta RE loss = 6.50765
+	Gradient norm: 17.86717987060547
+	Elapsed time = 2.806 min
+[Statepoint 0]
+	kT = 2.441 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.8504533767700195
+
+[RE] Epoch 57
+	Mean Delta RE loss = -4.87880
+	Gradient norm: 19.516742706298828
+	Elapsed time = 2.808 min
+[Statepoint 0]
+	kT = 2.440 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.7726230621337891
+
+[RE] Epoch 58
+	Mean Delta RE loss = -2.12817
+	Gradient norm: 28.272918701171875
+	Elapsed time = 2.813 min
+[Statepoint 0]
+	kT = 2.439 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.5210905075073242
+
+[RE] Epoch 59
+	Mean Delta RE loss = -8.63672
+	Gradient norm: 31.218158721923828
+	Elapsed time = 2.814 min
+[Statepoint 0]
+	kT = 2.435 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.30371761322021484
+
+[RE] Epoch 60
+	Mean Delta RE loss = -7.67711
+	Gradient norm: 118.848388671875
+	Elapsed time = 2.811 min
+[Statepoint 0]
+	kT = 2.437 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.0033245086669922
+
+[RE] Epoch 61
+	Mean Delta RE loss = 1.73615
+	Gradient norm: 45.26395797729492
+	Elapsed time = 2.815 min
+[Statepoint 0]
+	kT = 2.444 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.9573144912719727
+
+[RE] Epoch 62
+	Mean Delta RE loss = -6.11742
+	Gradient norm: 27.915925979614258
+	Elapsed time = 2.807 min
+[Statepoint 0]
+	kT = 2.446 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.5833168029785156
+
+[RE] Epoch 63
+	Mean Delta RE loss = 4.75427
+	Gradient norm: 126.64325714111328
+	Elapsed time = 2.816 min
+[Statepoint 0]
+	kT = 2.442 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.012791633605957
+
+[RE] Epoch 64
+	Mean Delta RE loss = -10.49518
+	Gradient norm: 31.9610652923584
+	Elapsed time = 2.804 min
+[Statepoint 0]
+	kT = 2.435 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.0098333358764648
+
+[RE] Epoch 65
+	Mean Delta RE loss = -0.39043
+	Gradient norm: 15.74691104888916
+	Elapsed time = 2.811 min
+[Statepoint 0]
+	kT = 2.443 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.6836824417114258
+
+[RE] Epoch 66
+	Mean Delta RE loss = 5.76977
+	Gradient norm: 39.678253173828125
+	Elapsed time = 2.816 min
+[Statepoint 0]
+	kT = 2.434 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.8383398056030273
+
+[RE] Epoch 67
+	Mean Delta RE loss = -4.49936
+	Gradient norm: 44.33311462402344
+	Elapsed time = 2.817 min
+[Statepoint 0]
+	kT = 2.434 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.7553558349609375
+
+[RE] Epoch 68
+	Mean Delta RE loss = 1.15754
+	Gradient norm: 30.442611694335938
+	Elapsed time = 2.811 min
+[Statepoint 0]
+	kT = 2.449 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.6916275024414062
+
+[RE] Epoch 69
+	Mean Delta RE loss = -2.63030
+	Gradient norm: 53.29329299926758
+	Elapsed time = 2.804 min
+[Statepoint 0]
+	kT = 2.442 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.0105628967285156
+
+[RE] Epoch 70
+	Mean Delta RE loss = -4.60901
+	Gradient norm: 35.13378143310547
+	Elapsed time = 2.807 min
+[Statepoint 0]
+	kT = 2.442 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.0295639038085938
+
+[RE] Epoch 71
+	Mean Delta RE loss = 1.73510
+	Gradient norm: 16.568225860595703
+	Elapsed time = 2.806 min
+[Statepoint 0]
+	kT = 2.440 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.8823032379150391
+
+[RE] Epoch 72
+	Mean Delta RE loss = -0.81808
+	Gradient norm: 26.077852249145508
+	Elapsed time = 2.814 min
+[Statepoint 0]
+	kT = 2.438 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.8717412948608398
+
+[RE] Epoch 73
+	Mean Delta RE loss = -2.58763
+	Gradient norm: 27.27447509765625
+	Elapsed time = 2.804 min
+[Statepoint 0]
+	kT = 2.438 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.7682256698608398
+
+[RE] Epoch 74
+	Mean Delta RE loss = -0.96012
+	Gradient norm: 45.54698944091797
+	Elapsed time = 2.801 min
+[Statepoint 0]
+	kT = 2.444 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.8714075088500977
+
+[RE] Epoch 75
+	Mean Delta RE loss = -1.20756
+	Gradient norm: 37.376617431640625
+	Elapsed time = 2.814 min
+[Statepoint 0]
+	kT = 2.437 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.9717006683349609
+
+[RE] Epoch 76
+	Mean Delta RE loss = -0.35394
+	Gradient norm: 28.62885093688965
+	Elapsed time = 2.806 min
+[Statepoint 0]
+	kT = 2.442 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.0119037628173828
+
+[RE] Epoch 77
+	Mean Delta RE loss = 1.46906
+	Gradient norm: 20.448917388916016
+	Elapsed time = 2.811 min
+[Statepoint 0]
+	kT = 2.437 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.8807840347290039
+
+[RE] Epoch 78
+	Mean Delta RE loss = -1.20548
+	Gradient norm: 33.822818756103516
+	Elapsed time = 2.819 min
+[Statepoint 0]
+	kT = 2.440 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.0373601913452148
+
+[RE] Epoch 79
+	Mean Delta RE loss = -1.06558
+	Gradient norm: 27.470613479614258
+	Elapsed time = 2.802 min
+[Statepoint 0]
+	kT = 2.435 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.024301528930664
+
+[RE] Epoch 80
+	Mean Delta RE loss = -2.86728
+	Gradient norm: 24.188905715942383
+	Elapsed time = 2.807 min
+[Statepoint 0]
+	kT = 2.438 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.9960412979125977
+
+[RE] Epoch 81
+	Mean Delta RE loss = 0.61262
+	Gradient norm: 29.36798095703125
+	Elapsed time = 2.816 min
+[Statepoint 0]
+	kT = 2.434 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.092179298400879
+
+[RE] Epoch 82
+	Mean Delta RE loss = -2.11764
+	Gradient norm: 16.707035064697266
+	Elapsed time = 2.808 min
+[Statepoint 0]
+	kT = 2.445 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.9430437088012695
+
+[RE] Epoch 83
+	Mean Delta RE loss = -2.93477
+	Gradient norm: 22.58928871154785
+	Elapsed time = 2.811 min
+[Statepoint 0]
+	kT = 2.439 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 0.9609451293945312
+
+[RE] Epoch 84
+	Mean Delta RE loss = 2.92362
+	Gradient norm: 40.356658935546875
+	Elapsed time = 2.821 min
+[Statepoint 0]
+	kT = 2.435 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.120284080505371
+
+[RE] Epoch 85
+	Mean Delta RE loss = -8.73627
+	Gradient norm: 26.663410186767578
+	Elapsed time = 2.811 min
+[Statepoint 0]
+	kT = 2.432 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.1458635330200195
+
+[RE] Epoch 86
+	Mean Delta RE loss = -1.25164
+	Gradient norm: 13.322700500488281
+	Elapsed time = 2.802 min
+[Statepoint 0]
+	kT = 2.444 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.0481224060058594
+
+[RE] Epoch 87
+	Mean Delta RE loss = -8.82466
+	Gradient norm: 23.07544708251953
+	Elapsed time = 2.809 min
+[Statepoint 0]
+	kT = 2.435 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.0316858291625977
+
+[RE] Epoch 88
+	Mean Delta RE loss = -3.05824
+	Gradient norm: 27.91411781311035
+	Elapsed time = 2.806 min
+[Statepoint 0]
+	kT = 2.442 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.0886297225952148
+
+[RE] Epoch 89
+	Mean Delta RE loss = -4.87184
+	Gradient norm: 21.386672973632812
+	Elapsed time = 2.814 min
+[Statepoint 0]
+	kT = 2.430 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.0686511993408203
+
+[RE] Epoch 90
+	Mean Delta RE loss = -4.51961
+	Gradient norm: 23.152246475219727
+	Elapsed time = 2.803 min
+[Statepoint 0]
+	kT = 2.433 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.1552982330322266
+
+[RE] Epoch 91
+	Mean Delta RE loss = -3.43174
+	Gradient norm: 15.69839859008789
+	Elapsed time = 2.810 min
+[Statepoint 0]
+	kT = 2.440 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.162949562072754
+
+[RE] Epoch 92
+	Mean Delta RE loss = -7.54199
+	Gradient norm: 12.327417373657227
+	Elapsed time = 2.808 min
+[Statepoint 0]
+	kT = 2.444 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.1727294921875
+
+[RE] Epoch 93
+	Mean Delta RE loss = -9.33332
+	Gradient norm: 9.093157768249512
+	Elapsed time = 2.811 min
+[Statepoint 0]
+	kT = 2.437 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.033247947692871
+
+[RE] Epoch 94
+	Mean Delta RE loss = -3.05739
+	Gradient norm: 27.52959442138672
+	Elapsed time = 2.810 min
+[Statepoint 0]
+	kT = 2.441 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.094869613647461
+
+[RE] Epoch 95
+	Mean Delta RE loss = -9.19567
+	Gradient norm: 31.480207443237305
+	Elapsed time = 2.813 min
+[Statepoint 0]
+	kT = 2.438 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.119368553161621
+
+[RE] Epoch 96
+	Mean Delta RE loss = -0.52375
+	Gradient norm: 29.009262084960938
+	Elapsed time = 2.816 min
+[Statepoint 0]
+	kT = 2.440 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.1998558044433594
+
+[RE] Epoch 97
+	Mean Delta RE loss = -9.06624
+	Gradient norm: 11.742212295532227
+	Elapsed time = 2.805 min
+[Statepoint 0]
+	kT = 2.440 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.2225379943847656
+
+[RE] Epoch 98
+	Mean Delta RE loss = -5.10597
+	Gradient norm: 4.4502949714660645
+	Elapsed time = 2.810 min
+[Statepoint 0]
+	kT = 2.442 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.023636817932129
+
+[RE] Epoch 99
+	Mean Delta RE loss = -4.74967
+	Gradient norm: 25.47626304626465
+	Elapsed time = 2.814 min
+[Statepoint 0]
+	kT = 2.435 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.136366844177246
+
+[RE] Epoch 100
+	Mean Delta RE loss = -8.33630
+	Gradient norm: 32.57936096191406
+	Elapsed time = 2.816 min
+[Statepoint 0]
+	kT = 2.442 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.2589855194091797
+
+[RE] Epoch 101
+	Mean Delta RE loss = -4.85301
+	Gradient norm: 11.38139820098877
+	Elapsed time = 2.822 min
+[Statepoint 0]
+	kT = 2.441 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.201249122619629
+
+[RE] Epoch 102
+	Mean Delta RE loss = -5.82329
+	Gradient norm: 9.994157791137695
+	Elapsed time = 2.812 min
+[Statepoint 0]
+	kT = 2.432 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.1358518600463867
+
+[RE] Epoch 103
+	Mean Delta RE loss = -8.07950
+	Gradient norm: 18.499370574951172
+	Elapsed time = 2.813 min
+[Statepoint 0]
+	kT = 2.437 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.2063789367675781
+
+[RE] Epoch 104
+	Mean Delta RE loss = -4.02391
+	Gradient norm: 8.4810152053833
+	Elapsed time = 2.810 min
+[Statepoint 0]
+	kT = 2.446 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.144892692565918
+
+[RE] Epoch 105
+	Mean Delta RE loss = -9.35883
+	Gradient norm: 16.147796630859375
+	Elapsed time = 2.814 min
+[Statepoint 0]
+	kT = 2.430 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.2071475982666016
+
+[RE] Epoch 106
+	Mean Delta RE loss = -5.61968
+	Gradient norm: 14.93130874633789
+	Elapsed time = 2.808 min
+[Statepoint 0]
+	kT = 2.439 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.179067611694336
+
+[RE] Epoch 107
+	Mean Delta RE loss = -7.09791
+	Gradient norm: 13.265106201171875
+	Elapsed time = 2.802 min
+[Statepoint 0]
+	kT = 2.437 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.1810083389282227
+
+[RE] Epoch 108
+	Mean Delta RE loss = -10.89179
+	Gradient norm: 16.737836837768555
+	Elapsed time = 2.800 min
+[Statepoint 0]
+	kT = 2.445 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.2253656387329102
+
+[RE] Epoch 109
+	Mean Delta RE loss = -3.29719
+	Gradient norm: 13.4578857421875
+	Elapsed time = 2.803 min
+[Statepoint 0]
+	kT = 2.440 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.183110237121582
+
+[RE] Epoch 110
+	Mean Delta RE loss = -10.06829
+	Gradient norm: 14.551280975341797
+	Elapsed time = 2.811 min
+[Statepoint 0]
+	kT = 2.441 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.1262969970703125
+
+[RE] Epoch 111
+	Mean Delta RE loss = -5.40431
+	Gradient norm: 23.649381637573242
+	Elapsed time = 2.809 min
+[Statepoint 0]
+	kT = 2.445 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.1870031356811523
+
+[RE] Epoch 112
+	Mean Delta RE loss = -6.48912
+	Gradient norm: 22.21027183532715
+	Elapsed time = 2.812 min
+[Statepoint 0]
+	kT = 2.432 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.2504396438598633
+
+[RE] Epoch 113
+	Mean Delta RE loss = -7.35261
+	Gradient norm: 16.064022064208984
+	Elapsed time = 2.806 min
+[Statepoint 0]
+	kT = 2.436 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.2637577056884766
+
+[RE] Epoch 114
+	Mean Delta RE loss = -1.93151
+	Gradient norm: 10.683305740356445
+	Elapsed time = 2.803 min
+[Statepoint 0]
+	kT = 2.447 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.2685232162475586
+
+[RE] Epoch 115
+	Mean Delta RE loss = -8.50001
+	Gradient norm: 8.752324104309082
+	Elapsed time = 2.810 min
+[Statepoint 0]
+	kT = 2.444 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.2414827346801758
+
+[RE] Epoch 116
+	Mean Delta RE loss = -4.19301
+	Gradient norm: 10.312703132629395
+	Elapsed time = 2.807 min
+[Statepoint 0]
+	kT = 2.436 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.196249008178711
+
+[RE] Epoch 117
+	Mean Delta RE loss = -7.27884
+	Gradient norm: 11.5584716796875
+	Elapsed time = 2.815 min
+[Statepoint 0]
+	kT = 2.442 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.175950050354004
+
+[RE] Epoch 118
+	Mean Delta RE loss = -9.61116
+	Gradient norm: 24.5956974029541
+	Elapsed time = 2.809 min
+[Statepoint 0]
+	kT = 2.443 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.2908859252929688
+
+[RE] Epoch 119
+	Mean Delta RE loss = -6.70899
+	Gradient norm: 7.092591285705566
+	Elapsed time = 2.809 min
+[Statepoint 0]
+	kT = 2.441 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.2449064254760742
+
+[RE] Epoch 120
+	Mean Delta RE loss = -8.68239
+	Gradient norm: 10.899770736694336
+	Elapsed time = 2.810 min
+[Statepoint 0]
+	kT = 2.441 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.2657861709594727
+
+[RE] Epoch 121
+	Mean Delta RE loss = -7.00797
+	Gradient norm: 7.690328598022461
+	Elapsed time = 2.806 min
+[Statepoint 0]
+	kT = 2.434 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.2437000274658203
+
+[RE] Epoch 122
+	Mean Delta RE loss = -11.07861
+	Gradient norm: 11.077649116516113
+	Elapsed time = 2.813 min
+[Statepoint 0]
+	kT = 2.448 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.2356586456298828
+
+[RE] Epoch 123
+	Mean Delta RE loss = -6.18849
+	Gradient norm: 12.769210815429688
+	Elapsed time = 2.808 min
+[Statepoint 0]
+	kT = 2.440 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.2405014038085938
+
+[RE] Epoch 124
+	Mean Delta RE loss = -8.19391
+	Gradient norm: 12.507104873657227
+	Elapsed time = 2.807 min
+[Statepoint 0]
+	kT = 2.438 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.2600593566894531
+
+[RE] Epoch 125
+	Mean Delta RE loss = -8.02827
+	Gradient norm: 12.738750457763672
+	Elapsed time = 2.801 min
+[Statepoint 0]
+	kT = 2.447 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3257274627685547
+
+[RE] Epoch 126
+	Mean Delta RE loss = -5.78976
+	Gradient norm: 4.675284385681152
+	Elapsed time = 2.811 min
+[Statepoint 0]
+	kT = 2.441 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.2740850448608398
+
+[RE] Epoch 127
+	Mean Delta RE loss = -7.39099
+	Gradient norm: 6.005036354064941
+	Elapsed time = 2.807 min
+[Statepoint 0]
+	kT = 2.442 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.2397279739379883
+
+[RE] Epoch 128
+	Mean Delta RE loss = -8.71630
+	Gradient norm: 11.40900993347168
+	Elapsed time = 2.812 min
+[Statepoint 0]
+	kT = 2.433 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.2504358291625977
+
+[RE] Epoch 129
+	Mean Delta RE loss = -7.94627
+	Gradient norm: 14.732163429260254
+	Elapsed time = 2.806 min
+[Statepoint 0]
+	kT = 2.434 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.2846603393554688
+
+[RE] Epoch 130
+	Mean Delta RE loss = -7.37221
+	Gradient norm: 12.478986740112305
+	Elapsed time = 2.810 min
+[Statepoint 0]
+	kT = 2.431 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3235101699829102
+
+[RE] Epoch 131
+	Mean Delta RE loss = -9.03049
+	Gradient norm: 5.728638648986816
+	Elapsed time = 2.816 min
+[Statepoint 0]
+	kT = 2.443 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.271285057067871
+
+[RE] Epoch 132
+	Mean Delta RE loss = -9.79470
+	Gradient norm: 9.355144500732422
+	Elapsed time = 2.807 min
+[Statepoint 0]
+	kT = 2.431 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.2674341201782227
+
+[RE] Epoch 133
+	Mean Delta RE loss = -7.65789
+	Gradient norm: 12.77968692779541
+	Elapsed time = 2.804 min
+[Statepoint 0]
+	kT = 2.440 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3070993423461914
+
+[RE] Epoch 134
+	Mean Delta RE loss = -7.96717
+	Gradient norm: 6.076709270477295
+	Elapsed time = 2.805 min
+[Statepoint 0]
+	kT = 2.441 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.2784900665283203
+
+[RE] Epoch 135
+	Mean Delta RE loss = -9.67827
+	Gradient norm: 13.195816993713379
+	Elapsed time = 2.803 min
+[Statepoint 0]
+	kT = 2.436 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3160886764526367
+
+[RE] Epoch 136
+	Mean Delta RE loss = -7.15227
+	Gradient norm: 6.77582311630249
+	Elapsed time = 2.805 min
+[Statepoint 0]
+	kT = 2.442 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3186216354370117
+
+[RE] Epoch 137
+	Mean Delta RE loss = -9.86024
+	Gradient norm: 3.2895889282226562
+	Elapsed time = 2.816 min
+[Statepoint 0]
+	kT = 2.441 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.300154685974121
+
+[RE] Epoch 138
+	Mean Delta RE loss = -10.73093
+	Gradient norm: 6.9715189933776855
+	Elapsed time = 2.805 min
+[Statepoint 0]
+	kT = 2.439 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.2925996780395508
+
+[RE] Epoch 139
+	Mean Delta RE loss = -8.57539
+	Gradient norm: 10.77731704711914
+	Elapsed time = 2.806 min
+[Statepoint 0]
+	kT = 2.435 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.300776481628418
+
+[RE] Epoch 140
+	Mean Delta RE loss = -12.02782
+	Gradient norm: 10.446173667907715
+	Elapsed time = 2.802 min
+[Statepoint 0]
+	kT = 2.439 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3362016677856445
+
+[RE] Epoch 141
+	Mean Delta RE loss = -8.52140
+	Gradient norm: 3.6900577545166016
+	Elapsed time = 2.801 min
+[Statepoint 0]
+	kT = 2.432 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.2935686111450195
+
+[RE] Epoch 142
+	Mean Delta RE loss = -9.11373
+	Gradient norm: 8.610087394714355
+	Elapsed time = 2.807 min
+[Statepoint 0]
+	kT = 2.440 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.313429832458496
+
+[RE] Epoch 143
+	Mean Delta RE loss = -11.54473
+	Gradient norm: 6.9933671951293945
+	Elapsed time = 2.808 min
+[Statepoint 0]
+	kT = 2.435 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.304326057434082
+
+[RE] Epoch 144
+	Mean Delta RE loss = -8.50305
+	Gradient norm: 6.38645076751709
+	Elapsed time = 2.806 min
+[Statepoint 0]
+	kT = 2.436 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3067560195922852
+
+[RE] Epoch 145
+	Mean Delta RE loss = -10.34116
+	Gradient norm: 7.437589645385742
+	Elapsed time = 2.817 min
+[Statepoint 0]
+	kT = 2.441 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.2963981628417969
+
+[RE] Epoch 146
+	Mean Delta RE loss = -9.95971
+	Gradient norm: 9.32433032989502
+	Elapsed time = 2.814 min
+[Statepoint 0]
+	kT = 2.434 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.348292350769043
+
+[RE] Epoch 147
+	Mean Delta RE loss = -10.63336
+	Gradient norm: 3.0864808559417725
+	Elapsed time = 2.811 min
+[Statepoint 0]
+	kT = 2.430 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3200311660766602
+
+[RE] Epoch 148
+	Mean Delta RE loss = -8.46524
+	Gradient norm: 3.990086078643799
+	Elapsed time = 2.814 min
+[Statepoint 0]
+	kT = 2.442 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3236207962036133
+
+[RE] Epoch 149
+	Mean Delta RE loss = -12.86463
+	Gradient norm: 5.314448833465576
+	Elapsed time = 2.811 min
+[Statepoint 0]
+	kT = 2.439 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3022422790527344
+
+[RE] Epoch 150
+	Mean Delta RE loss = -9.27022
+	Gradient norm: 8.853446006774902
+	Elapsed time = 2.806 min
+[Statepoint 0]
+	kT = 2.442 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.301060676574707
+
+[RE] Epoch 151
+	Mean Delta RE loss = -10.15962
+	Gradient norm: 13.25742244720459
+	Elapsed time = 2.811 min
+[Statepoint 0]
+	kT = 2.449 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3562374114990234
+
+[RE] Epoch 152
+	Mean Delta RE loss = -10.36013
+	Gradient norm: 3.670837879180908
+	Elapsed time = 2.804 min
+[Statepoint 0]
+	kT = 2.443 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3500022888183594
+
+[RE] Epoch 153
+	Mean Delta RE loss = -8.35859
+	Gradient norm: 2.393643856048584
+	Elapsed time = 2.806 min
+[Statepoint 0]
+	kT = 2.438 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3281593322753906
+
+[RE] Epoch 154
+	Mean Delta RE loss = -9.79805
+	Gradient norm: 3.6093196868896484
+	Elapsed time = 2.804 min
+[Statepoint 0]
+	kT = 2.444 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3087348937988281
+
+[RE] Epoch 155
+	Mean Delta RE loss = -11.32597
+	Gradient norm: 9.383280754089355
+	Elapsed time = 2.803 min
+[Statepoint 0]
+	kT = 2.440 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3206958770751953
+
+[RE] Epoch 156
+	Mean Delta RE loss = -9.69961
+	Gradient norm: 12.201678276062012
+	Elapsed time = 2.812 min
+[Statepoint 0]
+	kT = 2.439 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3515901565551758
+
+[RE] Epoch 157
+	Mean Delta RE loss = -9.68054
+	Gradient norm: 3.3348007202148438
+	Elapsed time = 2.808 min
+[Statepoint 0]
+	kT = 2.439 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3450775146484375
+
+[RE] Epoch 158
+	Mean Delta RE loss = -10.61531
+	Gradient norm: 3.588752031326294
+	Elapsed time = 2.809 min
+[Statepoint 0]
+	kT = 2.435 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3476715087890625
+
+[RE] Epoch 159
+	Mean Delta RE loss = -9.87513
+	Gradient norm: 3.0705642700195312
+	Elapsed time = 2.807 min
+[Statepoint 0]
+	kT = 2.439 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.345139503479004
+
+[RE] Epoch 160
+	Mean Delta RE loss = -9.16128
+	Gradient norm: 3.797691583633423
+	Elapsed time = 2.803 min
+[Statepoint 0]
+	kT = 2.439 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.344609260559082
+
+[RE] Epoch 161
+	Mean Delta RE loss = -12.07514
+	Gradient norm: 3.260427236557007
+	Elapsed time = 2.811 min
+[Statepoint 0]
+	kT = 2.437 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3463945388793945
+
+[RE] Epoch 162
+	Mean Delta RE loss = -10.06535
+	Gradient norm: 2.898583173751831
+	Elapsed time = 2.804 min
+[Statepoint 0]
+	kT = 2.435 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3496112823486328
+
+[RE] Epoch 163
+	Mean Delta RE loss = -12.01122
+	Gradient norm: 2.037402391433716
+	Elapsed time = 2.813 min
+[Statepoint 0]
+	kT = 2.440 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.333073616027832
+
+[RE] Epoch 164
+	Mean Delta RE loss = -11.05445
+	Gradient norm: 5.024384021759033
+	Elapsed time = 2.807 min
+[Statepoint 0]
+	kT = 2.446 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3344974517822266
+
+[RE] Epoch 165
+	Mean Delta RE loss = -10.25429
+	Gradient norm: 5.683319568634033
+	Elapsed time = 2.802 min
+[Statepoint 0]
+	kT = 2.443 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3413162231445312
+
+[RE] Epoch 166
+	Mean Delta RE loss = -12.54673
+	Gradient norm: 5.606363296508789
+	Elapsed time = 2.812 min
+[Statepoint 0]
+	kT = 2.437 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3463687896728516
+
+[RE] Epoch 167
+	Mean Delta RE loss = -11.15974
+	Gradient norm: 4.898537635803223
+	Elapsed time = 2.803 min
+[Statepoint 0]
+	kT = 2.441 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.356919288635254
+
+[RE] Epoch 168
+	Mean Delta RE loss = -12.42031
+	Gradient norm: 2.419966459274292
+	Elapsed time = 2.800 min
+[Statepoint 0]
+	kT = 2.443 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3480968475341797
+
+[RE] Epoch 169
+	Mean Delta RE loss = -10.30908
+	Gradient norm: 3.138960838317871
+	Elapsed time = 2.810 min
+[Statepoint 0]
+	kT = 2.436 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3495330810546875
+
+[RE] Epoch 170
+	Mean Delta RE loss = -11.00494
+	Gradient norm: 2.9794771671295166
+	Elapsed time = 2.805 min
+[Statepoint 0]
+	kT = 2.442 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.342301368713379
+
+[RE] Epoch 171
+	Mean Delta RE loss = -12.22115
+	Gradient norm: 5.000977039337158
+	Elapsed time = 2.801 min
+[Statepoint 0]
+	kT = 2.434 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.346421241760254
+
+[RE] Epoch 172
+	Mean Delta RE loss = -10.94804
+	Gradient norm: 5.338800430297852
+	Elapsed time = 2.804 min
+[Statepoint 0]
+	kT = 2.431 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.365199089050293
+
+[RE] Epoch 173
+	Mean Delta RE loss = -11.82712
+	Gradient norm: 1.9721286296844482
+	Elapsed time = 2.803 min
+[Statepoint 0]
+	kT = 2.442 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3629589080810547
+
+[RE] Epoch 174
+	Mean Delta RE loss = -10.39425
+	Gradient norm: 1.5624886751174927
+	Elapsed time = 2.794 min
+[Statepoint 0]
+	kT = 2.437 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3529891967773438
+
+[RE] Epoch 175
+	Mean Delta RE loss = -12.83446
+	Gradient norm: 2.633002996444702
+	Elapsed time = 2.801 min
+[Statepoint 0]
+	kT = 2.445 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3597726821899414
+
+[RE] Epoch 176
+	Mean Delta RE loss = -12.70885
+	Gradient norm: 2.465289354324341
+	Elapsed time = 2.797 min
+[Statepoint 0]
+	kT = 2.439 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3556337356567383
+
+[RE] Epoch 177
+	Mean Delta RE loss = -11.05195
+	Gradient norm: 3.594919443130493
+	Elapsed time = 2.797 min
+[Statepoint 0]
+	kT = 2.438 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3597888946533203
+
+[RE] Epoch 178
+	Mean Delta RE loss = -12.33705
+	Gradient norm: 2.2396724224090576
+	Elapsed time = 2.797 min
+[Statepoint 0]
+	kT = 2.441 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3542852401733398
+
+[RE] Epoch 179
+	Mean Delta RE loss = -12.54920
+	Gradient norm: 3.755553960800171
+	Elapsed time = 2.793 min
+[Statepoint 0]
+	kT = 2.439 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3588800430297852
+
+[RE] Epoch 180
+	Mean Delta RE loss = -12.40171
+	Gradient norm: 4.898044586181641
+	Elapsed time = 2.796 min
+[Statepoint 0]
+	kT = 2.443 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3529224395751953
+
+[RE] Epoch 181
+	Mean Delta RE loss = -11.00850
+	Gradient norm: 6.051329612731934
+	Elapsed time = 2.803 min
+[Statepoint 0]
+	kT = 2.442 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3547048568725586
+
+[RE] Epoch 182
+	Mean Delta RE loss = -12.46431
+	Gradient norm: 6.7499847412109375
+	Elapsed time = 2.793 min
+[Statepoint 0]
+	kT = 2.444 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.370234489440918
+
+[RE] Epoch 183
+	Mean Delta RE loss = -12.29003
+	Gradient norm: 1.3420430421829224
+	Elapsed time = 2.797 min
+[Statepoint 0]
+	kT = 2.442 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3664236068725586
+
+[RE] Epoch 184
+	Mean Delta RE loss = -11.69066
+	Gradient norm: 2.232969045639038
+	Elapsed time = 2.796 min
+[Statepoint 0]
+	kT = 2.445 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3598031997680664
+
+[RE] Epoch 185
+	Mean Delta RE loss = -13.28170
+	Gradient norm: 4.054774761199951
+	Elapsed time = 2.795 min
+[Statepoint 0]
+	kT = 2.447 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3621759414672852
+
+[RE] Epoch 186
+	Mean Delta RE loss = -11.68891
+	Gradient norm: 2.721642255783081
+	Elapsed time = 2.789 min
+[Statepoint 0]
+	kT = 2.439 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3628931045532227
+
+[RE] Epoch 187
+	Mean Delta RE loss = -12.26659
+	Gradient norm: 2.0293807983398438
+	Elapsed time = 2.800 min
+[Statepoint 0]
+	kT = 2.448 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3628921508789062
+
+[RE] Epoch 188
+	Mean Delta RE loss = -12.94524
+	Gradient norm: 2.437102794647217
+	Elapsed time = 2.792 min
+[Statepoint 0]
+	kT = 2.439 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.366621971130371
+
+[RE] Epoch 189
+	Mean Delta RE loss = -12.47070
+	Gradient norm: 2.3777031898498535
+	Elapsed time = 2.794 min
+[Statepoint 0]
+	kT = 2.444 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3639183044433594
+
+[RE] Epoch 190
+	Mean Delta RE loss = -12.06394
+	Gradient norm: 1.9005093574523926
+	Elapsed time = 2.788 min
+[Statepoint 0]
+	kT = 2.447 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.364811897277832
+
+[RE] Epoch 191
+	Mean Delta RE loss = -11.77650
+	Gradient norm: 2.591005563735962
+	Elapsed time = 2.793 min
+[Statepoint 0]
+	kT = 2.439 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3639554977416992
+
+[RE] Epoch 192
+	Mean Delta RE loss = -11.31289
+	Gradient norm: 3.2221999168395996
+	Elapsed time = 2.798 min
+[Statepoint 0]
+	kT = 2.442 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3687715530395508
+
+[RE] Epoch 193
+	Mean Delta RE loss = -11.42488
+	Gradient norm: 2.2987844944000244
+	Elapsed time = 2.784 min
+[Statepoint 0]
+	kT = 2.439 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3635177612304688
+
+[RE] Epoch 194
+	Mean Delta RE loss = -13.01014
+	Gradient norm: 3.211970567703247
+	Elapsed time = 2.790 min
+[Statepoint 0]
+	kT = 2.437 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3741436004638672
+
+[RE] Epoch 195
+	Mean Delta RE loss = -12.76354
+	Gradient norm: 1.495818018913269
+	Elapsed time = 2.791 min
+[Statepoint 0]
+	kT = 2.445 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3685235977172852
+
+[RE] Epoch 196
+	Mean Delta RE loss = -12.36064
+	Gradient norm: 2.0939927101135254
+	Elapsed time = 2.796 min
+[Statepoint 0]
+	kT = 2.440 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3767061233520508
+
+[RE] Epoch 197
+	Mean Delta RE loss = -11.93092
+	Gradient norm: 1.2323592901229858
+	Elapsed time = 2.794 min
+[Statepoint 0]
+	kT = 2.432 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3698139190673828
+
+[RE] Epoch 198
+	Mean Delta RE loss = -12.07550
+	Gradient norm: 2.0575108528137207
+	Elapsed time = 2.785 min
+[Statepoint 0]
+	kT = 2.437 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3715381622314453
+
+[RE] Epoch 199
+	Mean Delta RE loss = -12.76060
+	Gradient norm: 1.6326789855957031
+	Elapsed time = 2.794 min
+[Statepoint 0]
+	kT = 2.450 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3658771514892578
+
+[RE] Epoch 200
+	Mean Delta RE loss = -12.68727
+	Gradient norm: 3.2641420364379883
+	Elapsed time = 2.788 min
+[Statepoint 0]
+	kT = 2.440 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.374791145324707
+
+[RE] Epoch 201
+	Mean Delta RE loss = -12.56476
+	Gradient norm: 1.4890803098678589
+	Elapsed time = 2.798 min
+[Statepoint 0]
+	kT = 2.438 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3715381622314453
+
+[RE] Epoch 202
+	Mean Delta RE loss = -13.30517
+	Gradient norm: 3.23427414894104
+	Elapsed time = 2.793 min
+[Statepoint 0]
+	kT = 2.446 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3716936111450195
+
+[RE] Epoch 203
+	Mean Delta RE loss = -11.34454
+	Gradient norm: 3.0040295124053955
+	Elapsed time = 2.795 min
+[Statepoint 0]
+	kT = 2.441 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3766565322875977
+
+[RE] Epoch 204
+	Mean Delta RE loss = -13.38092
+	Gradient norm: 1.5020973682403564
+	Elapsed time = 2.798 min
+[Statepoint 0]
+	kT = 2.439 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3799943923950195
+
+[RE] Epoch 205
+	Mean Delta RE loss = -12.44832
+	Gradient norm: 0.674381673336029
+	Elapsed time = 2.798 min
+[Statepoint 0]
+	kT = 2.436 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3759613037109375
+
+[RE] Epoch 206
+	Mean Delta RE loss = -12.23251
+	Gradient norm: 0.9862249493598938
+	Elapsed time = 2.799 min
+[Statepoint 0]
+	kT = 2.442 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3719329833984375
+
+[RE] Epoch 207
+	Mean Delta RE loss = -11.87796
+	Gradient norm: 2.4695427417755127
+	Elapsed time = 2.808 min
+[Statepoint 0]
+	kT = 2.437 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3710832595825195
+
+[RE] Epoch 208
+	Mean Delta RE loss = -12.40824
+	Gradient norm: 3.5968031883239746
+	Elapsed time = 2.804 min
+[Statepoint 0]
+	kT = 2.438 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3788528442382812
+
+[RE] Epoch 209
+	Mean Delta RE loss = -12.05018
+	Gradient norm: 0.9503282308578491
+	Elapsed time = 2.808 min
+[Statepoint 0]
+	kT = 2.440 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3749771118164062
+
+[RE] Epoch 210
+	Mean Delta RE loss = -13.28357
+	Gradient norm: 2.585371255874634
+	Elapsed time = 2.801 min
+[Statepoint 0]
+	kT = 2.438 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.375467300415039
+
+[RE] Epoch 211
+	Mean Delta RE loss = -13.12075
+	Gradient norm: 2.0475211143493652
+	Elapsed time = 2.793 min
+[Statepoint 0]
+	kT = 2.435 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3775148391723633
+
+[RE] Epoch 212
+	Mean Delta RE loss = -12.93162
+	Gradient norm: 1.726736068725586
+	Elapsed time = 2.790 min
+[Statepoint 0]
+	kT = 2.442 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3770523071289062
+
+[RE] Epoch 213
+	Mean Delta RE loss = -13.00143
+	Gradient norm: 1.1682668924331665
+	Elapsed time = 2.788 min
+[Statepoint 0]
+	kT = 2.441 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3761138916015625
+
+[RE] Epoch 214
+	Mean Delta RE loss = -13.18973
+	Gradient norm: 1.7121106386184692
+	Elapsed time = 2.793 min
+[Statepoint 0]
+	kT = 2.436 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3785514831542969
+
+[RE] Epoch 215
+	Mean Delta RE loss = -12.61389
+	Gradient norm: 0.8032175898551941
+	Elapsed time = 2.795 min
+[Statepoint 0]
+	kT = 2.435 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3700237274169922
+
+[RE] Epoch 216
+	Mean Delta RE loss = -13.58088
+	Gradient norm: 4.315625190734863
+	Elapsed time = 2.786 min
+[Statepoint 0]
+	kT = 2.429 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.378793716430664
+
+[RE] Epoch 217
+	Mean Delta RE loss = -13.06347
+	Gradient norm: 2.3236348628997803
+	Elapsed time = 2.787 min
+[Statepoint 0]
+	kT = 2.440 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.379195213317871
+
+[RE] Epoch 218
+	Mean Delta RE loss = -12.65446
+	Gradient norm: 1.4580169916152954
+	Elapsed time = 2.789 min
+[Statepoint 0]
+	kT = 2.443 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3790693283081055
+
+[RE] Epoch 219
+	Mean Delta RE loss = -13.11517
+	Gradient norm: 1.4416154623031616
+	Elapsed time = 2.785 min
+[Statepoint 0]
+	kT = 2.442 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3809289932250977
+
+[RE] Epoch 220
+	Mean Delta RE loss = -12.52349
+	Gradient norm: 0.51025390625
+	Elapsed time = 2.796 min
+[Statepoint 0]
+	kT = 2.446 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3768224716186523
+
+[RE] Epoch 221
+	Mean Delta RE loss = -13.07634
+	Gradient norm: 1.4306586980819702
+	Elapsed time = 2.791 min
+[Statepoint 0]
+	kT = 2.432 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3817834854125977
+
+[RE] Epoch 222
+	Mean Delta RE loss = -12.97919
+	Gradient norm: 0.5807373523712158
+	Elapsed time = 2.782 min
+[Statepoint 0]
+	kT = 2.442 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3785734176635742
+
+[RE] Epoch 223
+	Mean Delta RE loss = -13.50833
+	Gradient norm: 0.8336935639381409
+	Elapsed time = 2.790 min
+[Statepoint 0]
+	kT = 2.440 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3738813400268555
+
+[RE] Epoch 224
+	Mean Delta RE loss = -12.60298
+	Gradient norm: 4.772309303283691
+	Elapsed time = 2.785 min
+[Statepoint 0]
+	kT = 2.438 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3831501007080078
+
+[RE] Epoch 225
+	Mean Delta RE loss = -13.55768
+	Gradient norm: 0.5875118374824524
+	Elapsed time = 2.792 min
+[Statepoint 0]
+	kT = 2.442 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3784770965576172
+
+[RE] Epoch 226
+	Mean Delta RE loss = -13.14569
+	Gradient norm: 1.434617042541504
+	Elapsed time = 2.790 min
+[Statepoint 0]
+	kT = 2.434 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3790721893310547
+
+[RE] Epoch 227
+	Mean Delta RE loss = -13.73372
+	Gradient norm: 1.9207674264907837
+	Elapsed time = 2.781 min
+[Statepoint 0]
+	kT = 2.442 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.380906105041504
+
+[RE] Epoch 228
+	Mean Delta RE loss = -14.05775
+	Gradient norm: 1.0071330070495605
+	Elapsed time = 2.793 min
+[Statepoint 0]
+	kT = 2.437 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3819475173950195
+
+[RE] Epoch 229
+	Mean Delta RE loss = -13.95126
+	Gradient norm: 0.7264701128005981
+	Elapsed time = 2.796 min
+[Statepoint 0]
+	kT = 2.438 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3785581588745117
+
+[RE] Epoch 230
+	Mean Delta RE loss = -13.16254
+	Gradient norm: 1.89247465133667
+	Elapsed time = 2.800 min
+[Statepoint 0]
+	kT = 2.446 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3811864852905273
+
+[RE] Epoch 231
+	Mean Delta RE loss = -13.10221
+	Gradient norm: 1.2699888944625854
+	Elapsed time = 2.793 min
+[Statepoint 0]
+	kT = 2.443 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.380579948425293
+
+[RE] Epoch 232
+	Mean Delta RE loss = -13.83349
+	Gradient norm: 1.3741964101791382
+	Elapsed time = 2.789 min
+[Statepoint 0]
+	kT = 2.433 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3819665908813477
+
+[RE] Epoch 233
+	Mean Delta RE loss = -13.50492
+	Gradient norm: 0.8843300938606262
+	Elapsed time = 2.785 min
+[Statepoint 0]
+	kT = 2.429 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.377699851989746
+
+[RE] Epoch 234
+	Mean Delta RE loss = -13.50479
+	Gradient norm: 4.693503379821777
+	Elapsed time = 2.787 min
+[Statepoint 0]
+	kT = 2.437 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.382094383239746
+
+[RE] Epoch 235
+	Mean Delta RE loss = -13.34095
+	Gradient norm: 1.0799366235733032
+	Elapsed time = 2.793 min
+[Statepoint 0]
+	kT = 2.439 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3826923370361328
+
+[RE] Epoch 236
+	Mean Delta RE loss = -12.74500
+	Gradient norm: 0.8347453474998474
+	Elapsed time = 2.789 min
+[Statepoint 0]
+	kT = 2.436 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3818254470825195
+
+[RE] Epoch 237
+	Mean Delta RE loss = -13.43169
+	Gradient norm: 1.057491421699524
+	Elapsed time = 2.792 min
+[Statepoint 0]
+	kT = 2.446 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3818769454956055
+
+[RE] Epoch 238
+	Mean Delta RE loss = -13.75478
+	Gradient norm: 1.2039666175842285
+	Elapsed time = 2.792 min
+[Statepoint 0]
+	kT = 2.447 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3823633193969727
+
+[RE] Epoch 239
+	Mean Delta RE loss = -13.64899
+	Gradient norm: 1.1200116872787476
+	Elapsed time = 2.790 min
+[Statepoint 0]
+	kT = 2.447 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3832721710205078
+
+[RE] Epoch 240
+	Mean Delta RE loss = -13.26343
+	Gradient norm: 0.6048554182052612
+	Elapsed time = 2.789 min
+[Statepoint 0]
+	kT = 2.440 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3816137313842773
+
+[RE] Epoch 241
+	Mean Delta RE loss = -13.71148
+	Gradient norm: 1.3824007511138916
+	Elapsed time = 2.786 min
+[Statepoint 0]
+	kT = 2.435 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.380941390991211
+
+[RE] Epoch 242
+	Mean Delta RE loss = -13.60227
+	Gradient norm: 1.9798661470413208
+	Elapsed time = 2.794 min
+[Statepoint 0]
+	kT = 2.435 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.383112907409668
+
+[RE] Epoch 243
+	Mean Delta RE loss = -13.99462
+	Gradient norm: 1.11414635181427
+	Elapsed time = 2.787 min
+[Statepoint 0]
+	kT = 2.434 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.382059097290039
+
+[RE] Epoch 244
+	Mean Delta RE loss = -12.89543
+	Gradient norm: 1.8057050704956055
+	Elapsed time = 2.790 min
+[Statepoint 0]
+	kT = 2.439 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3801698684692383
+
+[RE] Epoch 245
+	Mean Delta RE loss = -13.70949
+	Gradient norm: 3.1174638271331787
+	Elapsed time = 2.790 min
+[Statepoint 0]
+	kT = 2.439 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.381831169128418
+
+[RE] Epoch 246
+	Mean Delta RE loss = -13.88919
+	Gradient norm: 3.011898994445801
+	Elapsed time = 2.792 min
+[Statepoint 0]
+	kT = 2.433 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3834114074707031
+
+[RE] Epoch 247
+	Mean Delta RE loss = -13.35544
+	Gradient norm: 1.1830376386642456
+	Elapsed time = 2.788 min
+[Statepoint 0]
+	kT = 2.436 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3840370178222656
+
+[RE] Epoch 248
+	Mean Delta RE loss = -13.31591
+	Gradient norm: 0.8862085938453674
+	Elapsed time = 2.791 min
+[Statepoint 0]
+	kT = 2.444 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3837394714355469
+
+[RE] Epoch 249
+	Mean Delta RE loss = -13.89266
+	Gradient norm: 0.5500744581222534
+	Elapsed time = 2.790 min
+[Statepoint 0]
+	kT = 2.440 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3841171264648438
+
+[RE] Epoch 250
+	Mean Delta RE loss = -13.75528
+	Gradient norm: 0.3714921474456787
+	Elapsed time = 2.783 min
+[Statepoint 0]
+	kT = 2.439 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3826112747192383
+
+[RE] Epoch 251
+	Mean Delta RE loss = -13.22121
+	Gradient norm: 1.070845127105713
+	Elapsed time = 2.783 min
+[Statepoint 0]
+	kT = 2.440 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3835668563842773
+
+[RE] Epoch 252
+	Mean Delta RE loss = -13.60982
+	Gradient norm: 0.6107051968574524
+	Elapsed time = 2.789 min
+[Statepoint 0]
+	kT = 2.442 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.382197380065918
+
+[RE] Epoch 253
+	Mean Delta RE loss = -13.54509
+	Gradient norm: 4.646210193634033
+	Elapsed time = 2.793 min
+[Statepoint 0]
+	kT = 2.449 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3848628997802734
+
+[RE] Epoch 254
+	Mean Delta RE loss = -13.68158
+	Gradient norm: 0.5986306071281433
+	Elapsed time = 2.792 min
+[Statepoint 0]
+	kT = 2.444 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.383204460144043
+
+[RE] Epoch 255
+	Mean Delta RE loss = -13.01502
+	Gradient norm: 1.4237169027328491
+	Elapsed time = 2.791 min
+[Statepoint 0]
+	kT = 2.438 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.384958267211914
+
+[RE] Epoch 256
+	Mean Delta RE loss = -12.93004
+	Gradient norm: 0.3714849054813385
+	Elapsed time = 2.797 min
+[Statepoint 0]
+	kT = 2.439 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.383443832397461
+
+[RE] Epoch 257
+	Mean Delta RE loss = -12.89310
+	Gradient norm: 1.0253007411956787
+	Elapsed time = 2.784 min
+[Statepoint 0]
+	kT = 2.445 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3850317001342773
+
+[RE] Epoch 258
+	Mean Delta RE loss = -13.77202
+	Gradient norm: 0.4590674340724945
+	Elapsed time = 2.790 min
+[Statepoint 0]
+	kT = 2.438 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3841009140014648
+
+[RE] Epoch 259
+	Mean Delta RE loss = -13.58377
+	Gradient norm: 0.5327879786491394
+	Elapsed time = 2.792 min
+[Statepoint 0]
+	kT = 2.446 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3827238082885742
+
+[RE] Epoch 260
+	Mean Delta RE loss = -12.80840
+	Gradient norm: 1.5657292604446411
+	Elapsed time = 2.793 min
+[Statepoint 0]
+	kT = 2.434 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3833646774291992
+
+[RE] Epoch 261
+	Mean Delta RE loss = -13.23496
+	Gradient norm: 1.4578436613082886
+	Elapsed time = 2.796 min
+[Statepoint 0]
+	kT = 2.442 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.385035514831543
+
+[RE] Epoch 262
+	Mean Delta RE loss = -13.25875
+	Gradient norm: 0.5156066417694092
+	Elapsed time = 2.791 min
+[Statepoint 0]
+	kT = 2.439 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3845548629760742
+
+[RE] Epoch 263
+	Mean Delta RE loss = -13.71140
+	Gradient norm: 0.4586951434612274
+	Elapsed time = 2.787 min
+[Statepoint 0]
+	kT = 2.442 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3847551345825195
+
+[RE] Epoch 264
+	Mean Delta RE loss = -13.44281
+	Gradient norm: 0.3317013084888458
+	Elapsed time = 2.787 min
+[Statepoint 0]
+	kT = 2.443 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3837499618530273
+
+[RE] Epoch 265
+	Mean Delta RE loss = -12.98110
+	Gradient norm: 0.776330828666687
+	Elapsed time = 2.786 min
+[Statepoint 0]
+	kT = 2.435 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3837547302246094
+
+[RE] Epoch 266
+	Mean Delta RE loss = -13.27427
+	Gradient norm: 1.1089386940002441
+	Elapsed time = 2.786 min
+[Statepoint 0]
+	kT = 2.440 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3838939666748047
+
+[RE] Epoch 267
+	Mean Delta RE loss = -13.10426
+	Gradient norm: 2.475778818130493
+	Elapsed time = 2.795 min
+[Statepoint 0]
+	kT = 2.442 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3841915130615234
+
+[RE] Epoch 268
+	Mean Delta RE loss = -12.99538
+	Gradient norm: 2.251920223236084
+	Elapsed time = 2.786 min
+[Statepoint 0]
+	kT = 2.432 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3843069076538086
+
+[RE] Epoch 269
+	Mean Delta RE loss = -13.44410
+	Gradient norm: 3.314358711242676
+	Elapsed time = 2.792 min
+[Statepoint 0]
+	kT = 2.442 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3847007751464844
+
+[RE] Epoch 270
+	Mean Delta RE loss = -13.31214
+	Gradient norm: 1.7331955432891846
+	Elapsed time = 2.789 min
+[Statepoint 0]
+	kT = 2.438 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3851642608642578
+
+[RE] Epoch 271
+	Mean Delta RE loss = -13.21150
+	Gradient norm: 0.9945873618125916
+	Elapsed time = 2.788 min
+[Statepoint 0]
+	kT = 2.445 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.383988380432129
+
+[RE] Epoch 272
+	Mean Delta RE loss = -13.04468
+	Gradient norm: 5.245575904846191
+	Elapsed time = 2.796 min
+[Statepoint 0]
+	kT = 2.444 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3857173919677734
+
+[RE] Epoch 273
+	Mean Delta RE loss = -13.05633
+	Gradient norm: 0.4954129159450531
+	Elapsed time = 2.790 min
+[Statepoint 0]
+	kT = 2.440 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.385049819946289
+
+[RE] Epoch 274
+	Mean Delta RE loss = -13.00886
+	Gradient norm: 1.0669540166854858
+	Elapsed time = 2.794 min
+[Statepoint 0]
+	kT = 2.441 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3848047256469727
+
+[RE] Epoch 275
+	Mean Delta RE loss = -12.91676
+	Gradient norm: 1.0093533992767334
+	Elapsed time = 2.784 min
+[Statepoint 0]
+	kT = 2.440 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3853340148925781
+
+[RE] Epoch 276
+	Mean Delta RE loss = -13.25478
+	Gradient norm: 0.4325271546840668
+	Elapsed time = 2.788 min
+[Statepoint 0]
+	kT = 2.443 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3845081329345703
+
+[RE] Epoch 277
+	Mean Delta RE loss = -13.74964
+	Gradient norm: 1.2703325748443604
+	Elapsed time = 2.786 min
+[Statepoint 0]
+	kT = 2.437 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3847646713256836
+
+[RE] Epoch 278
+	Mean Delta RE loss = -13.80298
+	Gradient norm: 1.0786242485046387
+	Elapsed time = 2.788 min
+[Statepoint 0]
+	kT = 2.440 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3847904205322266
+
+[RE] Epoch 279
+	Mean Delta RE loss = -13.50315
+	Gradient norm: 2.3362832069396973
+	Elapsed time = 2.794 min
+[Statepoint 0]
+	kT = 2.437 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.385848045349121
+
+[RE] Epoch 280
+	Mean Delta RE loss = -13.75007
+	Gradient norm: 0.247151181101799
+	Elapsed time = 2.782 min
+[Statepoint 0]
+	kT = 2.441 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.384810447692871
+
+[RE] Epoch 281
+	Mean Delta RE loss = -13.87351
+	Gradient norm: 0.9182063341140747
+	Elapsed time = 2.792 min
+[Statepoint 0]
+	kT = 2.449 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3852567672729492
+
+[RE] Epoch 282
+	Mean Delta RE loss = -13.71382
+	Gradient norm: 0.6344382166862488
+	Elapsed time = 2.785 min
+[Statepoint 0]
+	kT = 2.434 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.384892463684082
+
+[RE] Epoch 283
+	Mean Delta RE loss = -13.70303
+	Gradient norm: 0.6583346724510193
+	Elapsed time = 2.786 min
+[Statepoint 0]
+	kT = 2.440 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3848390579223633
+
+[RE] Epoch 284
+	Mean Delta RE loss = -13.96090
+	Gradient norm: 2.1560158729553223
+	Elapsed time = 2.785 min
+[Statepoint 0]
+	kT = 2.435 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3846702575683594
+
+[RE] Epoch 285
+	Mean Delta RE loss = -13.74275
+	Gradient norm: 2.77915358543396
+	Elapsed time = 2.793 min
+[Statepoint 0]
+	kT = 2.444 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3847894668579102
+
+[RE] Epoch 286
+	Mean Delta RE loss = -13.77469
+	Gradient norm: 2.509875535964966
+	Elapsed time = 2.793 min
+[Statepoint 0]
+	kT = 2.441 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3853750228881836
+
+[RE] Epoch 287
+	Mean Delta RE loss = -13.73143
+	Gradient norm: 1.5067365169525146
+	Elapsed time = 2.796 min
+[Statepoint 0]
+	kT = 2.437 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3856792449951172
+
+[RE] Epoch 288
+	Mean Delta RE loss = -13.71878
+	Gradient norm: 0.4507642090320587
+	Elapsed time = 2.786 min
+[Statepoint 0]
+	kT = 2.447 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3856086730957031
+
+[RE] Epoch 289
+	Mean Delta RE loss = -13.91377
+	Gradient norm: 0.3254116475582123
+	Elapsed time = 2.790 min
+[Statepoint 0]
+	kT = 2.435 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3851079940795898
+
+[RE] Epoch 290
+	Mean Delta RE loss = -13.52365
+	Gradient norm: 0.9426702260971069
+	Elapsed time = 2.796 min
+[Statepoint 0]
+	kT = 2.439 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3854866027832031
+
+[RE] Epoch 291
+	Mean Delta RE loss = -13.68380
+	Gradient norm: 0.5958277583122253
+	Elapsed time = 2.790 min
+[Statepoint 0]
+	kT = 2.440 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3856086730957031
+
+[RE] Epoch 292
+	Mean Delta RE loss = -13.60607
+	Gradient norm: 0.4921318292617798
+	Elapsed time = 2.793 min
+[Statepoint 0]
+	kT = 2.445 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3852519989013672
+
+[RE] Epoch 293
+	Mean Delta RE loss = -13.54389
+	Gradient norm: 2.022110939025879
+	Elapsed time = 2.795 min
+[Statepoint 0]
+	kT = 2.443 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3859186172485352
+
+[RE] Epoch 294
+	Mean Delta RE loss = -13.63153
+	Gradient norm: 0.2428349256515503
+	Elapsed time = 2.783 min
+[Statepoint 0]
+	kT = 2.437 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3852577209472656
+
+[RE] Epoch 295
+	Mean Delta RE loss = -13.47871
+	Gradient norm: 1.6937103271484375
+	Elapsed time = 2.792 min
+[Statepoint 0]
+	kT = 2.444 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3856687545776367
+
+[RE] Epoch 296
+	Mean Delta RE loss = -13.65279
+	Gradient norm: 0.5490089654922485
+	Elapsed time = 2.791 min
+[Statepoint 0]
+	kT = 2.435 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.385401725769043
+
+[RE] Epoch 297
+	Mean Delta RE loss = -13.87145
+	Gradient norm: 0.7721248269081116
+	Elapsed time = 2.785 min
+[Statepoint 0]
+	kT = 2.439 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3855857849121094
+
+[RE] Epoch 298
+	Mean Delta RE loss = -13.86368
+	Gradient norm: 0.5793547034263611
+	Elapsed time = 2.796 min
+[Statepoint 0]
+	kT = 2.441 ref_kT = 2.494
+[Step Size] Found optimal step size 1.0 with residual 1.3857183456420898
+
+[RE] Epoch 299
+	Mean Delta RE loss = -14.04473
+	Gradient norm: 0.5870226621627808
+	Elapsed time = 2.792 min
+[Statepoint 0]
+	kT = 2.446 ref_kT = 2.494
+Total training time:  14.0 hours

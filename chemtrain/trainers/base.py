@@ -26,7 +26,7 @@ from typing import Callable, Dict, Any
 
 import cloudpickle as pickle
 import numpy as onp
-from jax import tree_map, numpy as jnp, random, vmap, device_count, jit
+from jax import tree_map, numpy as jnp, random, vmap, device_count, jit, device_get
 from jax_sgmc import data
 
 import chemtrain.data.data_loaders
@@ -90,7 +90,7 @@ class TrainerInterface(metaclass=abc.ABCMeta):
         else:
             data = self._statistics
             try:
-                self._statistics["trainer_state"] = self.state
+                self._statistics["trainer_state"] = dict(self.state)
             except AttributeError:
                 print(f"Skipping trainer state")
 
@@ -114,7 +114,7 @@ class TrainerInterface(metaclass=abc.ABCMeta):
             raise NotImplementedError
         elif save_format == '.pkl':
             with open(file_path, 'wb') as pickle_file:
-                pickle.dump(tree_map(onp.asarray, self.params), pickle_file)
+                pickle.dump(device_get(self.params), pickle_file)
         else:
             format_not_recognized_error(save_format)
 
@@ -767,10 +767,18 @@ class DataParallelTrainer(MLETrainerTemplate):
         batch_size = observation_count
         if self.batch_size < observation_count:
             batch_size = self.batch_size
+        if onp.mod(observation_count, batch_size) != 0:
+            warnings.warn(
+                f"Batch size {batch_size} does not divide the number of "
+                f"observations {observation_count}. "
+                f"Trainer will skip {observation_count % batch_size} samples "
+                f"for state {stage}"
+            )
 
         # Initialize the access functions
-        init_train_state, get_train_batch, release = data.random_reference_data(
-            data_loader, self.batch_cache, batch_size)
+        batch_fns = data_loaders.init_batch_functions(
+            data_loader, mb_size=batch_size, cache_size=self.batch_cache)
+        init_train_state, get_train_batch, release = batch_fns
 
         train_batch_state = init_train_state(shuffle=True)
 
@@ -803,7 +811,7 @@ class DataParallelTrainer(MLETrainerTemplate):
             self.train_target_losses[key].append(onp.asarray(val))
 
         self.state = self.state.replace(params=params, opt_state=opt_state)
-        self.train_batch_losses.append(train_loss)  # only from single device
+        self.train_batch_losses.append(onp.asarray(train_loss))
 
         self.gradient_norm_history.append(util.tree_norm(curr_grad))
 
@@ -844,7 +852,7 @@ class DataParallelTrainer(MLETrainerTemplate):
             # Compute the total loss and the individual contributions per
             # target
             val_loss, per_target_loss = loss_fn(
-                self.state.params, batch, per_target=True)
+                params, batch, per_target=True)
 
             total_loss += onp.asarray(val_loss)
             for key, val in per_target_loss.items():
@@ -1147,8 +1155,6 @@ class EarlyStopping:
                                         ' be provided in early_stopping.')
             improvement = self.best_loss - curr_epoch_loss
             if improvement > 0.:
-                print(f"Improvement detected")
-
                 self.best_loss = curr_epoch_loss
                 self.best_params = copy.copy(params)
 

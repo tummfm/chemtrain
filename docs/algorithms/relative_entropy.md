@@ -21,6 +21,7 @@ import jax
 import jax.numpy as jnp
 from jax import tree_util, random
 
+import jax_md_mod
 from jax_md import space, energy, partition, simulate
 
 import optax

@@ -1,10 +1,5 @@
 import sys
 
-from jax import Array
-import jax.numpy as jnp
-import jax_md.partition
-from jax_md import dataclasses
-
 def uncache(exclude):
   """Remove package modules from cache except excluded ones.
   On next import they will be reloaded.
@@ -34,6 +29,19 @@ def uncache(exclude):
   for mod in to_uncache:
     del sys.modules[mod]
 
+
+import jax
+from jax import Array
+import jax.numpy as jnp
+
+# Fix jax_md error
+jax.random.KeyArray = jax.Array
+uncache("jax.random")
+
+import jax_md.partition
+from jax_md import dataclasses
+
+from jax import random
 
 def is_box_valid(box: Array) -> bool:
   if jnp.isscalar(box) or box.ndim == 0 or box.ndim == 1:
@@ -86,4 +94,6 @@ class PartitionError:
 
 jax_md.partition.is_box_valid = is_box_valid
 jax_md.partition.PartitionError = PartitionError
+random.KeyArray = jax.Array
 uncache('jax_md.partition')
+uncache('jax.random')

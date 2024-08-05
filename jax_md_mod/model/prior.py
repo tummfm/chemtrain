@@ -747,8 +747,6 @@ def init_bond_potential(displacement_fn, topology, force_field):
     bond_params, mask = force_field.get_bond_params(
         bond_species[:, 0], bond_species[:, 1])
 
-    print(mask)
-
     # Mask out bonds by setting their energy to zero
     b0 = bond_params[:, 0]
     kb = jnp.where(

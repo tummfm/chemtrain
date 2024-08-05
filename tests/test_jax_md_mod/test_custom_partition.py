@@ -13,12 +13,10 @@
 # limitations under the License.
 import itertools
 
-import networkx
-from jax import numpy as jnp, Array, random
-
-from jax_md import partition, dataclasses
+from jax import numpy as jnp, Array
 
 from jax_md_mod import custom_partition
+from jax_md import partition, dataclasses
 
 import numpy as onp
 

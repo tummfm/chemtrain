@@ -25,8 +25,8 @@ from typing import Any, Mapping, Dict, Callable
 import jax.tree_util
 import numpy as onp
 from jax import numpy as jnp, tree_util, jit
-from jax_sgmc import data
 from jax_sgmc.data import numpy_loader
+from jax_md_mod import custom_quantity
 
 from chemtrain import (util)
 from chemtrain.learn import (
@@ -35,7 +35,8 @@ from chemtrain.learn import (
 from chemtrain.quantity import property_prediction
 from chemtrain.trainers import base as tt
 from chemtrain.ensemble import sampling
-from jax_md_mod import custom_quantity
+from chemtrain.data import data_loaders
+
 
 try:
     from jax.typing import ArrayLike
@@ -113,30 +114,20 @@ class ForceMatching(tt.DataParallelTrainer):
             to not overflow for any sample of the dataset.
         optimizer: Optimizer from optax.
         position_data: Position data of the system.
-        energy_data: Energy snapshots corresponding to the positions.
-        force_data: Force snapshots corresponding to the positions.
-        virial_data: Virial snapshots corresponding to the positions. The virial
-            is the negative stress tensor/pressure tensor.
-        kt_data: Temperature snapshots corresponding to the positions.
-        box_tensor: Box of the system, fixed for all snapshots.
-        gamma_f: Weight of the force loss.
-        gamma_p: Weight of the virial loss.
+        gammas: Coefficients for the individual targets in the weighted loss.
+        additional_targets: Additional snapshot targets to train on. Forces
+            and energy are derived automatically from the energy_fn_template.
+        feature_extract_fns: Features to extract from the data, passed to
+            all snapshot functions as keyword arguments.
         batch_per_device: Number of samples to process vectorized on every
             device.
         batch_cache: Number of batches to load into the device memories.
-        train_ratio: Ratio of samples to use for training.
-        val_ratio: Ratio of samples to use for validation.
-        shuffle: Whether to shuffle the dataset.
         full_checkpoint: Save the whole trainer instead of only some statistics.
         disable_shmap: Use ``pmap`` instead of ``shmap`` for parallelization.
-        penalty_fn: Penalty loss depending only on the parameters.
+        penalty_fn: Penalty depending only on the parameters.
         convergence_criterion: Check convergence via
             :class:`base.EarlyStopping`.
         checkpoint_path: Path to the folder to store checkpoints.
-
-    Note:
-        This implementation assumes a constant number of particles per box and
-        constant box sizes for each snapshot.
 
     Warning:
         Currently neighborlist overflow is not checked.
@@ -148,6 +139,7 @@ class ForceMatching(tt.DataParallelTrainer):
                  optimizer,
                  energy_fn_template: EnergyFnTemplate,
                  nbrs_init: NeighborList,
+                 gammas: Dict[str, float] = None,
                  additional_targets: Dict[str, Dict] = None,
                  feature_extract_fns: Dict[str, Callable] = None,
                  batch_per_device: int = 1,
@@ -158,6 +150,9 @@ class ForceMatching(tt.DataParallelTrainer):
                  convergence_criterion: str = 'window_median',
                  checkpoint_path: PathLike = 'checkpoints',
                  **unused):
+        # Add additional trainable targets
+        if gammas is None:
+            gammas = {}
 
         # These are common quantities to train on
         quantities = {
@@ -165,12 +160,8 @@ class ForceMatching(tt.DataParallelTrainer):
             "U": custom_quantity.energy_wrapper(energy_fn_template)
         }
 
-        # Add additional trainable targets
-        gammas = {}
         if additional_targets is not None:
-            for key, target in additional_targets.items():
-                quantities[key] = target['compute_fn']
-                gammas[key] = target['gamma']
+            quantities.update(additional_targets)
 
         model = force_matching.init_model(
             nbrs_init, quantities, feature_extract_fns
@@ -649,11 +640,13 @@ class RelativeEntropy(tt.PropagationBase):
     def _set_dataset(self, key, reference_data, reference_batch_size,
                      batch_cache=1):
         """Set dataset and loader corresponding to current state point."""
-        reference_loader = numpy_loader.NumpyDataLoader(R=reference_data,
-                                                        copy=False)
-        init_reference_batch, get_ref_batch, _ = data.random_reference_data(
-            reference_loader, batch_cache, reference_batch_size)
-        init_reference_batch_state = init_reference_batch(shuffle=True)
+        reference_loader = numpy_loader.NumpyDataLoader(
+            R=reference_data, copy=False)
+        init_ref_batch, get_ref_batch, _ = data_loaders.init_batch_functions(
+            data_loader=reference_loader, mb_size=reference_batch_size,
+            cache_size=batch_cache
+        )
+        init_reference_batch_state = init_ref_batch(shuffle=False)
         self.data_states[key] = init_reference_batch_state
         return get_ref_batch
 
@@ -732,6 +725,7 @@ class RelativeEntropy(tt.PropagationBase):
                                                      set_key,
                                                      vmap_batch,
                                                      initialize_traj,
+                                                     entropy_approximation=False,
                                                      resample_simstates=resample_simstates,
                                                      safe_propagation=False)
 

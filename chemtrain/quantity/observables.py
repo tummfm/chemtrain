@@ -252,12 +252,12 @@ def init_heat_capacity_npt(kT, dof, pressure, **kwargs):
         volume_traj = quantity_traj['volume']
         energy_traj = quantity_traj['energy']
 
-        enthalpy = energy_traj + volume_traj * ref_pressure
+        enthalpy = energy_traj + volume_traj * pressure
 
         fluctuation = _traj_mean(enthalpy ** 2, weights, **kwargs)
         fluctuation -= _traj_mean(enthalpy, weights, **kwargs) ** 2
 
-        cp = (0.5 * dof + fluctuation / kbt ** 2) * constants.kb
+        cp = (0.5 * dof + fluctuation / kT ** 2) * constants.kb
         return cp
     return cp_fn
 

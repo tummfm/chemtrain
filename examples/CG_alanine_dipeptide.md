@@ -15,6 +15,9 @@ kernelspec:
 ```{code-cell} ipython
 :tags: [hide-cell]
 
+import os
+import functools
+import contextlib
 from pathlib import Path
 from urllib import request
 import time
@@ -23,11 +26,11 @@ import numpy as onp
 
 import jax
 import optax
-from jax import numpy as jnp, random
+from jax import numpy as jnp, random, tree_util
 
-from jax_md import simulate, partition, space
 from jax_md_mod import io, custom_quantity, custom_space
 from jax_md_mod.model import layers, neural_networks, prior
+from jax_md import simulate, partition, space
 
 import mdtraj
 
@@ -35,9 +38,12 @@ import matplotlib.pyplot as plt
 
 import haiku as hk
 
-from chemtrain.data import data_processing
-from chemtrain.trajectory import traj_util
-from chemtrain import quantity, trainers
+from chemtrain.data import preprocessing
+from chemtrain.ensemble import sampling
+from chemtrain import quantity, trainers, util
+
+out_dir = Path("../_data/output")
+out_dir.mkdir(exist_ok=True)
 ```
 
 ```{code-cell} ipython
@@ -137,12 +143,11 @@ The non-bonded repulsion has the form
 $$
 U_r(x) = \varepsilon\left(\frac{x}{\sigma}\right)^{12}.
 $$
-We computed the pairwise parameters $\varepsilon_{ij} = \sqrt{\varepsilon_{ii}\varepsilon_{jj}}$ and $\sigma_{ij} = \frac{\sigma_{ii} + \sigma_{jj}}{2}$ via the Lorentz-Berthelot combining rules [^Tildesley2017] from the Amber03 parameters. 
+We computed the pairwise parameters $\varepsilon_{ij} = \sqrt{\varepsilon_{ii}\varepsilon_{jj}}$ and $\sigma_{ij} = \frac{\sigma_{ii} + \sigma_{jj}}{2}$ via the Lorentz-Berthelot combining rules [^Tildesley2017] from the Amber03 parameters.
 
-+++
 
 We now construct this prior potential in **chemtrain**.
-First, we select the corresponding potential terms, i.e., harmonic bond and angle terms, cosine dihedral angle terms, and repulsive nonbonded terms in the correct space. 
+First, we select the corresponding potential terms, i.e., harmonic bond and angle terms, cosine dihedral angle terms, and repulsive nonbonded terms in the correct space.
 
 ```{code-cell} ipython
 prior_energy = prior.init_prior_potential(displacement_fn, nonbonded_type="repulsion")
@@ -246,11 +251,11 @@ if not Path(forces_path).exists():
 if not Path(positions_path).exists():
     request.urlretrieve(position_url, positions_path)
 
-force_dataset = data_processing.get_dataset(forces_path)
-position_dataset = data_processing.get_dataset(positions_path)
+force_dataset = preprocessing.get_dataset(forces_path)
+position_dataset = preprocessing.get_dataset(positions_path)
 
 if fractional:
-    position_dataset = data_processing.scale_dataset_fractional(
+    position_dataset = preprocessing.scale_dataset_fractional(
         position_dataset, box
     )
 ```
@@ -277,7 +282,7 @@ selection = random.choice(
     split, jnp.arange(position_dataset.shape[0]), shape=(n_chains,), replace=False)
 r_init = position_dataset[selection, ...]
 
-init_ref_state, sim_template = traj_util.initialize_simulator_template(
+init_ref_state, sim_template = sampling.initialize_simulator_template(
     simulate.nvt_langevin, shift_fn=shift_fn, nbrs=nbrs_init,
     init_with_PRNGKey=True, extra_simulator_kwargs={"kT": kT, "gamma": gamma, "dt": dt}
 )
@@ -305,11 +310,11 @@ re_initial_lr = 0.003
 re_epochs = 300
 re_used_dataset_size = 400000
 
-t_sample = 0.1
-total_time = 31.
-t_eq = 11.
+t_sample = 0.5
+total_time = 110.
+t_eq = 10.
 
-re_timings = traj_util.process_printouts(
+re_timings = sampling.process_printouts(
     time_step=dt, total_time=total_time,
     t_equilib=t_eq, print_every=t_sample
 )
@@ -329,8 +334,8 @@ relative_entropy.add_statepoint(
     position_dataset[:re_used_dataset_size, ...],
     energy_fn_template, sim_template, neighbor_fn,
     re_timings, state_kwargs, reference_state,
-    reference_batch_size=re_used_dataset_size,
-    vmap_batch=n_chains, num_chains=n_chains)
+    reference_batch_size=re_used_dataset_size // 10,
+    vmap_batch=n_chains, resample_simstates=True)
 
 relative_entropy.init_step_size_adaption(0.25)
 ```
@@ -338,10 +343,24 @@ relative_entropy.init_step_size_adaption(0.25)
 ```{code-cell} ipython
 :tags: [hide-output]
 
-relative_entropy.train(300)
+if os.environ.get("RM_TRAINING", "False").lower() == "true":
+    # Save the training log
+    with open("../_data/output/alanine_dipeptide_rm_training.log", "w") as f:
+        with contextlib.redirect_stdout(f), contextlib.redirect_stderr(f):
+            start = time.time()
+            relative_entropy.train(300)
+            print(f"Total training time: {(time.time() - start) / 3600 : .1f} hours")
+    
+    relative_entropy.save_energy_params("../_data/output/alanine_dipeptide_re_params.pkl", '.pkl')
+    relative_entropy.save_trainer("../_data/output/alanine_dipeptide_re_trainer.pkl", '.pkl')
 
-relative_entropy.save_energy_params("../_data/alanine_dipeptide_re_params.pkl", '.pkl')
-relative_entropy.save_trainer("../_data/alanine_dipeptide_re_trainer.pkl", '.pkl')
+relative_entropy = onp.load("../_data/output/alanine_dipeptide_re_trainer.pkl", allow_pickle=True)
+relative_entropy_params = tree_util.tree_map(
+    jnp.asarray, onp.load("../_data/output/alanine_dipeptide_re_params.pkl", allow_pickle=True)
+)
+
+with open("../_data/output/alanine_dipeptide_rm_training.log") as f:
+    print(f.read())
 ```
 
 Plotting the change of relative entropy and the gradient norm indicates convergence of the algorithm for $300$ epochs.
@@ -349,12 +368,12 @@ Plotting the change of relative entropy and the gradient norm indicates converge
 ```{code-cell} ipython
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9, 4), layout="constrained")
 
-ax1.plot(relative_entropy.delta_re[0])
+ax1.plot(relative_entropy["delta_re"][0])
 ax1.set_xticks(ticks=range(0, re_epochs + 1, 50))
 ax1.set_xlabel("Epoch")
 ax1.set_ylabel("RE Loss")
 
-ax2.plot(relative_entropy.gradient_norm_history)
+ax2.plot(relative_entropy["gradient_norm_history"])
 ax2.set_xticks(ticks=range(0, re_epochs + 1, 50))
 ax2.set_xlabel("Epoch")
 ax2.set_ylabel("Gradient Norm")
@@ -362,21 +381,21 @@ ax2.set_ylabel("Gradient Norm")
 
 ## Force Matching
 
-For comparison, we also train a second instance of the potential model via FM.
+As a reference, we train an instance of the potential model via FM.
 Similar to REM, we only consider a subset of the data for training.
 However, mainly to prevent overfitting, we need additional data for validation.
 Hence, the part of data we can use for training is smaller.
 
 ```{code-cell} ipython
-fm_epochs = 150
+fm_epochs = 100
 fm_used_dataset_size = 500000
 fm_train_ratio = 0.7
 fm_val_ratio = 0.1
-fm_batch_per_device = 512
+fm_batch_per_device = 500 // len(jax.devices())
 fm_batch_cache = 50
-fm_initial_lr = 0.001
+fm_initial_lr = 0.0003
 
-lrd = int(fm_used_dataset_size / fm_batch_per_device * fm_epochs)
+lrd = int(fm_used_dataset_size / fm_batch_per_device / len(jax.devices()) * fm_epochs)
 lr_schedule = optax.exponential_decay(fm_initial_lr, lrd, 0.01)
 fm_optimizer = optax.chain(
     optax.scale_by_adam(),
@@ -385,37 +404,126 @@ fm_optimizer = optax.chain(
 )
 
 force_matching = trainers.ForceMatching(
-    init_params, energy_fn_template, nbrs_init, fm_optimizer,
-    position_data=position_dataset[:fm_used_dataset_size, ...],
-    force_data=force_dataset[:fm_used_dataset_size, ...],
+    init_params, fm_optimizer, energy_fn_template, nbrs_init,
     batch_per_device=fm_batch_per_device,
-    box_tensor=box_tensor,
     batch_cache=fm_batch_cache,
-    train_ratio=fm_train_ratio
+)
+
+force_matching.set_datasets({
+    'R': position_dataset[:fm_used_dataset_size, ...], 
+    'F': force_dataset[:fm_used_dataset_size, ...]
+}, train_ratio=fm_train_ratio 
 )
 ```
 
 ```{code-cell} ipython
 :tags: [hide-output]
 
-force_matching.train(150)
+if os.environ.get("FM_TRAINING", "False").lower() == "true":
+    # Save the training log
+    with open("../_data/output/alanine_dipeptide_fm_training.log", "w") as f:
+        with contextlib.redirect_stdout(f), contextlib.redirect_stderr(f):
+            
+            print(f"Visible devices: {jax.devices()}")
+            
+            start = time.time()
+            force_matching.train(fm_epochs)
+            print(f"Total training time: {(time.time() - start) / 3600 : .1f} hours")
+    
+    force_matching.save_energy_params("../_data/output/alanine_dipeptide_fm_params.pkl", '.pkl')
+    force_matching.save_trainer("../_data/output/alanine_dipeptide_fm_trainer.pkl", '.pkl')
+    
+force_matching = onp.load("../_data/output/alanine_dipeptide_fm_trainer.pkl", allow_pickle=True)
+force_matching_params = tree_util.tree_map(
+    jnp.asarray, onp.load("../_data/output/alanine_dipeptide_fm_params.pkl", allow_pickle=True)
+)
 
-force_matching.save_energy_params("../_data/alanine_dipeptide_fm_params.pkl", '.pkl')
-force_matching.save_trainer("../_data/alanine_dipeptide_fm_trainer.pkl", '.pkl')
+with open("../_data/output/alanine_dipeptide_fm_training.log") as f:
+    print(f.read())
 ```
 
-Plotting the training and validation loss indicates convergence after approximately $25$ epochs.
-However, further training leads to overfitting of the potential model.
-Therefore, the FM trainer keeps track of the parametrization with the lowest validation loss.
+Plotting the training and validation loss indicates convergence after approximately $50$ epochs.
+Further training improves the validation loss only slightly, but does not lead to overfitting.
+Therefore, we save the final model with $100$ training epochs.
 
 ```{code-cell} ipython
 fig, ax = plt.subplots(1, 1, figsize=(5, 4), layout="constrained")
-ax.plot(force_matching.train_losses, label="Training")
-ax.plot(force_matching.val_losses, label="Validation")
+ax.plot(force_matching["train_losses"], label="Training")
+ax.plot(force_matching["val_losses"], label="Validation")
 ax.set_xticks(ticks=range(0, fm_epochs + 1, 25))
 ax.set_xlabel("Epoch")
 ax.set_ylabel("MSE Force Loss")
 ax.legend()
+```
+
+## Force Matching and Relative Entropy Minimization
+
+Due to the expense of training with relative entropy minimization,
+we train a third model from an improved initial state.
+As improved initial state, we use the FM trained model with the lowest validation
+loss.
+
+```{code-cell} ipython
+rm_post_epochs = 50
+rm_post_initial_lr = 0.0005
+
+lr_schedule = optax.exponential_decay(rm_post_initial_lr, rm_post_epochs, 0.01)
+optimizer = optax.chain(
+    optax.scale_by_adam(0.1, 0.4),
+    optax.scale_by_schedule(lr_schedule),
+    optax.scale_by_learning_rate(1.0)
+)
+
+rm_post_fm = trainers.RelativeEntropy(
+    force_matching_params, optimizer, reweight_ratio=1.1,
+    energy_fn_template=energy_fn_template)
+
+rm_post_fm.add_statepoint(
+    position_dataset[:re_used_dataset_size, ...],
+    energy_fn_template, sim_template, neighbor_fn,
+    re_timings, state_kwargs, reference_state,
+    reference_batch_size=re_used_dataset_size,
+    vmap_batch=n_chains, resample_simstates=True)
+
+rm_post_fm.init_step_size_adaption(0.25)
+```
+
+```{code-cell} ipython
+:tags: [hide-output]
+
+if os.environ.get("FM_RM_TRAINING", "False").lower() == "true":
+    # Save the training log
+    with open("../_data/output/alanine_dipeptide_fm+rm_training.log", "w") as f:
+        with contextlib.redirect_stdout(f), contextlib.redirect_stderr(f):
+
+            start = time.time()
+            rm_post_fm.train(rm_post_epochs)
+            print(f"Total training time: {(time.time() - start) / 3600 : .1f} hours")
+    
+    rm_post_fm.save_energy_params("../_data/output/alanine_dipeptide_fm+rm_params.pkl", '.pkl')
+    rm_post_fm.save_trainer("../_data/output/alanine_dipeptide_fm+rm_trainer.pkl", '.pkl')
+    
+rm_post_fm = onp.load("../_data/output/alanine_dipeptide_fm+rm_trainer.pkl", allow_pickle=True)
+rm_post_fm_params = tree_util.tree_map(
+    jnp.asarray, onp.load("../_data/output/alanine_dipeptide_fm+rm_params.pkl", allow_pickle=True)
+)
+
+with open("../_data/output/alanine_dipeptide_fm+rm_training.log") as f:
+    print(f.read())
+```
+
+```{code-cell} ipython
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9, 4), layout="constrained")
+
+ax1.plot(rm_post_fm["delta_re"][0])
+ax1.set_xticks(ticks=range(0, rm_post_epochs + 1, 10))
+ax1.set_xlabel("Epoch")
+ax1.set_ylabel("RE Loss")
+
+ax2.plot(rm_post_fm["gradient_norm_history"])
+ax2.set_xticks(ticks=range(0, rm_post_epochs + 1, 10))
+ax2.set_xlabel("Epoch")
+ax2.set_ylabel("Gradient Norm")
 ```
 
 ## Evaluation
@@ -425,41 +533,43 @@ To reduce the total running time, we again run $100$ shorter simulations, which
 still correspond to a total time of $100~\text{ns}$.
 
 ```{code-cell} ipython
-eval_total_time = 1100.
+eval_total_time = 2100.
 eval_t_eq = 100.
 eval_t_sample = .5
 
-eval_timings = traj_util.process_printouts(
+eval_timings = sampling.process_printouts(
     time_step=dt, total_time=eval_total_time,
     t_equilib=eval_t_eq, print_every=eval_t_sample
 )
 
-trajectory_generator = traj_util.trajectory_generator_init(
+trajectory_generator = sampling.trajectory_generator_init(
     sim_template, energy_fn_template, eval_timings)
-```
-
-```{code-cell} ipython
-t_start = time.time()
-re_traj_state = trajectory_generator(relative_entropy.params, reference_state, **state_kwargs)
-t_end = time.time() - t_start
-print('total runtime:', t_end)
-
-assert not re_traj_state.overflow, (
-    'Neighborlist overflow during trajectory generation. '
-    'Increase capacity and re-run.'
+trajectory_generator = jax.vmap(
+    functools.partial(trajectory_generator, **state_kwargs), (0, None)
 )
 ```
 
 ```{code-cell} ipython
-t_start = time.time()
-fm_traj_state = trajectory_generator(force_matching.best_inference_params, reference_state, **state_kwargs)
-t_end = time.time() - t_start
-print('total runtime:', t_end)
+if os.environ.get("EVALUATION", "False").lower() == "true":
+ 
+    all_parameters = util.tree_stack((
+        relative_entropy_params,
+        force_matching_params,
+        rm_post_fm_params
+    ))
+    
+    t_start = time.time()
+    all_traj_states = trajectory_generator(all_parameters, reference_state)
+    
+    assert not jnp.any(all_traj_states.overflow), (
+        'Neighborlist overflow during trajectory generation. '
+        'Increase capacity and re-run.'
+    )
+    
+    print(f'Total runtime: {(time.time() - t_start) / 3600 :.1f} hours')
+    
+    (re_traj_state, fm_traj_state, fm_rm_traj_state) = util.tree_unstack(all_traj_states)
 
-assert not fm_traj_state.overflow, (
-    'Neighborlist overflow during trajectory generation. '
-    'Increase capacity and re-run.'
-)
 ```
 
 ```{code-cell} ipython
@@ -474,17 +584,38 @@ def postprocess_fn(positions):
     
     return dihedral_angles.T
 
-ref_phi, ref_psi = postprocess_fn(position_dataset)
-fm_phi, fm_psi = postprocess_fn(fm_traj_state.trajectory.position)
-re_phi, re_psi = postprocess_fn(re_traj_state.trajectory.position)
+if os.environ.get("EVALUATION", "False").lower() == "true":
+    ref_phi, ref_psi = postprocess_fn(position_dataset)
+    fm_phi, fm_psi = postprocess_fn(fm_traj_state.trajectory.position)
+    re_phi, re_psi = postprocess_fn(re_traj_state.trajectory.position)
+    fm_rm_phi, fm_rm_psi = postprocess_fn(fm_rm_traj_state.trajectory.position)
+    
+    onp.savez(
+        "../_data/output/alanine_dipeptide_dihedral_angles.npz",
+        ref_phi=ref_phi, ref_psi=ref_psi,
+        fm_phi=fm_phi, fm_psi=fm_psi,
+        re_phi=re_phi, re_psi=re_psi,
+        fm_rm_phi=fm_rm_phi, fm_rm_psi=fm_rm_psi
+    )
+    
+results = onp.load("../_data/output/alanine_dipeptide_dihedral_angles.npz")
+
+ref_phi=results["ref_phi"]
+ref_psi=results["ref_psi"]
+fm_phi=results["fm_phi"]
+fm_psi=results["fm_psi"]
+re_phi=results["re_phi"]
+re_psi=results["re_psi"]
+fm_rm_phi=results["fm_rm_phi"]
+fm_rm_psi=results["fm_rm_psi"]
 ```
 
 ```{code-cell} ipython
 def plot_1d_dihedral(ax, angles, labels, bins=60, degrees=True,
-                     xlabel='$\phi$ in deg'):
+                     xlabel='$\phi$ in deg', ylabel=True):
     """Plot  1D histogram splines for a dihedral angle. """
-    color = ['k', '#00A087FF', '#3C5488FF']
-    line = ['--', '-', '-']
+    color = ['#368274', '#0C7CBA', '#C92D39', 'k']
+    line = ['-', '-', '-', '--']
     
     n_models = len(angles)
     for i in range(n_models):
@@ -506,13 +637,14 @@ def plot_1d_dihedral(ax, angles, labels, bins=60, degrees=True,
         )
 
     ax.set_xlabel(xlabel)
-    ax.set_ylabel('Density')
+    if ylabel:
+        ax.set_ylabel('Density')
     
     return ax
 
-def plot_histogram_free_energy(ax, phi, psi, kbt, degrees=True, title=""):
+def plot_histogram_free_energy(ax, phi, psi, kbt, degrees=True, ylabel=False, title=""):
     """Plot 2D free energy histogram for alanine from the dihedral angles."""
-    cmap = plt.get_cmap('magma')
+    cmap = plt.get_cmap('viridis')
 
     if degrees:
         phi = jnp.deg2rad(phi)
@@ -524,8 +656,9 @@ def plot_histogram_free_energy(ax, phi, psi, kbt, degrees=True, title=""):
     x, y = onp.meshgrid(x_edges, y_edges)
 
     cax = ax.pcolormesh(x, y, h.T, cmap=cmap, vmax=5.25)
-    ax.set_xlabel('$\phi$ in rad')
-    ax.set_ylabel('$\psi$ in rad')
+    ax.set_xlabel('$\phi$ [rad]')
+    if ylabel:
+        ax.set_ylabel('$\psi$ [rad]')
     ax.set_title(title)
     
     return ax, cax
@@ -535,16 +668,15 @@ def plot_histogram_free_energy(ax, phi, psi, kbt, degrees=True, title=""):
 Plotting the dihedral angle distributions reveals that both FM and REM-trained models can identify the preferred torsional states of alanine-dipeptide.
 However, the REM model reproduces the relative preference between the states much better.
 
-
 ```{code-cell} ipython
-labels = ["AA Reference", "Force Matching", "Relative Entropy"]
+labels = ["FM", "RM", "FM + RM", "AA Reference"]
 
-fig, (ax1, ax2) = plt.subplots(1, 2, layout="constrained", figsize=(9, 4))
-ax1 = plot_1d_dihedral(ax1, [ref_phi, fm_phi, re_phi], labels, xlabel="$\phi\ [deg]$")
-ax2 = plot_1d_dihedral(ax2, [ref_psi, fm_psi, re_psi], labels, xlabel="$\psi\ [deg]$")
+fig, (ax1, ax2) = plt.subplots(1, 2, layout="constrained", figsize=(9, 3), sharey=True)
+ax1 = plot_1d_dihedral(ax1, [fm_phi, re_phi, fm_rm_phi, ref_phi], labels, xlabel="$\phi\ [deg]$")
+ax2 = plot_1d_dihedral(ax2, [fm_psi, re_psi, fm_rm_psi, ref_psi], labels, xlabel="$\psi\ [deg]$", ylabel=False)
 fig.legend(labels, ncols=len(labels), bbox_to_anchor=(0.5, 1.01), loc="lower center")
 
-fig.savefig("../_data/alanine_dipeptide_1D_dihedral_angles.pdf")
+fig.savefig("../_data/output/alanine_dipeptide_1D_dihedral_angles.pdf", bbox_inches='tight')
 ```
 
 Plotting the free energy surface of the backbone dihedral angles indicates similar results.
@@ -554,15 +686,16 @@ However, only the REM model correctly predicts the depth of these regions.
 ```{code-cell} ipython
 labels = ["AA Reference"]
 
-fig, (ax1, ax2, ax3) = plt.subplots(1, 3, layout="constrained", figsize=(9, 3))
-ax1, _ = plot_histogram_free_energy(ax1, ref_phi, ref_psi, kT, title="AA Reference")
+fig, (ax1, ax2, ax3, ax4) = plt.subplots(1, 4, layout="constrained", figsize=(9, 3), sharey=True)
+ax1, _ = plot_histogram_free_energy(ax1, ref_phi, ref_psi, kT, ylabel=True, title="AA Reference")
 ax2, _ = plot_histogram_free_energy(ax2, fm_phi, fm_psi, kT, title="Force Matching")
-ax3, cax = plot_histogram_free_energy(ax3, re_phi, re_psi, kT, title="Relative Entropy")
+ax3, _ = plot_histogram_free_energy(ax3, re_phi, re_psi, kT, title="Relative Entropy")
+ax4, cax = plot_histogram_free_energy(ax4, fm_rm_phi, fm_rm_psi, kT, title="FM and RM")
 
 cbar = fig.colorbar(cax)
 cbar.set_label('Free Energy (kcal/mol)')
 
-fig.savefig("../_data/alanine_dipeptide_free_energy_dihedral_angles.pdf")
+fig.savefig("../_data/output/alanine_dipeptide_free_energy_dihedral_angles.pdf", bbox_inches='tight')
 ```
 
 ## References

@@ -23,16 +23,18 @@ Chemtrain implements umbrella sampling approaches in the module
 import functools
 from typing import Dict, Any, Callable, Tuple
 
+import numpy as onp
+
 import jax
 from jax import jit, numpy as jnp, lax
 from jax.typing import ArrayLike
 
-import numpy as onp
+from jax_md_mod import custom_quantity
 
 from chemtrain.learn import max_likelihood
 from chemtrain.typing import TargetDict, EnergyFnTemplate, ComputeFn
-from jax_md_mod import custom_quantity
 from chemtrain.ensemble import reweighting, evaluation, sampling
+from chemtrain import util
 
 def init_default_loss_fn(targets: TargetDict):
     """Initializes the MSE loss function for DiffTRe.
@@ -215,7 +217,7 @@ def init_rel_entropy_loss_fn(energy_fn_template, compute_weights, kbt, vmap_batc
     Args:
         energy_fn_template: Energy function template
         compute_weights: compute_weights function as initialized from
-                         init_pot_reweight_propagation_fns.
+            init_pot_reweight_propagation_fns.
         kbt: Temperature of the statepoint.
         vmap_batch_size: Batch size for computing the potential energies on
             the reference positions.
@@ -240,12 +242,16 @@ def init_rel_entropy_loss_fn(energy_fn_template, compute_weights, kbt, vmap_batc
         free_energy += traj_state.free_energy_diff
 
         # Compute the potential predictions on the reference data
-        ref_pos_traj_state = traj_state.replace(
-            trajectory=evaluation.SimpleState(position=reference_batch['R'])
-        )
+        ref_states = evaluation.SimpleState(position=reference_batch['R'])
+        state_kwargs = {"kT": jnp.repeat(kbt, reference_batch['R'].shape[0])}
 
-        ref_energies = sampling.quantity_traj(
-            ref_pos_traj_state, ref_quantities, params, vmap_batch_size
+        nbrs = traj_state.sim_state.nbrs
+        if nbrs.reference_position.ndim > 2:
+            nbrs = util.tree_get_single(traj_state.sim_state.nbrs)
+
+        ref_energies = evaluation.quantity_map(
+            ref_states, ref_quantities, nbrs, state_kwargs, params,
+            vmap_batch_size,
         )["ref_energy"]
 
         return (jnp.mean(ref_energies) - free_energy) / kbt

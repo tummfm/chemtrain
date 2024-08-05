@@ -25,7 +25,10 @@ and parallelization.
 
 .. autofunction:: pmap_update_fn
 
+.. autofunction:: shmap_update_fn
+
+.. autofunction:: shmap_loss_fn
+
 .. autofunction:: init_val_predictions
 
 .. autofunction:: init_val_loss_fn
-

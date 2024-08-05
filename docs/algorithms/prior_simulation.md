@@ -21,6 +21,7 @@ import jax
 import jax.numpy as jnp
 from jax import random
 
+import jax_md_mod
 from jax_md import space, simulate, partition
 from jax_md_mod import custom_quantity
 from jax_md_mod.model import prior
