@@ -25,4 +25,5 @@ jobs:
         git config user.email "tummfm@noreply.github.com"
         git lfs install
         git remote set-url origin "https://oauth2:${token}@gitlab.lrz.de/mfm/science/chemtrain.git"
+        git lfs push --all
         git push origin main
