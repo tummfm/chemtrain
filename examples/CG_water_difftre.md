@@ -30,8 +30,12 @@ limitations under the License.
 ```{code-cell}
 :tags: [hide-cell]
 
+import os
 from pathlib import Path
 from functools import partial
+from urllib import request
+import contextlib
+import time
 
 import numpy as onp
 
@@ -43,11 +47,11 @@ import haiku as hk
 
 from jax import numpy as jnp, random
 
-from jax_md import space, energy, partition, simulate
 from jax_md_mod import io, custom_space, custom_energy
 from jax_md_mod.model import neural_networks, layers
+from jax_md import space, energy, partition, simulate
 
-from chemtrain import trainers, trajectory, util, quantity
+from chemtrain import trainers, ensemble, util, quantity
 ```
 
 ```{code-cell}
@@ -72,6 +76,25 @@ We present the details of the approach in the toy example [Differentiable Trajec
 
 +++
 
+## Load Data
+
+```{code-cell} python
+
+# Download if not present
+data_urls = {
+    "O_O_O_ADF.csv": "https://github.com/tummfm/difftre/blob/92c0790b89f0d570ed9f79663e6c06580f598345/data/experimental/O_O_O_ADF.csv?raw=true",
+    "O_O_RDF.csv": "https://github.com/tummfm/difftre/blob/92c0790b89f0d570ed9f79663e6c06580f598345/data/experimental/O_O_RDF.csv?raw=true",
+    "Water_experimental_3nm.gro": "https://github.com/tummfm/difftre/blob/92c0790b89f0d570ed9f79663e6c06580f598345/data/confs/Water_experimental.gro?raw=true"
+}
+data_path = Path("../_data/water_data")
+data_path.mkdir(exist_ok=True, parents=True)
+
+for fname, furl in data_urls.items():
+    if not (data_path / fname).exists():
+        request.urlretrieve(furl, data_path / fname)
+
+```
+
 ## Setup Training
 
 First, we need to create a reference system, in which we can predict macroscopic measurements.
@@ -81,9 +104,19 @@ Additionally, we initialize a neighbor list, which enables accelerating the simu
 ### System
 
 ```{code-cell}
-system: quantity.util.InitArguments = {}
+system: quantity.targets.InitArguments = {}
 
-file = 'water/data/confs/Water_experimental_3nm.gro'
+file = data_path / 'Water_experimental_3nm.gro'
+
+with open(file, "r") as f:
+    lines = f.readlines()
+
+# Add time to read file with mdtraj
+lines[0] = "system description here, t= 1200.000000, length unit=nm\n"
+
+with open(file, "w") as f:
+    f.writelines(lines)
+
 
 box, r_init, _, _ = io.load_box(file)  # initial configuration
 mass = 18.0154
@@ -97,7 +130,7 @@ neighbor_fn = partition.neighbor_list(
     displacement_fn, box, r_cutoff=0.5, dr_threshold=0.0,
     disable_cell_list=True, fractional_coordinates=True
 )
-nbrs_init = neighbor_fn.allocate(r_init, capacity_multiplier=1.5, extra_capacity=0)
+nbrs_init = neighbor_fn.allocate(r_init, capacity_multiplier=1.5, extra_capacity=1)
 
 system.update({
     "displacement_fn": displacement_fn,
@@ -161,7 +194,7 @@ total_time = 70.
 t_equilib = 20.
 print_every = 0.1
 
-timings = trajectory.traj_util.process_printouts(
+timings = ensemble.sampling.process_printouts(
     time_step, total_time, t_equilib, print_every
 )
 ```
@@ -184,7 +217,7 @@ simulator_init, _ = simulator_template(
 init_simulator_state = simulator_init(
     random.PRNGKey(11), r_init, neighbor=nbrs_init, mass=mass
 )
-reference_simulation_state = trajectory.traj_util.SimulatorState(
+reference_simulation_state = ensemble.sampling.SimulatorState(
     sim_state=init_simulator_state, nbrs=nbrs_init
 )
 ```
@@ -195,21 +228,21 @@ Next, we can set up the macroscopic properties we want to match.
 We use the experimentally determined RDF and ADF at $296.15\ \text{K}$ [^Soper2008] and additionally the pressure target of $1\ \text{bar}$.
 
 ```{code-cell}
-reference_rdf = onp.loadtxt("water/data/experimental/O_O_RDF.csv")
-reference_adf = onp.loadtxt("water/data/experimental/O_O_O_ADF.csv")
+reference_rdf = onp.loadtxt(data_path / "O_O_RDF.csv")
+reference_adf = onp.loadtxt(data_path / "O_O_O_ADF.csv")
 pressure_target = 1. / 16.6054   # 1 bar in kJ / mol nm^3
 ```
 
 ```{code-cell}
-target_builder = quantity.TargetBuilder(system, strict=True)
+target_builder = quantity.targets.TargetBuilder(system, strict=True)
 
-target_builder["rdf"] = quantity.structure.init_radial_distribution_target(
+target_builder["rdf"] = quantity.targets.init_radial_distribution_target(
     reference_rdf, nbins=300, rdf_cut=1.0, gamma=1.0
 )
-target_builder["adf"] = quantity.structure.init_angular_distribution_target(
+target_builder["adf"] = quantity.targets.init_angular_distribution_target(
     reference_adf, nbins=150, r_outer=0.318, gamma=1.0
 )
-target_builder["pressure"] = quantity.thermodynamics.init_pressure_target(
+target_builder["pressure"] = quantity.targets.init_pressure_target(
     energy_fn_template, include_kinetic=False, gamma=1.0e-7, target=pressure_target
 )
 
@@ -228,7 +261,7 @@ We set the reweighting ratio to 0.9, such that the computed trajectories might b
 check_freq = None
 num_updates = 300
 
-initial_lr = 0.003
+initial_lr = 0.005
 
 lr_schedule = optax.exponential_decay(initial_lr, num_updates, 0.01)
 optimizer = optax.chain(
@@ -259,15 +292,30 @@ trainer.init_step_size_adaption(0.10)
 ```{code-cell}
 :tags: [hide-output]
 
-trainer.train(num_updates, checkpoint_freq=None)
-trainer.save_trainer("water/output/cg_water_example.pkl", ".pkl")
+if os.environ.get("TRAIN", "False").lower() == "true":
+    Path("../_data/output").mkdir(parents=True, exist_ok=True)
+       
+    # Save the training log
+    with open("../_data/output/difftre_water.log", "w") as f:
+        with contextlib.redirect_stdout(f), contextlib.redirect_stderr(f):
+
+            start = time.time()
+            trainer.train(num_updates)
+            print(f"Total training time: {(time.time() - start) / 3600 : .1f} hours")
+    
+    trainer.save_energy_params("../_data/output/water_difftre_params.pkl", '.pkl')
+    trainer.save_trainer("../_data/output/water_difftre_trainer.pkl", '.pkl')
+    
+results = onp.load("../_data/output/water_difftre_trainer.pkl", allow_pickle=True)
+
+with open("../_data/output/difftre_water.log") as f:
+    print(f.read())
+
 ```
 
 ## Results
 
 ```{code-cell}
-results = onp.load("water/output/cg_water_example.pkl", allow_pickle=True)
-
 predicted_quantities = results["predictions"][0]
 loss_history = results["epoch_losses"]
 num_updates = list(predicted_quantities.keys())[-1]

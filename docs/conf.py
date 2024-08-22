@@ -96,6 +96,8 @@ nb_execution_excludepatterns = [
   'examples/*',
 ]
 
+os.environ["DATA_PATH"] = "../../examples/data"
+
 myst_footnote_transition = False
 
 # -- MathJax ------------------------------------------------------------------

@@ -15,6 +15,7 @@ kernelspec:
 ```{code-cell} 
 :tags: [hide-cell]
 
+import os
 from pathlib import Path
 
 import jax
@@ -32,7 +33,7 @@ from chemtrain.data import preprocessing
 from chemtrain.trainers import ForceMatching, RelativeEntropy
 from chemtrain import ensemble, quantity
 
-base_path = Path("../_data")
+base_path = Path(os.environ.get("DATA_PATH", "./data"))
 ```
 
 # Relative Entropy Minimization

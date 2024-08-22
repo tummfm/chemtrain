@@ -621,7 +621,7 @@ def init_adf_nbrs(displacement_fn,
         gaussians *= weights[:, jnp.newaxis]
 
         unnormed_adf = util.high_precision_sum(gaussians, axis=0)
-        adf = unnormed_adf / jnp.trapz(unnormed_adf, bin_centers)
+        adf = unnormed_adf / jnp.trapezoid(unnormed_adf, bin_centers)
 
         return adf
 
@@ -1111,7 +1111,7 @@ def self_diffusion_green_kubo(traj_state, time_step, t_cut):
     num_lags = int(t_cut / time_step)
     vel_autocorr = velocity_autocorrelation(traj_state, num_lags)
     dim = traj_state.trajectory.velocity.shape[-1]
-    diffusion = jnp.trapz(vel_autocorr, dx=time_step) / dim
+    diffusion = jnp.trapezoid(vel_autocorr, dx=time_step) / dim
     return diffusion, vel_autocorr
 
 

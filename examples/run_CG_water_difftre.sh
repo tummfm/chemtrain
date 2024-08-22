@@ -2,6 +2,8 @@
 
 /usr/bin/env
 
-jupytext --output CG_water_difftre.ipynb CG_water_difftre.md
-jupyter nbconvert --to ipynb --inplace --execute --allow-errors CG_water_difftre.ipynb
-cp CG_water_difftre.ipynb ../docs/examples/CG_water_difftre.ipynb
+jupytext --output ../docs/examples/execute_water.ipynb CG_water_difftre.md
+
+cd ../docs/examples && papermill execute_water.ipynb CG_water_difftre.ipynb --progress-bar --request-save-on-cell-execute
+
+cp CG_water_difftre.ipynb ../../examples/CG_water_difftre.ipynb

@@ -15,6 +15,7 @@ kernelspec:
 ```{code-cell}
 :tags: [hide-cell]
 
+import os
 from pathlib import Path
 
 import jax
@@ -31,7 +32,7 @@ import matplotlib.pyplot as plt
 from chemtrain.data import preprocessing
 from chemtrain.trainers import ForceMatching
 
-base_path = Path("../_data")
+base_path = Path(os.environ.get("DATA_PATH", "./data"))
 ```
 
 # Force Matching
@@ -135,7 +136,7 @@ nbrs_init = neighbor_fn.allocate(r_init)
 
 init_params = {
     "log_b0": jnp.log(0.11),
-    "log_kb": jnp.log(1000.0)
+    "log_kb": jnp.log(5000.0)
 }
 
 def energy_fn_template(energy_params):
@@ -222,16 +223,16 @@ print(f"Estimated potential parameters are {kb[0] :.1f} kJ/mol/nm^2 and {b0[0] :
 ## Setup Optimizer
 
 ```{code-cell}
-subsample = 50
+subsample = 25
 batch_per_device = 10
-epochs = 35
-initial_lr = 0.05
-lr_decay = 0.1
+epochs = 20
+initial_lr = 0.02
+lr_decay = 0.05
 
 lrd = int(position_dataset.shape[0] / subsample / batch_per_device * epochs)
 lr_schedule = optax.exponential_decay(initial_lr, lrd, lr_decay)
 optimizer = optax.chain(
-    optax.scale_by_adam(),
+    optax.scale_by_adam(0.9, 0.95),
     optax.scale_by_schedule(lr_schedule),
     # Flips the sign of the update for gradient descend
     optax.scale_by_learning_rate(1.0),
@@ -249,8 +250,8 @@ force_matching = ForceMatching(
 # We can provide numpy arrays to initialize the datasets for training,
 # validation, and testing in a single step
 force_matching.set_datasets({
-    "F": force_dataset[1::subsample, :, :],
-    "R": position_dataset[1::subsample, :, :],
+    "F": force_dataset[::subsample, :, :],
+    "R": position_dataset[::subsample, :, :],
 }, train_ratio=train_ratio)
 
 ```
@@ -264,8 +265,8 @@ force_matching.train(epochs, checkpoint_freq=1000)
 ```{code-cell}
 # We can also provide completely new samples for a single stage, e.g., testing
 force_matching.set_dataset({
-    "F": force_dataset[::subsample, :, :],
-    "R": position_dataset[::subsample, :, :],
+    "F": force_dataset[1::subsample, :, :],
+    "R": position_dataset[1::subsample, :, :],
 }, stage = "testing")
 
 mae_error = force_matching.evaluate_mae_testset()
@@ -285,7 +286,7 @@ Finally, we compare the values obtained from a least-squares fit to those
 obtained from force-matching.
 
 ```{code-cell}
-pred_parameters = tree_util.tree_map(jnp.exp, force_matching.best_params)
+pred_parameters = tree_util.tree_map(jnp.exp, force_matching.params)
 
 b0_err = jnp.abs(b0[0] - pred_parameters["log_b0"])
 kb_err = jnp.abs(kb[0] - pred_parameters["log_kb"])

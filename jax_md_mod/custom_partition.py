@@ -164,12 +164,15 @@ def exclude_from_neighbor_list(neighbor: partition.NeighborList,
 
     Example:
 
+        >>> from pathlib import Path
+        >>> root = Path.cwd().parent
+
         >>> import mdtraj
         >>> from jax_md import space
         >>> from jax import numpy as jnp
         >>> from jax_md_mod.custom_partition import masked_neighbor_list
 
-        >>> pdb = mdtraj.load("_data/ethane.pdb")
+        >>> pdb = mdtraj.load(root / "examples/data/ethane.pdb")
         >>> r_init = jnp.asarray(pdb.xyz[0], dtype=jnp.float32)
         >>> box = jnp.array(1.0)
 

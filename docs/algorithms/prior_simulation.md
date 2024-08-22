@@ -15,6 +15,7 @@ kernelspec:
 ```{code-cell}
 :tags: [hide-cell]
 
+import os
 from pathlib import Path
 
 import jax
@@ -32,7 +33,7 @@ from matplotlib import pyplot as plt
 
 from chemtrain import ensemble, quantity
 
-base_path = Path("../_data")
+base_path = Path(os.environ.get("DATA_PATH", "./data"))
 ```
 
 # Prior Simulation
@@ -229,6 +230,6 @@ plt.xlabel("Time [ps]")
 plt.ylabel("RMSD [nm^2]")
 ```
 
-# References
+## References
 
 [^Das2009]: Das, A.; Andersen, H. C. The Multiscale Coarse-Graining Method. III. A Test of Pairwise Additivity of the Coarse-Grained Potential and of New Basis Functions for the Variational Calculation. _The Journal of Chemical Physics_ **2009**, _131_ (3), 034102. [https://doi.org/10.1063/1.3173812](https://doi.org/10.1063/1.3173812).

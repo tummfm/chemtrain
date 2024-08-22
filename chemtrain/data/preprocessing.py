@@ -25,6 +25,7 @@ Examples:
     >>> from pathlib import Path
     >>> root = Path.cwd().parent
 
+    >>> import jax.numpy as jnp
     >>> from jax_md_mod import io
     >>> from chemtrain.data.data_loaders import init_dataloaders
     >>> from chemtrain.data.preprocessing import (
@@ -33,12 +34,12 @@ Examples:
     We only get a subset of 10 conformations from the training data and scale the
     conformations to fractional coordinates:
 
-    >>> box, *_ = io.load_box(root / "examples/alanine_dipeptide/data/confs/heavy_2_7nm.gro")
+    >>> box = jnp.ones(3)
     >>> position_data = get_dataset(
-    ...     root / "examples/alanine_dipeptide/data/simulations/alanine_heavy_50000_confs.npy",
+    ...     root / "examples/data/positions_ethane.npy",
     ...     retain=10)
     >>> force_data = get_dataset(
-    ...     root / "examples/alanine_dipeptide/data/simulations/alanine_heavy_50000_forces.npy",
+    ...     root / "examples/data/forces_ethane.npy",
     ...     retain=10)
     >>> position_data = scale_dataset_fractional(position_data, box)
 
@@ -47,7 +48,7 @@ Examples:
     >>> train, val, test = train_val_test_split(position_data, train_ratio=0.8, shuffle=False)
     >>> # Print the coordinates of the Calpha atom
     >>> print(test[0, 4, :])
-    [0.25101155 0.9239973  0.50758266]
+    [0.87433064 0.77956736 0.16202186]
 
     Alternatively, we can directly instanciate ``jax_sgmc`` data-loaders based
     on the split datasets by using:
