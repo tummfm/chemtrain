@@ -1,0 +1,25 @@
+jax <= 0.4.30
+jaxlib <= 0.4.30
+scipy < 1.13
+jax-md
+jax-sgmc
+optax
+dm-haiku
+sympy
+tree_math
+cloudpickle
+chex
+blackjax==0.3.0
+jaxopt
+dm-tree
+networkx
+mdtraj
+matplotlib
+tomli
+tomli-w
+sphinx >= 3
+sphinx-book-theme
+sphinx-autodoc-typehints == 1.11.1
+myst-nb
+matplotlib
+sphinx-remove-toctrees
