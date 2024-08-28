@@ -13,9 +13,7 @@
 # limitations under the License.
 
 """Utility functions helpful in designing new trainers."""
-import abc
 from functools import partial
-import pathlib
 from typing import Any
 
 import chex
@@ -25,6 +23,8 @@ from jax import tree_map, tree_util, device_count, numpy as jnp
 from jax_md import simulate
 import numpy as onp
 
+
+from jax_md import partition
 
 # freezing seems to give slight performance improvement
 @partial(chex.dataclass, frozen=True)
@@ -44,7 +44,7 @@ def _get_box_kwargs_if_npt(state):
     return kwargs
 
 
-def neighbor_update(neighbors, state):
+def neighbor_update(neighbors, state, **kwargs):
     """Update neighbor lists irrespective of the ensemble.
 
     Fetches the box to the neighbor list update function in case of the
@@ -57,7 +57,7 @@ def neighbor_update(neighbors, state):
     Returns:
         Updated neighbor list
     """
-    kwargs = _get_box_kwargs_if_npt(state)
+    kwargs.update(_get_box_kwargs_if_npt(state))
     nbrs = neighbors.update(state.position, **kwargs)
     return nbrs
 
@@ -201,6 +201,9 @@ def tree_vmap_split(tree, batch_size):
     """Splits the first axis of a 'tree' with leaf sizes (N, X)`into
     (n_batches, batch_size, X) to allow straightforward vmapping over axis0.
     """
+    if len(tree_util.tree_leaves(tree)) == 0:
+        return tree
+
     assert tree_util.tree_leaves(tree)[0].shape[0] % batch_size == 0, \
         'First dimension of tree needs to be splittable by batch_size' \
         ' without remainder.'
@@ -209,12 +212,12 @@ def tree_vmap_split(tree, batch_size):
                     tree)
 
 
-def tree_sum(tree_list, axis=None):
+def tree_sum(*tree_list, axis=0):
     """Computes the sum of equal-shaped leafs of a pytree."""
     @partial(partial, tree_map)
-    def leaf_add(leafs):
-        return jnp.sum(leafs, axis=axis)
-    return leaf_add(tree_list)
+    def leaf_add(*leafs):
+        return jnp.sum(jnp.stack(leafs, axis=axis), axis=axis)
+    return leaf_add(*tree_list)
 
 
 def tree_mean(tree_list):
@@ -296,91 +299,3 @@ def load_trainer(file_path):
 def format_not_recognized_error(file_format):
     raise ValueError(f'File format {file_format} not recognized. '
                      f'Expected ".hdf5" or ".pkl".')
-
-
-class TrainerInterface(abc.ABC):
-    """Abstract class defining the user interface of trainers as well as
-    checkpointing functionality.
-    """
-    # TODO write protocol classes for better documentation of initialized
-    #  functions
-    def __init__(self, checkpoint_path, reference_energy_fn_template=None):
-        """A reference energy_fn_template can be provided, but is not mandatory
-        due to the dependence of the template on the box via the displacement
-        function.
-        """
-        self.checkpoint_path = checkpoint_path
-        self._epoch = 0
-        self.reference_energy_fn_template = reference_energy_fn_template
-
-    @property
-    def energy_fn(self):
-        if self.reference_energy_fn_template is None:
-            raise ValueError('Cannot construct energy_fn as no reference '
-                             'energy_fn_template was provided during '
-                             'initialization.')
-        return self.reference_energy_fn_template(self.params)
-
-    def _dump_checkpoint_occasionally(self, frequency=None):
-        """Dumps a checkpoint during training, from which training can
-        be resumed.
-        """
-        assert self.checkpoint_path is not None
-        if frequency is not None:
-            pathlib.Path(self.checkpoint_path).mkdir(parents=True,
-                                                     exist_ok=True)
-            if self._epoch % frequency == 0:  # checkpoint model
-                file_path = (self.checkpoint_path +
-                             f'/epoch{self._epoch - 1}.pkl')
-                self.save_trainer(file_path)
-
-    def save_trainer(self, save_path):
-        """Saves whole trainer, e.g. for production after training."""
-        with open(save_path, 'wb') as pickle_file:
-            pickle.dump(self, pickle_file)
-
-    def save_energy_params(self, file_path, save_format='.hdf5'):
-        if save_format == '.hdf5':
-            raise NotImplementedError  # TODO implement hdf5
-            # from jax_sgmc.io import pytree_dict_keys, dict_to_pytree
-            # leaf_names = pytree_dict_keys(self.state)
-            # leafes = tree_leaves(self.state)
-            # with h5py.File(file_path, "w") as file:
-            #     for leaf_name, value in zip(leaf_names, leafes):
-            #         file[leaf_name] = value
-        elif save_format == '.pkl':
-            with open(file_path, 'wb') as pickle_file:
-                pickle.dump(self.params, pickle_file)
-        else:
-            format_not_recognized_error(save_format)
-
-    def load_energy_params(self, file_path):
-        if file_path.endswith('.hdf5'):
-            raise NotImplementedError
-        elif file_path.endswith('.pkl'):
-            with open(file_path, 'rb') as pickle_file:
-                params = pickle.load(pickle_file)
-        else:
-            format_not_recognized_error(file_path[-4:])
-        self.params = tree_map(jnp.array, params)  # move state on device
-
-    @property
-    @abc.abstractmethod
-    def params(self):
-        """Short-cut for parameters. Depends on specific trainer."""
-
-    @params.setter
-    @abc.abstractmethod
-    def params(self, loaded_params):
-        raise NotImplementedError()
-
-    @abc.abstractmethod
-    def train(self, *args, **kwargs):
-        """Training of any trainer should start by calling train."""
-
-    @abc.abstractmethod
-    def move_to_device(self):
-        """Move all attributes that are expected to be on device to device to
-         avoid TracerExceptions after loading trainers from disk, i.e.
-         loading numpy rather than device arrays.
-         """

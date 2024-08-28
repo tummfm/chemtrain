@@ -1,0 +1,33 @@
+# Parameters for ethane, converted from:
+# Nikitin, A.M., Milchevskiy, Y.V. & Lyubartsev, A.P.
+# A new AMBER-compatible force field parameter set for alkanes.
+# J Mol Model 20, 2143 (2014). https://doi.org/10.1007/s00894-014-2143-6
+
+[nonbonded]
+# Mass repartitioning with HC + 3u
+atomtypes = """
+# name, species,    mass,    sigma,    epsilon
+    HC,       0,   4.011, 1.24e-02,  6.255e-01 # kcal/mol = 4.184 kJ/mol
+   CH3,       1,   6.035, 1.84e-01,  7.322e-01
+"""
+
+[bonded]
+bondtypes = """
+#    i,    j,     b0,    kb
+  CH3,    HC, 0.1093,  14225.6 # kcal/mol/A^2 = 41.84 kJ/mol/nm^2
+  CH3,   CH3, 0.1526,  10041.6
+
+"""
+
+angletypes = """
+#    i,    j,    k,    th0,    kth
+    HC,  CH3,    HC, 107.0,  0.042 # kcal/mol/rad^2 = 1.28e-4 kJ/mol/deg^2
+    HC,  CH3,   CH3, 110.7,  0.066
+
+"""
+
+dihedraltypes = """
+#    i,    j,    k,    l,    phase,    kd,    pn
+    HC,  CH3,   CH3,  HC,      0.0, 6.067,     3 # kcal/mol = 4.184 kJ/mol
+
+"""

@@ -14,14 +14,17 @@ import os
 import sys
 sys.path.insert(0, os.path.abspath('..'))
 
+from datetime import datetime
+from chemtrain.version import __version__ as chemtrain_version
 
 # -- Project information -----------------------------------------------------
 
 project = 'Chemtrain'
-author = 'Stephan Thaler'
+copyright = (f'{datetime.now().year}, Multiscale Modeling of Fluid Materials, '
+             f'TU Munich')
+author = 'Multiscale Modeling of Fluid Materials'
 
-version = ''
-release = '0.1.0'
+release = chemtrain_version
 
 
 # -- General configuration ---------------------------------------------------
@@ -32,19 +35,42 @@ release = '0.1.0'
 extensions = [
     'sphinx.ext.autodoc',
     'sphinx.ext.autosummary',
+    'sphinx.ext.coverage',
     'sphinx.ext.doctest',
     'sphinx.ext.intersphinx',
     'sphinx.ext.mathjax',
     'sphinx.ext.napoleon',
     'sphinx.ext.viewcode',
     'sphinx_autodoc_typehints',
-    'myst_nb'
+    'sphinx_remove_toctrees',
+    'myst_nb',
 ]
+
+napoleon_numpy_docstring = False
+
+napoleon_attr_annotations = True
+
+napoleon_use_ivar= True
 
 autosummary_generate = True
 
-# Add any paths that contain templates here, relative to this directory.
-templates_path = ['_templates']
+# Do not write chemtrain before every subpackage/function/etc.
+add_module_names = False
+
+# Remove unnecessarily deep tocs for trainers
+
+remove_from_toctrees = [
+    "api/_autosummary/_autosummary/*",
+    "api/**/_autosummary/*",
+    "jax_md_mod/**/_autosummary/*"
+]
+
+templates_path = ["_templates"]
+
+autodoc_mock_imports = [
+    'e3nn_jax'
+]
+
 
 source_suffix = ['.rst', '.ipynb']
 
@@ -57,21 +83,57 @@ intersphinx_mapping = {
     'python': ('https://docs.python.org/3/', None),
     'numpy': ('https://numpy.org/doc/stable/', None),
     'scipy': ('https://docs.scipy.org/doc/scipy/reference/', None),
-    'jax': ('https://jax.readthedocs.io/en/latest/', None)
+    'jax': ('https://jax.readthedocs.io/en/latest/', None),
+    'jax-sgmc': ('https://jax-sgmc.readthedocs.io/en/latest/', None),
+    'jax-md': ('https://jax-md.readthedocs.io/en/main/', None)
 }
 
 # Jupyter options
-jupyter_execute_notebooks = "auto"
-execution_timeout = -1
+nb_execution_mode = "auto"
+nb_execution_timeout = -1
+nb_execution_excludepatterns = [
+  # Require long computations
+  'examples/*',
+]
+
+os.environ["DATA_PATH"] = "../../examples/data"
+
+myst_footnote_transition = False
+
+# -- MathJax ------------------------------------------------------------------
+
+mathjax3_config = {
+  "tex": {
+    "inlineMath": [['$', '$'], ['\\(', '\\)']]
+  },
+  "svg": {
+    "fontCache": 'global'
+  }
+}
 
 # -- Options for HTML output -------------------------------------------------
 
 # The theme to use for HTML and HTML Help pages.  See the documentation for
 # a list of builtin themes.
 #
-html_theme = 'sphinx_rtd_theme'
+html_theme = 'sphinx_book_theme'
+
+html_theme_options = {
+    "repository_url": "https://github.com/tummfm/chemtrain-dev",
+    "use_repository_button": True,
+    "home_page_in_toc": True
+}
+
+html_title = "chemtrain"
 
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
-# html_static_path = ['_static']
+html_static_path = ["_static"]
+html_css_files = ["custom.css"]
+html_js_files = ["custom.js"]
+
+# Add global definitions of custom roles
+
+with open("_templates/global.rst", "r") as f:
+    rst_prolog = f.read()
