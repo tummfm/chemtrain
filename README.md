@@ -12,7 +12,7 @@ simulations. However, the training of accurate models is challenging.
 models by combining customizable training routines with advanced training
 algorithms.
 This combination enables the inclusion of high-quality reference data from
-simulations and experiments and the lowering computational demands of training
+simulations and experiments and lowering the computational demand of training
 through complementing algorithms with different advantages.
 
 **chemtrain** is written in JAX, integrating with the differentiable MD engine
