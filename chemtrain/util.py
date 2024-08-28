@@ -212,12 +212,12 @@ def tree_vmap_split(tree, batch_size):
                     tree)
 
 
-def tree_sum(tree_list, axis=None):
+def tree_sum(*tree_list, axis=0):
     """Computes the sum of equal-shaped leafs of a pytree."""
     @partial(partial, tree_map)
-    def leaf_add(leafs):
-        return jnp.sum(leafs, axis=axis)
-    return leaf_add(tree_list)
+    def leaf_add(*leafs):
+        return jnp.sum(jnp.stack(leafs, axis=axis), axis=axis)
+    return leaf_add(*tree_list)
 
 
 def tree_mean(tree_list):

@@ -48,7 +48,7 @@ Examples:
     >>> train, val, test = train_val_test_split(position_data, train_ratio=0.8, shuffle=False)
     >>> # Print the coordinates of the Calpha atom
     >>> print(test[0, 4, :])
-    [0.87433064 0.77956736 0.16202186]
+    [0.8808514  0.72712505 0.25590205]
 
     Alternatively, we can directly instanciate ``jax_sgmc`` data-loaders based
     on the split datasets by using:
@@ -165,22 +165,30 @@ def train_val_test_split(dataset, train_ratio=0.7, val_ratio=0.1, shuffle=False,
     return train_data, val_data, test_data
 
 
-def scale_dataset_fractional(traj, box):
+def scale_dataset_fractional(positions, reference_box=None, box=None):
     """Scales a dataset of positions from real space to fractional coordinates.
 
     Args:
-        traj: An array with shape ``(N_snapshots, N_particles, 3)`` with
+        positions: An array with shape ``(N_snapshots, N_particles, 3)`` with
             particle positions.
-        box: A 1 or 2-dimensional ``jax_md`` box.
+        reference_box: A 1 or 2-dimensional ``jax_md`` box. If not provided,
+            the box is assumed to be dynamic.
+        box: An array of 1 or 2-dimensional boxes, corresponding to the
+            individual samples.
 
     Returns:
         Returns an array with  shape ``(N_snapshots, N_particles, 3)`` with
         particle positions in fractional coordinates.
 
     """
-    _, scale_fn = custom_space.init_fractional_coordinates(box)
-    scaled_traj = lax.map(scale_fn, traj)
-    return scaled_traj
+    if reference_box is None:
+        reference_box = jnp.eye(positions.shape[-1])
+
+    _, scale_fn = custom_space.init_fractional_coordinates(reference_box)
+    if box is not None:
+        return jax.vmap(lambda R, box: scale_fn(R, box=box))(positions, box)
+    else:
+        return jax.vmap(scale_fn)(positions)
 
 
 def map_dataset(position_dataset,

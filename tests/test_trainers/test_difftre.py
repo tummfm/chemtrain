@@ -1,3 +1,17 @@
+# Copyright 2023 Multiscale Modeling of Fluid Materials, TU Munich
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from functools import partial
 
 import numpy as onp
@@ -100,6 +114,17 @@ class TestDifftre:
         r_eval = onp.linspace(0, 1, 50)
 
         targets, compute_fns = target_builder.build(system)
+
+        # Check whether kwargs can be passed dynamically
+        def dynamical_observable_fn(state, weights=None, **kwargs):
+            del state, weights
+            assert 'kT' in kwargs
+            return True
+
+        targets['test_dynamic_statepoint'] = {
+            'traj_fn': dynamical_observable_fn, 'target': None
+        }
+
 
         # We now created a numerical representation of the system and can run the trainer.
         state_kwargs = {"kT": 2.56}

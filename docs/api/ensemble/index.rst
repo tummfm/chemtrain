@@ -15,3 +15,9 @@ ensembles.
    evaluation
    reweighting
    sampling
+
+
+Utilities
+-----------
+
+.. autoclass:: chemtrain.ensemble.templates.StatePoint

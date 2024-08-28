@@ -61,7 +61,6 @@ ________________
    energy_under_strain
    init_sigma_born
    init_stiffness_tensor_stress_fluctuation
-   stiffness_tensor_components_cubic_crystal
 
 
 States

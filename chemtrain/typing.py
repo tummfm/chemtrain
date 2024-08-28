@@ -63,13 +63,15 @@ class ErrorFn(Protocol):
     def __call__(self,
                  predictions: ArrayLike,
                  targets: ArrayLike,
-                 mask: ArrayLike = None) -> ArrayLike:
+                 mask: ArrayLike = None,
+                 weights: ArrayLike = None) -> ArrayLike:
         """Computes the error of the predictions.
 
         Args:
             predictions: Predicted values with same shape as targets
             targets: Target values
             mask: Masks out invalid predictions along the first axis.
+            weights: Weights for the error calculation.
 
         Returns:
             Returns the masked error value.

@@ -59,6 +59,7 @@ def init_dataloaders(dataset, train_ratio=0.7, val_ratio=0.1, shuffle=False):
     test_loader = init_subloader(test_set)
     return DataLoaders(train_loader, val_loader, test_loader)
 
+
 def init_batch_functions(data_loader: core.HostDataLoader,
                          mb_size: int,
                          cache_size: int = 1,
@@ -83,11 +84,17 @@ def init_batch_functions(data_loader: core.HostDataLoader,
         cache_size, mb_size=mb_size)
     mask_shape = (cache_size, mb_size)
 
-    def init_fn(**kwargs) -> core.CacheState:
+    def init_fn(random: bool = True, **kwargs) -> core.CacheState:
 
-        chain_id = data_loader.register_random_pipeline(
-            cache_size=cache_size, mb_size=mb_size, **kwargs
-        )
+        if random:
+            chain_id = data_loader.register_random_pipeline(
+                cache_size=cache_size, mb_size=mb_size, **kwargs
+            )
+        else:
+            print(f"Initialize full data pipeline")
+            chain_id = data_loader.register_ordered_pipeline(
+                cache_size=cache_size, mb_size=mb_size, **kwargs
+            )
 
         initial_state, initial_mask = data_loader.get_batches(chain_id)
         if initial_mask is None:

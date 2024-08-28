@@ -44,7 +44,7 @@ except:
     ArrayLike = Any
 from optax import GradientTransformationExtraArgs
 from jax_md.partition import NeighborFn, NeighborList
-from chemtrain.typing import EnergyFnTemplate
+from chemtrain.typing import EnergyFnTemplate, TrajFn
 
 class PropertyPrediction(tt.DataParallelTrainer):
     """Trainer for direct prediction of molecular properties."""
@@ -115,6 +115,8 @@ class ForceMatching(tt.DataParallelTrainer):
         optimizer: Optimizer from optax.
         position_data: Position data of the system.
         gammas: Coefficients for the individual targets in the weighted loss.
+        weights_keys: Dictionary to entries of the dataset that contain a
+            per-sample weight for the total loss.
         additional_targets: Additional snapshot targets to train on. Forces
             and energy are derived automatically from the energy_fn_template.
         feature_extract_fns: Features to extract from the data, passed to
@@ -140,6 +142,7 @@ class ForceMatching(tt.DataParallelTrainer):
                  energy_fn_template: EnergyFnTemplate,
                  nbrs_init: NeighborList,
                  gammas: Dict[str, float] = None,
+                 weights_keys: Dict[str, str] = None,
                  additional_targets: Dict[str, Dict] = None,
                  feature_extract_fns: Dict[str, Callable] = None,
                  batch_per_device: int = 1,
@@ -148,26 +151,37 @@ class ForceMatching(tt.DataParallelTrainer):
                  disable_shmap: bool = False,
                  penalty_fn: Callable = None,
                  convergence_criterion: str = 'window_median',
-                 checkpoint_path: PathLike = 'checkpoints',
-                 **unused):
+                 checkpoint_path: PathLike = 'checkpoints'):
         # Add additional trainable targets
         if gammas is None:
             gammas = {}
 
-        # These are common quantities to train on
+        # This feature extractor enables to evaluate the energy function
+        # only once for all computations involving the energy and forces.
+        feature_fns = {
+            "energy_and_force": custom_quantity.energy_force_wrapper(
+                energy_fn_template
+            )
+        }
+
+        # These are common quantities to train on. The energy function is not
+        # necessary, since forces and energy are pre-extracted
         quantities = {
-            "F": custom_quantity.force_wrapper(energy_fn_template),
-            "U": custom_quantity.energy_wrapper(energy_fn_template)
+            "F": custom_quantity.force_wrapper(None),
+            "U": custom_quantity.energy_wrapper(None)
         }
 
         if additional_targets is not None:
             quantities.update(additional_targets)
+        if feature_extract_fns is not None:
+            feature_fns.update(feature_extract_fns)
 
         model = force_matching.init_model(
-            nbrs_init, quantities, feature_extract_fns
+            nbrs_init, quantities, feature_extract_fns=feature_fns
         )
 
-        loss_fn = force_matching.init_loss_fn(**gammas)
+        loss_fn = force_matching.init_loss_fn(
+            gammas=gammas, weights_keys=weights_keys)
 
         super().__init__(loss_fn, model, init_params, optimizer,
                          checkpoint_path, batch_per_device, batch_cache,
@@ -243,8 +257,8 @@ class Difftre(tt.PropagationBase):
 
             # Add all statepoints
             trainer.add_statepoint(energy_fn_template, simulator_template,
-                                   neighbor_fn, timings, kbt, compute_fns,
-                                   reference_state, targets)
+                                   neighbor_fn, timings, statepoint_dict,
+                                   compute_fns, reference_state, targets)
             ...
 
             # Optionally initialize the step size adaption
@@ -272,7 +286,9 @@ class Difftre(tt.PropagationBase):
         self._adaptive_step_size_threshold = None
         self._recompute = False
 
+        self.state_dicts = {}
         self.weights_fn = {}
+        self.targets = {}
         super().__init__(
             init_trainer_state=init_state, optimizer=optimizer,
             checkpoint_path=checkpoint_path, reweight_ratio=reweight_ratio,
@@ -297,11 +313,12 @@ class Difftre(tt.PropagationBase):
                        quantities: Dict[str, Dict],
                        reference_state,
                        targets: Dict[str, Any] = None,
+                       observables: Dict[str, TrajFn] = None,
+                       target_loss_fns: Dict[str, Callable] = None,
                        loss_fn = None,
                        vmap_batch: int = 10,
                        initialize_traj: bool = True,
                        set_key: str = None,
-                       loss_kwargs: Mapping = None,
                        entropy_approximation: bool = False,
                        resample_simstates: bool = False):
         """
@@ -319,7 +336,8 @@ class Difftre(tt.PropagationBase):
             timings: Instance of TimingClass containing information
                 about the trajectory length and which states to retain
             state_kwargs: Properties defining the thermodynamic state. Must
-                at least contain the temperature 'kT'.
+                at least contain the temperature 'kT'. For a non-exhaustive
+                list, see :class:`chemtrain.ensemble.templates.StatePoint`.
             quantities: Dict containing for each observable specified by the
                 key a corresponding function to compute it for each snapshot
                 using traj_util.quantity_traj.
@@ -327,6 +345,13 @@ class Difftre(tt.PropagationBase):
             targets: Dict containing the same keys as quantities and containing
                 another dict providing 'gamma' and 'target' for each observable.
                 Targets are only necessary when using the 'independent_loss_fn'.
+            observables: Optional dictionary providing the observable functions
+                for the targets. This is only necessary when the observable
+                functions are not already contained in the targets dict.
+            target_loss_fns: Optional dictionary providing the loss functions
+                for the individual targets. This is only necessary when the
+                loss functions are not already contained in the targets dict
+                or should be different from the MSE loss.
             loss_fn: Custom loss function taking the trajectory of quantities
                 and weights and returning the loss and predictions;
                 By default, initializes an independent MSE loss, which computes
@@ -345,15 +370,10 @@ class Difftre(tt.PropagationBase):
                 statepoint.
                 Can be used for changing the timings of the simulation during
                 training.
-            loss_kwargs: Keyword arguments that are passed to the initializer
-                of the loss function.
             resample_simstates: Resample the sim states from all trajectories
                 instead of simulating independent chains.
 
         """
-        if loss_kwargs is None:
-            loss_kwargs = {}
-
         # init simulation, reweighting functions and initial trajectory
         (key, *reweight_fns) = self._init_statepoint(
             reference_state,
@@ -370,9 +390,26 @@ class Difftre(tt.PropagationBase):
             resample_simstates=resample_simstates
         )
 
+        # For backwards compatibility and ease of use for a single statepoint
+        if observables is None:
+            observables = {
+                key: target['traj_fn'] for key, target in targets.items()
+            }
+        if target_loss_fns is None:
+            target_loss_fns = {
+                key: target['loss_fn'] for key, target in targets.items()
+                if 'loss_fn' in target
+            }
+
+        # Enables a greater flexibility by sorting out data from frunctions
+        targets = {
+            key: {k: v for k, v in target.items() if k in ['gamma', 'target']}
+            for key, target in targets.items() if target.get('target') is not None
+        }
+
         # build loss function for current state point
         if loss_fn is None:
-            loss_fn = difftre.init_default_loss_fn(targets, **loss_kwargs)
+            loss_fn = difftre.init_default_loss_fn(observables, target_loss_fns)
         else:
             print('Using custom loss function. Ignoring "target" dict.')
 
@@ -383,6 +420,8 @@ class Difftre(tt.PropagationBase):
         self.grad_fns[key] = difftre_grad_and_propagation
         self.predictions[key] = {}  # init saving predictions for this point
         self.weights_fn[key] = jax.jit(reweight_fns[0])
+        self.state_dicts[key] = state_kwargs
+        self.targets[key] = targets
 
         # Reset loss measures if new state point es added since loss values
         # are not necessarily comparable
@@ -414,6 +453,7 @@ class Difftre(tt.PropagationBase):
             (new_traj_state, loss_val, curr_grad,
              state_point_predictions) = grad_fn(
                 self.params, self.trajectory_states[sim_key],
+                self.state_dicts[sim_key], self.targets[sim_key],
                 recompute=self._recompute
             )
 
@@ -435,8 +475,8 @@ class Difftre(tt.PropagationBase):
                 self._diverged = True  # ends training
                 break
 
-        self.batch_losses.append(onp.asarray(losses / self.sim_batch_size))
-        batch_grad = tree_util.tree_map(lambda x: x / self.sim_batch_size, grads)
+        self.batch_losses.append(onp.asarray(losses / len(batch)))
+        batch_grad = tree_util.tree_map(lambda x: x / len(batch), grads)
 
         if self._adaptive_step_size is not None:
             proposal = self._optimizer_step(batch_grad)
@@ -487,7 +527,13 @@ class Difftre(tt.PropagationBase):
         )
 
     def _evaluate_convergence(self, *args, thresh=None, **kwargs):
-        last_losses = jnp.array(self.batch_losses[-self.sim_batch_size:])
+        # sim_batch_size = -1 means all statepoints are processed in one batch.
+        if self.sim_batch_size < 0:
+            batches_per_epoch = 1
+        else:
+            batches_per_epoch = self.n_statepoints // self.sim_batch_size
+
+        last_losses = jnp.array(self.batch_losses[-batches_per_epoch:])
         epoch_loss = jnp.mean(last_losses)
         duration = self.update_times[self._epoch]
         self.epoch_losses.append(epoch_loss)
@@ -498,10 +544,9 @@ class Difftre(tt.PropagationBase):
             f'\n\tGradient norm: {self.gradient_norm_history[-1]}'
             f'\n\tElapsed time = {duration:.3f} min')
 
-        self._print_measured_statepoint()
-
-        # print last scalar predictions
+        # Print scalar predictions
         for statepoint, prediction_series in self.predictions.items():
+            self._print_measured_statepoint(sim_key=statepoint)
             last_predictions = prediction_series[self._epoch]
             for quantity, value in last_predictions.items():
                 if value.ndim == 0:
@@ -646,7 +691,7 @@ class RelativeEntropy(tt.PropagationBase):
             data_loader=reference_loader, mb_size=reference_batch_size,
             cache_size=batch_cache
         )
-        init_reference_batch_state = init_ref_batch(shuffle=False)
+        init_reference_batch_state = init_ref_batch(shuffle=True)
         self.data_states[key] = init_reference_batch_state
         return get_ref_batch
 

@@ -201,7 +201,8 @@ def init_model(nbrs_init: NeighborList,
 
 def init_loss_fn(error_fn: ErrorFn = max_likelihood.mse_loss,
                  individual: bool = True,
-                 **kwargs: float):
+                 gammas: dict[str, float] = None,
+                 weights_keys: Dict[str, str] = None):
     """Initializes loss function for energy/force matching.
 
     Args:
@@ -211,26 +212,44 @@ def init_loss_fn(error_fn: ErrorFn = max_likelihood.mse_loss,
             testing purposes. If False, the loss function returns a scalar loss
             value from the individual loss contributions, weighted by the
             ``gamma_`` coefficients.
+        gammas: Weights for the per-target losses in the total loss.
+        weights_keys: Dictionary specifying weight keys in the dataset for
+            individual targets. The weights determine the per-sample
+            contribution for the specific target.
 
     Returns:
         Returns a function ``loss_fn(predictions, targets)``, which returns a
         scalar loss value for a batch of predictions and targets.
     """
+    if gammas is None:
+        gammas = {}
+    if weights_keys is None:
+        weights_keys = {}
+
+    # Default weights for the common quantities
+    gamma_U = gammas.pop('U', 1.0)
+    gamma_F = gammas.pop('F', 1.0)
+
     def loss_fn(predictions, targets):
         errors = {}
         loss_val = 0.
 
-        # Always present. Per-species targets should be masked correctly and
-        # not contribute to the loss.
+        # Always present.
         if 'U' in targets.keys():
-            errors['U'] = error_fn(predictions['U'], targets['U'])
-            loss_val += kwargs.pop('U', 1.0) * errors['U']
+            weights = targets.get(weights_keys.get('U'))
+            errors['U'] = error_fn(predictions['U'], targets['U'], weights=weights)
+            loss_val += gamma_U * errors['U']
         if 'F' in targets.keys():
-            errors['F'] = error_fn(predictions['F'], targets['F'])
-            loss_val += kwargs.pop('F', 1.0) * errors['F']
+            weights = targets.get(weights_keys.get('U'))
+            errors['F'] = error_fn(predictions['F'], targets['F'], weights=weights)
+            loss_val += gamma_F * errors['F']
 
-        for key, gamma in kwargs.items():
-            errors[key] = error_fn(predictions[key], targets[key])
+        for key, gamma in gammas.items():
+            weights = None
+            if key in weights_keys.keys():
+                weights = targets[weights_keys[key]]
+
+            errors[key] = error_fn(predictions[key], targets[key], weights=weights)
             loss_val += gamma * errors[key]
 
         if individual:

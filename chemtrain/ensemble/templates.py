@@ -19,6 +19,33 @@ from jax_md.partition import NeighborList
 
 from chemtrain.ensemble import sampling
 
+from typing_extensions import TypedDict, Optional
+from jax.typing import ArrayLike
+
+
+class StatePoint(TypedDict, total=False):
+    """Dictionary defining properties of the thermodynamic statepoint.
+
+    Args:
+        kT: External temperature
+        pressure: External pressure
+        dof: Degrees of freedom of the system. Reduced, e.g., for constrained
+            bonds.
+        box: Simulation box
+        volume: Volume of the simulation box
+        species: Species of the particles
+        mask: Mask for the particles
+
+    """
+
+    kT: Optional[ArrayLike]
+    pressure: Optional[ArrayLike]
+    dof: Optional[ArrayLike]
+    species: Optional[ArrayLike]
+    mask: Optional[ArrayLike]
+    box: Optional[ArrayLike]
+    volume: Optional[ArrayLike]
+
 
 def init_nvt_langevin_simulator_template(shift_fn,
                                          nbrs: NeighborList = None,

@@ -1,4 +1,17 @@
-import functools
+# Copyright 2023 Multiscale Modeling of Fluid Materials, TU Munich
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from typing import Any, Dict, Callable, NamedTuple
 
 import numpy as onp
@@ -27,7 +40,7 @@ class State(Protocol):
         position: Particle positions
 
     """
-    position:  ArrayLike
+    position: ArrayLike
 
 
 class SimpleState(NamedTuple):
@@ -174,15 +187,15 @@ def quantity_multimap(*states: State,
         kwargs.update(energy_params=energy_params)
 
         # Add a masked neighbor list if masked and neighbor list are provided
+        if util.is_npt_ensemble(states):
+            box = simulate.npt_box(states[0])
+            kwargs['box'] = box
         if nbrs is not None:
             new_nbrs = util.neighbor_update(nbrs, states[0], **kwargs)
             mask = kwargs.get(
                 "mask", jnp.ones(new_nbrs.reference_position.shape[0]))
             kwargs["neighbor"] = custom_partition.mask_neighbor_list(
                 new_nbrs, mask)
-        if util.is_npt_ensemble(states):
-            box = simulate.npt_box(states[0])
-            kwargs['box'] = box
 
         # Extract additional features to all snapshot computation functions,
         # e.g., the neighbor list graph. Next features can be beased on

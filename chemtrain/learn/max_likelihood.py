@@ -29,9 +29,16 @@ from chemtrain import util
 
 
 def _get_param_loss_fn(loss_fn, batched_model, penalty_fn=None):
-    def params_loss_fn(params, batch):
+
+    def params_loss_fn(params, batch, sample_mask=None):
         predictions = batched_model(params, batch)
-        out = loss_fn(predictions, batch)
+
+        if sample_mask is None:
+            out = loss_fn(predictions, batch)
+        else:
+            # Compute the loss for each sample to enable masking
+            out = vmap(loss_fn)(predictions, batch)
+            out = tree_map(partial(_batch_masked_loss, mask=sample_mask), out)
 
         # Canonicalize output
         if isinstance(out, tuple):
@@ -39,7 +46,6 @@ def _get_param_loss_fn(loss_fn, batched_model, penalty_fn=None):
         else:
             loss = out
             per_target_loss = None
-
 
         # Add a penalty if provided
         if penalty_fn is not None:
@@ -210,26 +216,27 @@ def shmap_loss_fn(batched_model, loss_fn, penalty_fn=None):
             @partial(shard_map, mesh=mesh, in_specs=PartitionSpec('batch'),
                      out_specs=PartitionSpec())
             def _inner(batch):
-                loss, per_target_loss = param_loss_fn(params, batch)
+                loss, per_target_loss = param_loss_fn(params, *batch)
 
                 loss = lax.pmean(loss, axis_name='batch')
-                per_target_loss = lax.psum(per_target_loss, axis_name='batch')
+                per_target_loss = lax.pmean(per_target_loss, axis_name='batch')
 
                 return loss, per_target_loss
 
         else:
             def _inner(batch):
-                loss, per_target_loss = param_loss_fn(params, batch)
+                loss, per_target_loss = param_loss_fn(params, *batch)
                 return loss, per_target_loss
 
         return _inner(data)
 
-    def loss_fn(params, batch, per_target=False):
+    def loss_fn(params, batch, mask=None, per_target=False):
+        data = batch, mask
         if mesh.size > 1:
             params = device_put(params, replicate)
-            batch = device_put(batch, split)
+            data = device_put(data, split)
 
-        *outs, per_target_loss = batch_update(params, batch)
+        *outs, per_target_loss = batch_update(params, data)
 
         if per_target:
             return *outs, per_target_loss
@@ -237,6 +244,50 @@ def shmap_loss_fn(batched_model, loss_fn, penalty_fn=None):
             return outs
 
     return loss_fn
+
+
+def shmap_model(batched_model):
+    """Initializes a shmapped function for evaluating the model.
+
+    Usage:
+        .. code-block :: python
+
+            predictions = shmapped_model(params, batch)
+
+
+    Args:
+        batched_model: A model with signature model(params, batch), which
+            predicts a batch of outputs.
+
+    Returns:
+        A function that computes multiple predictions in parallel.
+
+    """
+    # loss as function of params and batch for optimization.
+    mesh = Mesh(jax.devices(), axis_names=('batch'))
+    replicate = NamedSharding(mesh, PartitionSpec())
+    split = NamedSharding(mesh, PartitionSpec('batch'))
+
+    @jit
+    def batch_update(params, data):
+        if mesh.size > 1:
+            _inner = shard_map(
+                batched_model, mesh=mesh,
+                in_specs=(PartitionSpec(), PartitionSpec('batch')),
+                out_specs=PartitionSpec('batch')
+            )
+        else:
+            _inner = batched_model
+        return _inner(params, data)
+
+    def shmapped_model(params, batch):
+        if mesh.size > 1:
+            params = device_put(params, replicate)
+            batch = device_put(batch, split)
+
+        return batch_update(params, batch)
+
+    return shmapped_model
 
 
 def init_val_predictions(batched_model, val_loader, batch_size=1,
@@ -329,17 +380,33 @@ def init_val_loss_fn(model, loss_fn, val_loader, val_targets_keys=None,
     return mapped_loss_fn, data_release_fn
 
 
-def _masked_loss(per_element_loss, mask=None):
+def _batch_masked_loss(per_sample_loss, mask=None):
+    # We do not divide by the number of samples here to avoid nans for
+    # completely masked batches
+    if mask is None:
+        return jnp.mean(per_sample_loss)
+    else:
+        per_sample_loss = jnp.moveaxis(per_sample_loss, 0, -1)
+        return jnp.mean(per_sample_loss * mask)
+
+
+def _masked_loss(per_element_loss, mask=None, weights=None):
     """Computes average loss, accounting for masked elements, if applicable."""
+    if weights is not None:
+        per_element_loss = jnp.moveaxis(per_element_loss, 0, -1)
+        per_element_loss *= weights
+        per_element_loss = jnp.moveaxis(per_element_loss, -1, 0)
+
     if mask is None:
         return jnp.mean(per_element_loss)
     else:
-        assert mask.shape == per_element_loss.shape, ('Mask requires same shape'
-                                                      ' as targets.')
+        assert mask.shape == per_element_loss.shape, (
+            'Mask requires same shape as targets.'
+        )
         return jnp.sum(per_element_loss * mask) / jnp.sum(mask)
 
 
-def mse_loss(predictions, targets, mask=None):
+def mse_loss(predictions, targets, mask=None, weights=None):
     """Computes mean squared error loss for given predictions and targets.
 
     Args:
@@ -353,10 +420,10 @@ def mse_loss(predictions, targets, mask=None):
         Mean squared error loss value.
     """
     squared_differences = jnp.square(targets - predictions)
-    return _masked_loss(squared_differences, mask)
+    return _masked_loss(squared_differences, mask, weights)
 
 
-def mae_loss(predictions, targets, mask=None):
+def mae_loss(predictions, targets, mask=None, weights=None):
     """Computes the mean absolute error for given predictions and targets.
 
     Args:
@@ -370,7 +437,7 @@ def mae_loss(predictions, targets, mask=None):
         Mean absolute error value.
     """
     abs_err = jnp.abs(targets - predictions)
-    return _masked_loss(abs_err, mask)
+    return _masked_loss(abs_err, mask, weights)
 
 
 def identity_loss(predictions, *args, **kwargs):

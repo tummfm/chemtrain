@@ -14,5 +14,5 @@
 
 from .structure import *
 from .thermodynamics import *
-from .util import TargetBuilder, InitArguments
+from .util import TargetBuilder, InitArguments, split_target_dict
 

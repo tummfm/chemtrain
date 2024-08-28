@@ -17,6 +17,7 @@ from typing import Union, Tuple, Callable
 
 from jax_md import space, util
 import jax.numpy as jnp
+from jax import vmap
 
 Box = Union[float, util.Array]
 
@@ -39,10 +40,14 @@ def init_fractional_coordinates(box: Box) -> Tuple[Box, Callable]:
         A tuple (box, scale_fn) of a 2D box tensor and a scale_fn that scales
         positions in real-space to the unit hypercube.
     """
-    if box.ndim != 2:  # we need to transform to box tensor
-        box_tensor = _rectangular_boxtensor(box)
-    else:
-        box_tensor = box
-    inv_box_tensor = space.inverse(box_tensor)
-    scale_fn = lambda positions: jnp.dot(positions, inv_box_tensor)
-    return box_tensor, scale_fn
+    if box.ndim != 2:
+        box = _rectangular_boxtensor(box)
+
+    def scale_fn(positions, **kwargs):
+        _box = kwargs.get('box', box)
+        if _box.ndim != 2:
+            _box = _rectangular_boxtensor(_box)
+        inv_box = jnp.linalg.inv(_box)
+        return jnp.dot(inv_box, positions.T).T
+
+    return box, scale_fn

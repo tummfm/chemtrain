@@ -5,8 +5,10 @@
 
 # export XLA_FLAGS=""
 
+export DATA_PATH="../../examples/data"
+
 /usr/bin/env
 
-jupytext --output ../docs/examples/CG_alanine_dipeptide.ipynb CG_alanine_dipeptide.md
-cd ../docs/examples && jupyter nbconvert --to ipynb --inplace --execute CG_alanine_dipeptide.ipynb
+jupytext --output ../docs/examples/execute.ipynb CG_alanine_dipeptide.md
+cd ../docs/examples && papermill execute.ipynb CG_alanine_dipeptide.ipynb --progress-bar --request-save-on-cell-execute
 cp CG_alanine_dipeptide.ipynb ../../examples/CG_alanine_dipeptide.ipynb

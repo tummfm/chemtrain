@@ -36,7 +36,11 @@ from chemtrain.typing import TargetDict, EnergyFnTemplate, ComputeFn
 from chemtrain.ensemble import reweighting, evaluation, sampling
 from chemtrain import util
 
-def init_default_loss_fn(targets: TargetDict):
+from chemtrain.typing import TrajFn
+
+def init_default_loss_fn(observables: Dict[str, TrajFn],
+                         loss_fns: Dict[str, Callable]
+                         ):
     """Initializes the MSE loss function for DiffTRe.
 
     The default loss for DiffTRe minimizes the mean squared error (MSE)
@@ -64,49 +68,32 @@ def init_default_loss_fn(targets: TargetDict):
     For a list of implemented ensemble observables, refer to the module
     :mod:`chemtrain.quantity.observables`.
 
-    Example:
-        The target dictionary is of the form:
-
-        .. code::
-
-           target_dict = {
-               ...
-               'some_quantity': {
-                   'target': <target-value>,
-                   'gamma': <coefficient>,
-                   'traj_fn': <compute-function>
-                   'loss_fn': <loss-function> (optional)
-               },
-              ...
-           }
 
     Args:
-        targets: Dictionary containing the target values, weighting factors
-            and compute functions.
+        observables: Dictionary containing functions to compute ensemble
+            observables from snapshots.
+        loss_fns: Dictionary containing loss functions for the individual
+            targets.
 
     Returns:
-        Returns a DiffTRe loss_fn accepting trajectories of instantaneous
-        properties. The loss function computes observables (ensemble averages)
-        via the reweighting scheme and outputs the MSE loss and predicted
-        observations.
+        Returns a DiffTRe loss_fn. The loss function accepts a dictionary of
+        snapshots for each sample, the weights for each sample, a dict
+        definition properties of the statepoint and the targets of the training.
 
     """
-    def loss_fn(quantity_trajs, weights):
+    def loss_fn(quantity_trajs, weights, state_dict, targets):
         predictions = {
-            key: target['traj_fn'](quantity_trajs, weights=weights)
-            for key, target in targets.items()
+            key: obs_fn(quantity_trajs, weights=weights, **state_dict)
+            for key, obs_fn in observables.items()
         }
 
         # MSE loss for the remaining targets
         loss = 0.
         for target_key, target in targets.items():
-            target_value = target.get('target', None)
-            loss_fn = target.get('loss_fn', max_likelihood.mse_loss)
+            loss_fn = loss_fns.get(target_key, max_likelihood.mse_loss)
             gamma = target.get('gamma', 1.0)
 
-            # Skip targets without a target value but still compute predictions.
-            if target_value is not None:
-                loss += gamma * loss_fn(predictions[target_key], target_value)
+            loss += gamma * loss_fn(predictions[target_key], target['target'])
 
         return loss, predictions
     return loss_fn
@@ -145,7 +132,7 @@ def init_difftre_gradient_and_propagation(
         energy_fn_template)
     reweighting.checkpoint_quantities(quantities)
 
-    def difftre_loss(params, traj_state):
+    def difftre_loss(params, traj_state, state_dict, targets):
         """Computes the loss using the DiffTRe formalism and
         additionally returns predictions of the current model.
         """
@@ -156,7 +143,8 @@ def init_difftre_gradient_and_propagation(
             traj_state, quantities, params)
         quantity_trajs.update(entropy=entropy, free_energy=free_energy)
 
-        loss, predictions = loss_fn(quantity_trajs, weights)
+        loss, predictions = loss_fn(
+            quantity_trajs, weights, state_dict, targets)
 
         # Always save free energy and entropy even if they are not part of
         # the loss.
@@ -174,13 +162,14 @@ def init_difftre_gradient_and_propagation(
 
     @safe_propagate
     @jit
-    def difftre_grad_and_propagation(params, traj_state):
+    def difftre_grad_and_propagation(params, traj_state, state_dict, targets):
         """The main DiffTRe function that recomputes trajectories
         when needed and computes gradients of the loss wrt. energy function
         parameters for a single state point.
         """
         traj_state = propagate_fn(params, traj_state)
-        (loss_val, predictions), loss_grad = loss_grad_fn(params, traj_state)
+        (loss_val, predictions), loss_grad = loss_grad_fn(
+            params, traj_state, state_dict, targets)
         return traj_state, loss_val, loss_grad, predictions
 
 

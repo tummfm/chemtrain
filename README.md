@@ -34,12 +34,16 @@ concepts of the algorithms:
 - [Relative Entropy Maximization](./examples/relative_entropy.ipynb)
 
 For a more extensive overview of implemented algorithms, please refer to the
-`documentation of the ``trainers`` module <api/trainers>`_.
+documentation of the ``trainers`` module.
 
 To see the usage of chemtrain in real examples, we implemented the training
 procedures of some recent papers:
 
+- [CG Alaninine Dipeptide in Implicit Water](./examples/CG_alanine_dipeptide.ipynb)
+- [CG Water on Structural Data](./examples/CG_water_difftre.ipynb)
+- [AT Titanium on Fused Simulation and Experimental Data](./examples/AT_titanium_fused_training.ipynb)
 
+We recommend viewing the examples in the [reference documentation](https://chemtrain.readthedocs.io/en/latest/).
 
 ## Installation
 
@@ -55,6 +59,12 @@ version.
 Please follow the
 [JAX Installation Instructions](https://github.com/google/jax#installation).
 
+> **Note:** Chemtrain installs ``jax == 0.4.30`` which is, in principle,
+> incompatible with ``jax_md <= 0.1.29`` but resolves an
+> [XLA issue](https://github.com/google/jax/issues/17730) which can prevent
+> training. By importing ``chemtrain`` or the ``jax_md_mod`` module
+> **before importing** ``jax_md``, the compatibility is restored by a simple
+> patch.
 
 ### Additional Packages
 
@@ -95,7 +105,7 @@ Within the repository, we provide the following directories:
   following submodules:
 
   - ``data`` Loading and preprocessing of microscopic reference data
-  - ``ensemble`` Sampling from and evaluating quantities of ensembles
+  - ``ensemble`` Sampling from and evaluating quantities for ensembles
   - ``learn`` Lower level implementations of training algorithms
   - ``quantity`` Learnable microscopic and macroscopic quantities
   - ``trainers`` High-level API to training algorithms

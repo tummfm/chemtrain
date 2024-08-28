@@ -36,7 +36,7 @@ Please follow the `JAX Installation Instructions <https://github.com/google/jax#
    with ``jax_md <= 0.1.29`` but resolves an
    `XLA issue <https://github.com/google/jax/issues/17730>`_ which can prevent
    training.
-   By important ``chemtrain`` or the ``jax_md_mod`` module
+   By importing ``chemtrain`` or the ``jax_md_mod`` module
    **before importing** ``jax_md``, the compatibility is restored by a simple
    patch.
 
@@ -96,7 +96,7 @@ procedures of some recent papers:
 
 - :doc:`examples/CG_water_difftre`
 - :doc:`examples/CG_alanine_dipeptide`
-- :doc:`examples/CG_titanium_difftre`
+- :doc:`examples/AT_titanium_fused_training`
 
 .. toctree::
    :maxdepth: 2
@@ -117,6 +117,7 @@ procedures of some recent papers:
 
    examples/CG_water_difftre
    examples/CG_alanine_dipeptide
+   examples/AT_titanium_fused_training
 
 
 API Documentation
@@ -127,7 +128,12 @@ API Documentation
    :maxdepth: 2
    :titlesonly:
 
-   api/index
+   api/data/index
+   api/learn/index
+   api/quantity/index
+   api/ensemble/index
+   api/trainers
+   api/typing
 
 
 .. toctree::
@@ -135,7 +141,14 @@ API Documentation
    :caption: Jax, M.D. Extensions
    :maxdepth: 2
 
-   jax_md_mod/index
+
+   jax_md_mod/model/index
+   jax_md_mod/jax_md_mod.custom_energy
+   jax_md_mod/jax_md_mod.custom_interpolate
+   jax_md_mod/jax_md_mod.custom_partition
+   jax_md_mod/jax_md_mod.custom_quantity
+   jax_md_mod/jax_md_mod.custom_space
+   jax_md_mod/jax_md_mod.io
 
 
 Indices and tables

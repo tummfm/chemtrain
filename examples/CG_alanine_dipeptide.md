@@ -44,6 +44,8 @@ from chemtrain import quantity, trainers, util
 
 out_dir = Path("../_data/output")
 out_dir.mkdir(exist_ok=True)
+
+base_path = Path(os.environ.get("DATA_PATH", "./data"))
 ```
 
 ```{code-cell} ipython
@@ -157,10 +159,10 @@ Following, we load the potential parameters.
 
 
 ```{code-cell} ipython
-with open("../_data/alanine_heavy.toml") as f:
+with open(base_path / "alanine_heavy.toml") as f:
     print(f.read())
     
-force_field = prior.ForceField.load_ff("../_data/alanine_heavy.toml")
+force_field = prior.ForceField.load_ff(base_path / "alanine_heavy.toml")
 ```
 
 Finally, we must define the index sets for the bonds $\mathcal B$, angles $\mathcal A$, and dihedral angles $\mathcal D$.
@@ -334,7 +336,7 @@ relative_entropy.add_statepoint(
     position_dataset[:re_used_dataset_size, ...],
     energy_fn_template, sim_template, neighbor_fn,
     re_timings, state_kwargs, reference_state,
-    reference_batch_size=re_used_dataset_size // 10,
+    reference_batch_size=re_used_dataset_size,
     vmap_batch=n_chains, resample_simstates=True)
 
 relative_entropy.init_step_size_adaption(0.25)
@@ -430,7 +432,7 @@ if os.environ.get("FM_TRAINING", "False").lower() == "true":
             force_matching.train(fm_epochs)
             print(f"Total training time: {(time.time() - start) / 3600 : .1f} hours")
     
-    force_matching.save_energy_params("../_data/output/alanine_dipeptide_fm_params.pkl", '.pkl')
+    force_matching.save_energy_params("../_data/output/alanine_dipeptide_fm_params.pkl", '.pkl', best=False)
     force_matching.save_trainer("../_data/output/alanine_dipeptide_fm_trainer.pkl", '.pkl')
     
 force_matching = onp.load("../_data/output/alanine_dipeptide_fm_trainer.pkl", allow_pickle=True)

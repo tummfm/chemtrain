@@ -193,6 +193,8 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
                            neighbor_test: partition.NeighborList = None,
                            max_triplet_multiplier: float = 1.25,
                            max_edge_multiplier: float = 1.25,
+                           max_edges=None,
+                           max_triplets=None,
                            **dimenetpp_kwargs
                            ) -> Tuple[nn.InitFn, Callable[[Any, util.Array],
                                                           util.Array]]:
@@ -233,6 +235,8 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
         max_edge_multiplier: Multiplier for initial estimate of maximum edges.
         max_triplet_multiplier: Multiplier for initial estimate of maximum
             triplets.
+        max_edges: Expected maximum of valid edges.
+        max_triplets: Expected maximum of valid triplets.
         dimenetpp_kwargs: Kwargs to change the default structure of DimeNet++.
             For definition of the kwargs, see DimeNetPP.
 
@@ -258,9 +262,8 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
         n_particles, n_neighbors = neighbor_test.idx.shape
         max_edges = min(max_edges, n_particles * n_neighbors)
         max_triplets = min(max_triplets, n_particles * n_neighbors**2)
-    else:
-        max_triplets = None
-        max_edges = None
+
+        print(f"Estimated max. {max_edges} edges and max. {max_triplets} triplets.")
 
     @hk.without_apply_rng
     @hk.transform

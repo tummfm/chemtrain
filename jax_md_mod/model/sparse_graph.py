@@ -135,7 +135,7 @@ class SparseDirectionalGraph:
         self.triplet_mask = self.triplet_mask[:self.n_triplets]
 
 
-def angle(r_ij, r_kj):
+def angle(r_ij, r_kj, eps=1.e-8):
     """Computes the angle (kj, ij) from vectors r_kj and r_ij,
     correctly selecting the quadrant.
 
@@ -146,13 +146,26 @@ def angle(r_ij, r_kj):
     Args:
         r_ij: Vector pointing to position of particle i from particle j
         r_kj: Vector pointing to position of particle k from particle j
+        eps: If the vectors are exactly parallel, the gradient of the angle
+            is undefined. Therefore, we set the angles to 0 or pi when the norm
+            of the cross product is smaller than eps.
 
     Returns:
         Angle between vectors
     """
-    cross = jnp.linalg.norm(jnp.cross(r_ij, r_kj))
+    safe_ji = jnp.array([1., 0., 0.], dtype=jnp.float32)
+    safe_kj = jnp.array([0., 1., 0.], dtype=jnp.float32)
+
     dot = jnp.dot(r_ij, r_kj)
-    theta = jnp.arctan2(cross, dot)
+    cross = jnp.linalg.norm(jnp.cross(r_ij, r_kj))
+
+    mask = (cross == 0.)
+    r_ij = jnp.where(mask, safe_ji, r_ij)
+    r_kj = jnp.where(mask, safe_kj, r_kj)
+
+    safe_cross = jnp.linalg.norm(jnp.cross(r_ij, r_kj))
+    theta = jnp.atan2(safe_cross, dot)
+
     return theta
 
 
@@ -294,8 +307,10 @@ def sparse_graph_from_neighborlist(displacement_fn: Callable,
     # computations during production runs
     if max_edges is None:
         max_edges = n_particles * max_neighbors
+    max_edges = onp.min([max_edges, n_particles * max_neighbors])
     if max_triplets is None:
         max_triplets = max_edges * max_neighbors
+    max_triplets = onp.min([max_triplets, max_edges * max_neighbors])
 
     # sparse edge representation:
     # construct vectors from adjacency matrix and only keep existing edges

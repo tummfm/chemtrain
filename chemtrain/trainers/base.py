@@ -16,6 +16,7 @@
 requirements."""
 import abc
 import copy
+import logging
 import pathlib
 import time
 import warnings
@@ -25,8 +26,12 @@ import inspect
 from typing import Callable, Dict, Any
 
 import cloudpickle as pickle
+import jax
 import numpy as onp
-from jax import tree_map, numpy as jnp, random, vmap, device_count, jit, device_get
+from jax import (
+    tree_map, numpy as jnp, random, vmap, device_count, jit, device_get,
+    tree_util
+)
 from jax_sgmc import data
 
 import chemtrain.data.data_loaders
@@ -54,6 +59,9 @@ class TrainerInterface(metaclass=abc.ABCMeta):
         due to the dependence of the template on the box via the displacement
         function.
         """
+        checkpoint_path = pathlib.Path(checkpoint_path)
+        checkpoint_path.mkdir(exist_ok=True, parents=True)
+
         self._statistics = {}
         self._full_checkpoint = full_checkpoint
         self.checkpoint_path = checkpoint_path
@@ -94,27 +102,48 @@ class TrainerInterface(metaclass=abc.ABCMeta):
             except AttributeError:
                 print(f"Skipping trainer state")
 
+            # Try to save the best parameters when provided
+            try:
+                self._statistics["best_params"] = self.best_params
+            except AttributeError:
+                pass
+
         if format == '.pkl':
             with open(save_path, 'wb') as pickle_file:
                 pickle.dump(tree_map(onp.asarray, data), pickle_file)
         elif format == 'none':
             return data
 
-    def save_energy_params(self, file_path, save_format='.hdf5'):
-        """Loads energy parameters.
+    def save_energy_params(self, file_path, save_format='.hdf5', best=False):
+        """Saves energy parameters.
 
         Args:
             file_path: Path to the file where to save the energy parameters.
                 Currently, only saving to pickle files (``'*.pkl'``) is
                 supported.
             save_format: Format in which to save the energy parameters.
+            best: If True, tries to save the best parameters, e.g., on the
+                validation loss. If no criterion to determine the best params
+                was specified, saves the latest parameters instead.
 
         """
+        if best:
+            try:
+                params = self.best_params
+            except AttributeError:
+                warnings.warn(
+                    f"Saving best params is not possible, saving the last "
+                    f"paramters.")
+                params = self.params
+        else:
+            params = self.params
+
+
         if save_format == '.hdf5':
             raise NotImplementedError
         elif save_format == '.pkl':
             with open(file_path, 'wb') as pickle_file:
-                pickle.dump(device_get(self.params), pickle_file)
+                pickle.dump(device_get(params), pickle_file)
         else:
             format_not_recognized_error(save_format)
 
@@ -596,12 +625,16 @@ class PropagationBase(MLETrainerTemplate):
 
         return (batch.tolist() for batch in batch_list)
 
-    def _print_measured_statepoint(self):
+    def _print_measured_statepoint(self, sim_key=None):
         """Print meausured kbT (and pressure for npt ensemble) for all
         statepoints to ensure the simulation is indeed carried out at the
         prescribed state point.
         """
-        for sim_key, traj in self.trajectory_states.items():
+        if sim_key is None:
+            for sim_key in self.trajectory_states.keys():
+                self._print_measured_statepoint(sim_key)
+        else:
+            traj = self.trajectory_states[sim_key]
             print(f'[Statepoint {sim_key}]')
             statepoint = self.statepoints[sim_key]
             measured_kbt = jnp.mean(traj.aux['kbT'])
@@ -705,7 +738,8 @@ class DataParallelTrainer(MLETrainerTemplate):
 
         self._batches_per_epoch["training"] = max_batches
 
-    def set_datasets(self, dataset, train_ratio=0.7, val_ratio=0.1, shuffle=False):
+    def set_datasets(self, dataset, train_ratio=0.7, val_ratio=0.1, shuffle=False,
+                     include_all=True):
         """Sets the datasets for training, testing and validation.
 
         Args:
@@ -715,6 +749,10 @@ class DataParallelTrainer(MLETrainerTemplate):
             val_ratio: Percentage of dataset to use for validation.
             shuffle: Whether to shuffle data before splitting into
                 train-val-test.
+            include_all: Compute the loss for all samples of the splits by
+                padding the last batch and masking out double samples.
+                Not applied to the training split.
+
         """
         # release all references before allocating new data to avoid memory leak
         self._release_data_references()
@@ -724,10 +762,10 @@ class DataParallelTrainer(MLETrainerTemplate):
             dataset, train_ratio, val_ratio, shuffle=shuffle)
 
         self.set_loader(loaders.train_loader, stage="training")
-        self.set_loader(loaders.val_loader, stage="validation")
-        self.set_loader(loaders.test_loader, stage="testing")
+        self.set_loader(loaders.val_loader, stage="validation", include_all=include_all)
+        self.set_loader(loaders.test_loader, stage="testing", include_all=include_all)
 
-    def set_dataset(self, dataset, stage = "testing", shuffle = False):
+    def set_dataset(self, dataset, stage="testing", shuffle=False, include_all=False, **kwargs):
         """Sets the dataset for a single stage, e.g., training.
 
         Args:
@@ -736,6 +774,9 @@ class DataParallelTrainer(MLETrainerTemplate):
             stage: Stage for which to set the dataset. Can be ``"training"``,
                 ``"validation"``, or ``"testing"``.
             shuffle: Whether the data should be shuffled.
+            include_all: Compute the loss for all samples of the split by
+                padding the last batch and masking out double samples.
+                Not applied to the training split.
 
         """
         # Will only return one data loader
@@ -743,9 +784,9 @@ class DataParallelTrainer(MLETrainerTemplate):
             dataset, train_ratio=1.0, val_ratio=0.0, shuffle=shuffle
         )
 
-        self.set_loader(loaders.train_loader, stage=stage)
+        self.set_loader(loaders.train_loader, stage=stage, include_all=include_all, **kwargs)
 
-    def set_loader(self, data_loader, stage="training"):
+    def set_loader(self, data_loader, stage="training", include_all=False, **kwargs):
         """Sets a data loader for a specific stage, e.g., training.
 
         If the dataset consists of numpy arrays, it is simpler to use
@@ -755,6 +796,9 @@ class DataParallelTrainer(MLETrainerTemplate):
             data_loader: The data loader to set.
             stage: The stage for which to set the data loader. Can be
                 ``"training"``, ``"validation"``, or ``"testing"``.
+            include_all: Compute the loss for all samples of the split by
+                padding the last batch and masking out double samples.
+                Not applied to the training split.
 
         """
         if stage in self.release_fns.keys():
@@ -767,6 +811,26 @@ class DataParallelTrainer(MLETrainerTemplate):
         batch_size = observation_count
         if self.batch_size < observation_count:
             batch_size = self.batch_size
+
+        # Ensures that the batch size is divisible by the number of devices
+        batch_size -= onp.mod(batch_size, device_count())
+
+        if batch_size != self.batch_size:
+            logging.info(
+                f"Batch size for stage {stage} changed to {batch_size} "
+                f"from {self.batch_size}."
+            )
+
+        if include_all:
+            assert stage != "training", (f"Including all samples not supported "
+                                         f"for the training split.")
+
+            # Increase the number of observations to make them divisible by
+            # the batch size
+            observation_count += onp.mod(
+                batch_size - onp.mod(observation_count, batch_size), batch_size
+            )
+
         if onp.mod(observation_count, batch_size) != 0:
             warnings.warn(
                 f"Batch size {batch_size} does not divide the number of "
@@ -777,20 +841,23 @@ class DataParallelTrainer(MLETrainerTemplate):
 
         # Initialize the access functions
         batch_fns = data_loaders.init_batch_functions(
-            data_loader, mb_size=batch_size, cache_size=self.batch_cache)
+            data_loader, mb_size=batch_size, cache_size=self.batch_cache,
+        )
         init_train_state, get_train_batch, release = batch_fns
 
-        train_batch_state = init_train_state(shuffle=True)
+        train_batch_state = init_train_state(
+            shuffle=True, in_epochs=include_all, **kwargs
+        )
 
         self._get_batch_fns[stage] = get_train_batch
         self._batch_states[stage] = train_batch_state
         self._batches_per_epoch[stage] = observation_count // batch_size
         self.release_fns[stage] = release
 
-    def _get_batch_stage(self, stage):
+    def _get_batch_stage(self, stage, information=False):
         for _ in range(self._batches_per_epoch[stage]):
             self._batch_states[stage], train_batch = self._get_batch_fns[stage](
-                self._batch_states[stage])
+                self._batch_states[stage], information=information)
             yield train_batch
 
     def _get_batch(self):
@@ -814,6 +881,56 @@ class DataParallelTrainer(MLETrainerTemplate):
         self.train_batch_losses.append(onp.asarray(train_loss))
 
         self.gradient_norm_history.append(util.tree_norm(curr_grad))
+
+    def predict(self, dataset, params=None, batch_size=10):
+        """Computes predictions for a dataset.
+
+        Args:
+            dataset: Dictionary containing input data as numpy arrays. Can be,
+                e.g., the whole testing split.
+            params: Parameters for the model. If None, uses the current
+                parameters.
+            batch_size: Batch size for predictions.
+
+        Returns:
+            Returns all predictions of the model for the provided inputs.
+
+        """
+
+        # Set random to False to prevent shuffling of results by shuffling
+        # inputs
+        self.set_dataset(dataset, "predict", include_all=True, random=False)
+
+        if params is None:
+            params = self.params
+
+        if self._disable_shmap:
+            raise NotImplementedError("Pmapped predictions not implemented.")
+        else:
+            shmapped_model = max_likelihood.shmap_model(self.batched_model)
+
+        all_predictions = None
+        for batch_with_info in self._get_batch_stage("predict", information=True):
+            # Compute the total loss and the individual contributions per
+            # target
+            batch, batch_info = batch_with_info
+
+            # Only get valid samples by masking with numpy
+            predictions = shmapped_model(params, batch)
+            predictions = tree_util.tree_map(
+                lambda x: x[onp.asarray(batch_info.mask), ...],
+                jax.device_get(predictions)
+            )
+
+            if all_predictions is None:
+                all_predictions = predictions
+            else:
+                all_predictions = util.tree_map(
+                    lambda *leaves: onp.concatenate(leaves, axis=0),
+                    all_predictions, predictions
+                )
+
+        return all_predictions
 
     def evaluate(self, stage = "validation", loss_fn = None, params=None):
         """Computes the loss on the whole dataset.
@@ -848,11 +965,18 @@ class DataParallelTrainer(MLETrainerTemplate):
             raise NotImplementedError
 
         total_loss, per_target_losses = 0.0, {}
-        for batch in self._get_batch_stage(stage):
+        total_samples, valid_samples = 0, 0
+        for batch_with_info in self._get_batch_stage(stage, information=True):
             # Compute the total loss and the individual contributions per
             # target
+            batch, batch_info = batch_with_info
+
+            # Compute a correction factor
+            valid_samples += onp.sum(batch_info.mask)
+            total_samples += batch_info.batch_size
+
             val_loss, per_target_loss = loss_fn(
-                params, batch, per_target=True)
+                params, batch, mask=batch_info.mask, per_target=True)
 
             total_loss += onp.asarray(val_loss)
             for key, val in per_target_loss.items():
@@ -861,9 +985,16 @@ class DataParallelTrainer(MLETrainerTemplate):
 
                 per_target_losses[key].append(onp.asarray(val))
 
+        # The correction factor accounts for including invalid (masked) samples
+        # in the mean of the split
+        scale_factor =  total_samples / valid_samples
+
         total_loss /= self._batches_per_epoch[stage]
+        total_loss *= scale_factor
+
         per_target_losses = {
-            key: sum(val) / len(val) for key, val in per_target_losses.items()
+            key: sum(val) / len(val) * scale_factor
+            for key, val in per_target_losses.items()
         }
 
         return total_loss, per_target_losses
@@ -889,8 +1020,6 @@ class DataParallelTrainer(MLETrainerTemplate):
                     self.val_target_losses[key] = []
 
                 self.val_target_losses[key].append(val)
-
-            print(f"Validation loss {val_loss:.5f}")
 
             self._converged = self._early_stop.early_stopping(
                 val_loss, thresh, self.params)

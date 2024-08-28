@@ -31,6 +31,9 @@ Fluctuation Quantities
 
    init_heat_capacity_nvt
    init_heat_capacity_npt
+   init_born_stiffness_tensor
+   stiffness_tensor_components_cubic_crystal
+   stiffness_tensor_components_hexagonal_crystal
 
 State-Space Quantities
 -----------------------
@@ -51,3 +54,4 @@ Utility
    :template: function.rst
 
    init_identity_fn
+   dynamic_statepoint

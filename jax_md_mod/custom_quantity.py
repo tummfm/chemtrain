@@ -19,6 +19,7 @@ state and additional kwargs.
 """
 from functools import partial
 
+import jax
 import numpy as onp
 
 from jax import grad, vmap, lax, jacrev, jacfwd, numpy as jnp, jit
@@ -44,7 +45,11 @@ def energy_wrapper(energy_fn_template, fixed_energy_params=None):
             dynamially specified parameters.
 
     """
-    def energy(state, neighbor, energy_params, **kwargs):
+    def energy(state, neighbor, energy_params, energy_and_force=None, **kwargs):
+        if energy_and_force is not None:
+            print(f"[Potential] Found precomputed forces.")
+            return energy_and_force['energy']
+
         if fixed_energy_params is None:
             energy_fn = energy_fn_template(energy_params)
         else:
@@ -65,7 +70,11 @@ def force_wrapper(energy_fn_template, fixed_energy_params=None):
             dynamially specified parameters.
 
     """
-    def energy(state, neighbor, energy_params, **kwargs):
+    def energy(state, neighbor, energy_params, energy_and_force=None, **kwargs):
+        if energy_and_force is not None:
+            print(f"[Force] Found precomputed forces.")
+            return energy_and_force['force']
+
         if fixed_energy_params is None:
             energy_fn = energy_fn_template(energy_params)
         else:
@@ -73,6 +82,37 @@ def force_wrapper(energy_fn_template, fixed_energy_params=None):
         force_fn = quantity.force(energy_fn)
         return force_fn(state.position, neighbor=neighbor, **kwargs)
     return energy
+
+
+def energy_force_wrapper(energy_fn_template, fixed_energy_params=None):
+    """Wrapper around energy_fn to allow energy and force computation via
+    traj_util.quantity_traj.
+
+    Args:
+        energy_fn_template: Function creating an energy function when called
+            with energy parameters.
+        fixed_energy_params: Always use the energy function obtained when
+            using the fixed energy params. If not given, the function uses
+            dynamially specified parameters.
+
+    """
+    def energy_and_force_fn(state, neighbor, energy_params, **kwargs):
+        if fixed_energy_params is None:
+            energy_fn = energy_fn_template(energy_params)
+        else:
+            energy_fn = energy_fn_template(fixed_energy_params)
+
+        box = kwargs.pop('box', None)
+        @partial(jax.value_and_grad, argnums=(0, 1))
+        def energy_and_grads_fn(R, _box):
+            if box is not None:
+                return energy_fn(R, neighbor=neighbor, box=_box, **kwargs)
+            else:
+                return energy_fn(R, neighbor=neighbor, **kwargs)
+
+        energy, (neg_force, box_grads) = energy_and_grads_fn(state.position, box)
+        return {'energy': energy, 'force': -neg_force, 'box_grad': box_grads}
+    return energy_and_force_fn
 
 
 def kinetic_energy_wrapper(state, **unused_kwargs):
@@ -107,6 +147,15 @@ def _dyn_box(reference_box, **kwargs):
     assert box is not None, ('If no reference box is given, needs to be '
                              'given as kwarg "box".')
     return box, kwargs
+
+def _dyn_kT(kT, **kwargs):
+    """Gets kT dynamically from kwargs, if provided, otherwise defaults to
+    reference. Ensures that a kT is provided and deletes from kwargs.
+    """
+    kT = kwargs.pop('kT', kT)
+    assert kT is not None, ('If no reference kT is given, needs to be '
+                             'given as kwarg "kT".')
+    return kT, kwargs
 
 
 def volume_npt(state, **unused_kwargs):
@@ -1274,18 +1323,30 @@ def kinetic_energy_tensor(state):
     return util.high_precision_sum(state.mass * velocity_tensors, axis=0)
 
 
-def virial_potential_part(energy_fn, state, nbrs, box_tensor, **kwargs):
+def virial_potential_part(energy_fn,
+                          state,
+                          nbrs,
+                          box_tensor,
+                          energy_and_force=None,
+                          **kwargs):
     """Interaction part of the virial pressure tensor for a single snaphot
     based on the formulation of Chen at al. (2020). See
     init_virial_stress_tensor. for details."""
-    energy_fn_ = lambda pos, neighbor, box: energy_fn(
-        pos, neighbor=neighbor, box=box, **kwargs)  # for grad
     position = state.position  # in unit box if fractional coordinates used
-    negative_forces, box_gradient = grad(energy_fn_, argnums=[0, 2])(
-        position, nbrs, box_tensor)
+
+    if energy_and_force is None:
+        energy_fn_ = lambda pos, neighbor, box: energy_fn(
+            pos, neighbor=neighbor, box=box, **kwargs)  # for grad
+        negative_forces, box_gradient = grad(energy_fn_, argnums=[0, 2])(
+            position, nbrs, box_tensor)
+    else:
+        print(f"[Virial] Found precomputed forces.")
+        negative_forces = -1.0 * energy_and_force['force']
+        box_gradient = energy_and_force['box_grad']
+
     position = space.transform(box_tensor, position)  # back to real positions
     force_contribution = jnp.dot(negative_forces.T, position)
-    box_contribution = jnp.dot(box_gradient.T, box_tensor)
+    box_contribution = jnp.dot(box_gradient, box_tensor.T)
     return force_contribution + box_contribution
 
 
@@ -1415,7 +1476,7 @@ def init_sigma_born(energy_fn_template, reference_box=None):
     """
     def sigma_born(state, neighbor, energy_params, **kwargs):
         box, kwargs = _dyn_box(reference_box, **kwargs)
-        spatial_dim = box.shape[-1]
+        spatial_dim = state.position.shape[-1]
         volume = quantity.volume(spatial_dim, box)
         epsilon0 = jnp.zeros((spatial_dim, spatial_dim))
 
@@ -1426,8 +1487,7 @@ def init_sigma_born(energy_fn_template, reference_box=None):
     return sigma_born
 
 
-def init_stiffness_tensor_stress_fluctuation(energy_fn_template, box_tensor,
-                                             kbt, n_particles):
+def init_stiffness_tensor_stress_fluctuation(energy_fn_template, reference_box):
     """Initializes all functions necessary to compute the elastic stiffness
     tensor via the stress fluctuation method in the NVT ensemble.
 
@@ -1465,67 +1525,25 @@ def init_stiffness_tensor_stress_fluctuation(energy_fn_template, box_tensor,
     """
     # TODO this function simplifies a lot if split between per-snapshot
     #  and per-trajectory functions
-    spatial_dim = box_tensor.shape[-1]
-    volume = quantity.volume(spatial_dim, box_tensor)
-    epsilon0 = jnp.zeros((spatial_dim, spatial_dim))
+    # spatial_dim = reference_box.shape[-1]
+    # volume = quantity.volume(spatial_dim, reference_box)
+    # epsilon0 = jnp.zeros((spatial_dim, spatial_dim))
 
     def born_term_fn(state, neighbor, energy_params, **kwargs):
         """Born contribution to the stiffness tensor:
         C^B_ijkl = d^2 U / d epsilon_ij d epsilon_kl
         """
+        # check if box is passed in dynamic kwargs and use it if provided, else use reference box
+        box, kwargs = _dyn_box(reference_box, **kwargs)
+        spatial_dim = state.position.shape[-1]
+        volume = quantity.volume(spatial_dim, box)
+        epsilon0 = jnp.zeros((spatial_dim, spatial_dim))
+
         energy_fn = energy_fn_template(energy_params)
-        born_stiffness_contribution = jacfwd(jacrev(energy_under_strain))(
-            epsilon0, energy_fn, box_tensor, state, neighbor, **kwargs)
+        born_stiffness_contribution = jax.hessian(energy_under_strain)(
+            epsilon0, energy_fn, box, state, neighbor, **kwargs
+        )
+
         return born_stiffness_contribution / volume
 
-    @vmap
-    def sigma_tensor_prod(sigma):
-        """A function that computes sigma_ij * sigma_kl for a whole trajectory
-        to be averaged afterwards.
-        """
-        return jnp.einsum('ij,kl->ijkl', sigma, sigma)
-
-    def stiffness_tensor_fn(mean_born, mean_sigma, mean_sig_ij_sig_kl):
-        """Computes the stiffness tensor given ensemble averages of
-        C^B_ijkl, sigma^B_ij and sigma^B_ij * sigma^B_kl.
-        """
-        sigma_prod = jnp.einsum('ij,kl->ijkl', mean_sigma, mean_sigma)
-        delta_ij = jnp.eye(spatial_dim)
-        delta_ik_delta_jl = jnp.einsum('ik,jl->ijkl', delta_ij, delta_ij)
-        delta_il_delta_jk = jnp.einsum('il,jk->ijkl', delta_ij, delta_ij)
-        # Note: maybe use real kinetic energy of trajectory rather than target
-        #       kbt?
-        kinetic_term = n_particles * kbt / volume * (
-                delta_ik_delta_jl + delta_il_delta_jk)
-        delta_sigma = mean_sig_ij_sig_kl - sigma_prod
-        return mean_born - volume / kbt * delta_sigma + kinetic_term
-
-    sigma_born = init_sigma_born(energy_fn_template, box_tensor)
-
-    return born_term_fn, sigma_born, sigma_tensor_prod, stiffness_tensor_fn
-
-
-def stiffness_tensor_components_cubic_crystal(stiffness_tensor):
-    """Computes the 3 independent elastic stiffness components of a cubic
-    crystal from the whole stiffness tensor.
-
-    The number of independent components in a general stiffness tensor is 21
-    for isotropic pressure. For a cubic crystal, these 21 parameters only take
-    3 distinct values: c11, c12 and c44. We compute these values from averages
-    using all 21 components for variance reduction purposes.
-
-    Args:
-        stiffness_tensor: The full (3, 3, 3, 3) elastic stiffness tensor
-
-    Returns:
-        A (3,) ndarray containing (c11, c12, c44)
-    """
-    # TODO likely there exists a better formulation via Einstein notation
-    c = stiffness_tensor
-    c11 = (c[0, 0, 0, 0] + c[1, 1, 1, 1] + c[2, 2, 2, 2]) / 3.
-    c12 = (c[0, 0, 1, 1] + c[1, 1, 0, 0] + c[0, 0, 2, 2] + c[2, 2, 0, 0]
-           + c[1, 1, 2, 2] + c[2, 2, 1, 1]) / 6.
-    c44 = (c[0, 1, 0, 1] + c[1, 0, 0, 1] + c[0, 1, 1, 0] + c[1, 0, 1, 0] +
-           c[0, 2, 0, 2] + c[2, 0, 0, 2] + c[0, 2, 2, 0] + c[2, 0, 2, 0] +
-           c[2, 1, 2, 1] + c[1, 2, 2, 1] + c[2, 1, 1, 2] + c[1, 2, 1, 2]) / 12.
-    return jnp.array([c11, c12, c44])
+    return born_term_fn

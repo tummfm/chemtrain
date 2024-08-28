@@ -45,3 +45,5 @@ Build Targets and Compute Functions
 
 .. autoclass:: InitArguments
    :members:
+
+.. autofunction:: split_target_dict

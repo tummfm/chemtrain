@@ -130,7 +130,7 @@ class TargetBuilder:
         self._targets[key] = value
 
     def build(self,
-              system: InitArguments = None
+              system: InitArguments = None,
               ) -> Tuple[TargetDict, ComputeFnDict]:
         """Initializes the targets and compute functions.
 
@@ -152,6 +152,36 @@ class TargetBuilder:
             target_dicts, compute_fns = init_fn(
                 key, target_dicts, compute_fns, self._system)
         return target_dicts, compute_fns
+
+
+def split_target_dict(target_dict: TargetDict
+                      ) -> Tuple[Dict[str, Callable],
+                                 Dict[str, Callable],
+                                 Dict[str, Dict[str, ArrayLike]]]:
+    """Splits the target dictionary into observable functions, loss functions,
+    and target values.
+
+    Args:
+        target_dict: Dictionary of targets.
+
+    Returns:
+        Returns a tuple of observable functions, loss functions, and target
+        values.
+
+    """
+    observables = {
+        key: target['traj_fn'] for key, target in target_dict.items()
+    }
+    target_loss_fns = {
+        key: target['loss_fn'] for key, target in target_dict.items()
+        if 'loss_fn' in target
+    }
+    targets = {
+        key: {k: v for k, v in target.items() if k in ['gamma', 'target']}
+        for key, target in target_dict.items()
+    }
+
+    return observables, target_loss_fns, targets
 
 
 def target_quantity(required: list = None, optional: list = None):
