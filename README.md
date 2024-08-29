@@ -1,7 +1,6 @@
 # Training Molecular Dynamics Potentials in JAX
 
-[**Documentation**](https://chemtrain.readthedocs.io/en/latest/) | [**Getting Started**](#getting-started) | [**Installation**](#installation) | [**Contents**](#contents) | [**Contributing**](#contributing)
-| [**Contact**](#contact)
+[**Documentation**](https://chemtrain.readthedocs.io/en/latest/) | [**Preprint**](https://web3.arxiv.org/abs/2408.15852) | [**Getting Started**](#getting-started) | [**Installation**](#installation) | [**Contents**](#contents) | [**Contact**](#contact)
 
 [![PyPI version](https://badge.fury.io/py/chemtrain.svg)](https://badge.fury.io/py/chemtrain)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
@@ -126,6 +125,22 @@ Within the repository, we provide the following directories:
 : Unit test for the **chemtrain** package, supplementing the testing trough
   a reproduction of published paper results.
 
+
+## Citation
+
+If you use chemtrain, please cite the following [preprint](https://web3.arxiv.org/abs/2408.15852):
+
+```
+@misc{fuchs2024chemtrain,
+      title={chemtrain: Learning Deep Potential Models via Automatic Differentiation and Statistical Physics}, 
+      author={Paul Fuchs and Stephan Thaler and Sebastien Röcken and Julija Zavadlav},
+      year={2024},
+      eprint={2408.15852},
+      archivePrefix={arXiv},
+      primaryClass={physics.chem-ph},
+      url={https://arxiv.org/abs/2408.15852}, 
+}
+```
 
 ## Contributing
 Contributions are always welcome! Please open a pull request to discuss the code

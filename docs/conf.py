@@ -82,10 +82,10 @@ exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 intersphinx_mapping = {
     'python': ('https://docs.python.org/3/', None),
     'numpy': ('https://numpy.org/doc/stable/', None),
-    'scipy': ('https://docs.scipy.org/doc/scipy/reference/', None),
-    'jax': ('https://jax.readthedocs.io/en/latest/', None),
-    'jax-sgmc': ('https://jax-sgmc.readthedocs.io/en/latest/', None),
-    'jax-md': ('https://jax-md.readthedocs.io/en/main/', None)
+    'scipy': ('https://docs.scipy.org/doc/scipy/objects.inv', None),
+    'jax': ('https://jax.readthedocs.io/en/latest/objects.inv', None),
+    'jax-sgmc': ('https://jax-sgmc.readthedocs.io/en/latest/objects.inv', None),
+    'jax-md': ('https://jax-md.readthedocs.io/en/main/objects.inv', None)
 }
 
 # Jupyter options
@@ -119,7 +119,7 @@ mathjax3_config = {
 html_theme = 'sphinx_book_theme'
 
 html_theme_options = {
-    "repository_url": "https://github.com/tummfm/chemtrain-dev",
+    "repository_url": "https://github.com/tummfm/chemtrain",
     "use_repository_button": True,
     "home_page_in_toc": True
 }
