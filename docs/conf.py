@@ -82,10 +82,10 @@ exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 intersphinx_mapping = {
     'python': ('https://docs.python.org/3/', None),
     'numpy': ('https://numpy.org/doc/stable/', None),
-    'scipy': ('https://docs.scipy.org/doc/scipy/objects.inv', None),
-    'jax': ('https://jax.readthedocs.io/en/latest/objects.inv', None),
-    'jax-sgmc': ('https://jax-sgmc.readthedocs.io/en/latest/objects.inv', None),
-    'jax-md': ('https://jax-md.readthedocs.io/en/main/objects.inv', None)
+    'scipy': ('https://docs.scipy.org/doc/scipy', None),
+    'jax': ('https://jax.readthedocs.io/en/latest', None),
+    'jax-sgmc': ('https://jax-sgmc.readthedocs.io/en/latest', None),
+    'jax-md': ('https://jax-md.readthedocs.io/en/main', None)
 }
 
 # Jupyter options

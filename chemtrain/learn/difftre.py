@@ -12,11 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Functions build around the DiffTRe algorithm. The DiffTRe algorithm builds
+"""Functions build around the Differentiable Trajectory Reweighting (DiffTRe)
+algorithm [#Thaler2021]_. The DiffTRe algorithm builds
 on umbrella sampling to efficiently compute gradients of ensemble observables.
 
 Chemtrain implements umbrella sampling approaches in the module
 :mod:`chemtrain.trajectory.reweighting`.
+
+References:
+   .. [#Thaler2021] Thaler, S.; Zavadlav, J. Learning Neural Network
+      Potentials from Experimental Data via Differentiable Trajectory
+      Reweighting. Nat Commun **2021**, 12 (1), 6884.
+      https://doi.org/10.1038/s41467-021-27241-4.
+   .. [#Shell2008] Shell, M. S. The Relative Entropy Is Fundamental to
+      Multiscale and Inverse Thermodynamic Problems. J. Chem. Phys. 2008,
+      129 (14), 144108. https://doi.org/10.1063/1.2992060.
 
 """
 
@@ -43,9 +53,9 @@ def init_default_loss_fn(observables: Dict[str, TrajFn],
                          ):
     """Initializes the MSE loss function for DiffTRe.
 
-    The default loss for DiffTRe minimizes the mean squared error (MSE)
-    between an observable :math:`\\mathcal A` and an (experimental) reference
-    :math:`\hat a`
+    The default loss for the Differentiable Trajectory Reweighting (DiffTRe)
+    algorithm [#Thaler2021]_ is the mean squared error (MSE) between an observable
+    :math:`\\mathcal A` and an (experimental) reference :math:`\hat a`
 
     .. math::
 
@@ -106,8 +116,9 @@ def init_difftre_gradient_and_propagation(
     energy_fn_template: EnergyFnTemplate):
     """Initializes the function to compute the DiffTRe loss and its gradients.
 
-    DiffTRe computes gradients of ensemble averages via a perturbation approach,
-    initiazed in
+    The Differentiable Trajectory Reweighing (DiffTRe) algorithm [#Thaler2021]_
+    computes gradients of ensemble averages via a perturbation approach,
+    initialized in
     :func:`chemtrain.trajectory.reweighting.init_pot_reweight_propagation_fns`.
 
     Args:
@@ -181,7 +192,7 @@ def init_rel_entropy_loss_fn(energy_fn_template, compute_weights, kbt, vmap_batc
 
     The relative entropy between a fine-grained (FG) reference system
     with :math:`U^\\mathrm{FG}(\\mathbf r)` coarse-grained (CG) reference system
-    with :math:`U_\\theta^\\mathrm{CG}(\\mathbf R)` is
+    with :math:`U_\\theta^\\mathrm{CG}(\\mathbf R)` is [#Shell2008]_
 
     .. math::
 
@@ -255,8 +266,10 @@ def init_rel_entropy_gradient_and_propagation(reference_dataloader,
                                               vmap_batch_size=10):
     """Initialize function to compute the relative entropy gradients.
 
-    DiffTRe computes gradients of ensemble averages via a perturbation approach,
-    initiazed in
+    This implementation of the Relative Entropy Minimization algorithm
+    [#Shell2008]_ computes the gradients of the free energy similar to the
+    Differentiable Trajectory Reweighting (DiffTRe) algorithm [#Thaler2021]_
+    via a perturbation approach, initialized in
     :func:`chemtrain.trajectory.reweighting.init_pot_reweight_propagation_fns`.
 
     The computation of the gradient is batched to increase computational

@@ -104,7 +104,11 @@ class PropertyPrediction(tt.DataParallelTrainer):
 
 
 class ForceMatching(tt.DataParallelTrainer):
-    """Force-matching trainer.
+    """Parametrizes potential models via the Force Matching method.
+
+    The Force Matching method can be used to learn atomistic [#Ercolessi1994]_
+    and coarse-grained [#Noid2008]_ models from first-principle or atomistic
+    reference data.
 
     Args:
         init_params: Initial energy parameters.
@@ -134,6 +138,17 @@ class ForceMatching(tt.DataParallelTrainer):
     Warning:
         Currently neighborlist overflow is not checked.
         Make sure to build nbrs_init large enough.
+
+    References:
+        .. [#Ercolessi1994] Ercolessi, F.; Adams, J. B. Interatomic Potentials
+           from First-Principles Calculations: The Force-Matching Method.
+           Europhys. Lett. 1994, 26 (8), 583–588.
+           https://doi.org/10.1209/0295-5075/26/8/005.
+        .. [#Noid2008] Noid, W. G.; Chu, J.-W.; Ayton, G. S.; Krishna, V.;
+           Izvekov, S.; Voth, G. A.; Das, A.; Andersen, H. C. The Multiscale
+           Coarse-Graining Method. I. A Rigorous Bridge between Atomistic and
+           Coarse-Grained Models. J Chem Phys 2008, 128 (24), 244114.
+           https://doi.org/10.1063/1.2938860.
 
     """
     def __init__(self,
@@ -209,6 +224,11 @@ class ForceMatching(tt.DataParallelTrainer):
 class Difftre(tt.PropagationBase):
     """Trainer class for parametrizing potentials via the DiffTRe method.
 
+    The Differentiable Trajectory Reweighting (DiffTRe) method [#Thaler2021]_
+    is a method to compute the gradients of ensemble averages without
+    differentiating through the simulation. Therefore, the method can
+    efficiently train potential models on macroscopic observables.
+
     The trainer initialization only sets the initial trainer state
     as well as checkpointing and save-functionality. For training,
     target state points with respective simulations need to be added
@@ -265,6 +285,12 @@ class Difftre(tt.PropagationBase):
             trainer.init_step_size_adaption(allowed_reduction=0.5)
 
             trainer.train(num_updates)
+
+    References:
+        .. [#Thaler2021] Thaler, S.; Zavadlav, J. Learning Neural Network
+           Potentials from Experimental Data via Differentiable Trajectory
+           Reweighting. Nat Commun **2021**, 12 (1), 6884.
+           https://doi.org/10.1038/s41467-021-27241-4.
 
     """
 
@@ -618,6 +644,10 @@ class DifftreActive(tt.TrainerInterface):
 class RelativeEntropy(tt.PropagationBase):
     """Trainer for relative entropy minimization.
 
+    The Relative Entropy Minimization procedurecoarse-graines potential
+    models by minimizing the relative entropy between the atomistic reference
+    and coarse-grained target canonical distributions [#Shell2008]_.
+
     The relative entropy algorithm currently assume a NVT ensemble.
 
     Args:
@@ -653,6 +683,11 @@ class RelativeEntropy(tt.PropagationBase):
         weight_fn: Dictionary containing the reweighting functions for each
             statepoint.
         early_stop: Instance of EarlyStopping to check for convergence.
+
+    References:
+        .. [#Shell2008] Shell, M. S. The Relative Entropy Is Fundamental to
+           Multiscale and Inverse Thermodynamic Problems. J. Chem. Phys. 2008,
+           129 (14), 144108. https://doi.org/10.1063/1.2992060.
 
     """
     def __init__(self,
