@@ -644,9 +644,10 @@ class DifftreActive(tt.TrainerInterface):
 class RelativeEntropy(tt.PropagationBase):
     """Trainer for relative entropy minimization.
 
-    The Relative Entropy Minimization procedurecoarse-graines potential
+    The Relative Entropy Minimization procedure coarse-graines potential
     models by minimizing the relative entropy between the atomistic reference
-    and coarse-grained target canonical distributions [#Shell2008]_.
+    and coarse-grained target canonical distributions [#Shell2008]_
+    [#Thaler2022]_.
 
     The relative entropy algorithm currently assume a NVT ensemble.
 
@@ -688,6 +689,9 @@ class RelativeEntropy(tt.PropagationBase):
         .. [#Shell2008] Shell, M. S. The Relative Entropy Is Fundamental to
            Multiscale and Inverse Thermodynamic Problems. J. Chem. Phys. 2008,
            129 (14), 144108. https://doi.org/10.1063/1.2992060.
+        .. [#Thaler2022] Thaler, S.; Stupp, M.; Zavadlav, J. Deep Coarse-Grained
+           Potentials via Relative Entropy Minimization. The Journal of Chemical
+           Physics 2022, 157 (24), 244103. https://doi.org/10.1063/5.0124538.
 
     """
     def __init__(self,
