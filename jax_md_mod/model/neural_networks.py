@@ -35,9 +35,19 @@ class DimeNetPP(hk.Module):
 
     The default values correspond to the orinal values of DimeNet++.
 
-    This custom implementation follows the original DimeNet / DimeNet++
-    (https://arxiv.org/abs/2011.14115), while correcting for known issues
-    (see https://github.com/klicperajo/dimenet).
+    This custom implementation follows the original DimeNet
+    [#Gasteiger2022Dimenet]_ / DimeNet++ [#Gasteiger2022Dimenetpp]_
+    (Directional Message Passing Neural Network), while correcting for known
+    issues (see https://github.com/klicperajo/dimenet).
+
+    References:
+       .. [#Gasteiger2022Dimenet] Gasteiger, J.; Groß, J.; Günnemann,
+          S. Directional Message Passing for Molecular Graphs. arXiv April 5,
+          2022. https://doi.org/10.48550/arXiv.2003.03123.
+       .. [#Gasteiger2022Dimenetpp] Gasteiger, J.; Giri, S.; Margraf, J. T.;
+          Günnemann, S. Fast and Uncertainty-Aware Directional Message Passing
+          for Non-Equilibrium Molecules. http://arxiv.org/abs/2011.14115.
+
     """
     def __init__(self,
                  r_cutoff: float,
@@ -200,10 +210,11 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
                                                           util.Array]]:
     """DimeNet++ energy function for Jax, M.D.
 
-    This function provides an interface for the DimeNet++ haiku model to be used
-    as a jax_md energy_fn. Analogous to jax_md energy_fns, the initialized
-    DimeNet++ energy_fn requires particle positions and a dense neighbor list as
-    input - plus an array for species or other dynamic kwargs, if applicable.
+    This function provides an interface for the :class:`DimeNetPP` haiku model
+    to be used as a jax_md energy_fn. Analogous to jax_md energy_fns, the
+    initialized DimeNet++ energy_fn requires particle positions and a dense
+    neighbor list as input - plus an array for species or other dynamic kwargs,
+    if applicable.
 
     From particle positions and neighbor list, the sparse graph representation
     with edges and angle triplets is computed. Due to the constant shape
@@ -309,7 +320,9 @@ def dimenetpp_property_prediction(
         n_per_atom: int = None,
         **model_kwargs) -> Tuple[nn.InitFn, Callable[[Any, jnp.ndarray],
                                                      jnp.ndarray]]:
-    """Initializes a model that predicts global molecular properties.
+    """Initializes DimeNet++ to predict molecular properties.
+
+    This function provides an interface to the :class:`DimeNetPP` haiku model.
 
     Args:
         r_cutoff: Radial cut-off distance of DimeNetPP and the neighbor list.

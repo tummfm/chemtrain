@@ -55,7 +55,7 @@ def stillinger_weber_energy(dr,
     silicon and similar systems. This function uses the default SW parameters
     from the original paper. The SW potential was originally proposed to
     model diamond in the diamond crystal phase and the liquid phase, and is
-    known to give unphysical amorphous configurations [#Holender, #Barkema]_.
+    known to give unphysical amorphous configurations [#Holender]_ [#Barkema]_.
     For this reason,
     we provide a three_body_strength parameter. Changing this number to $1.5$
     or $2.0$ has been known to produce more physical amorphous phase, preventing
