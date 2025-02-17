@@ -130,17 +130,19 @@ Within the repository, we provide the following directories:
 
 ## Citation
 
-If you use chemtrain, please cite the following [preprint](https://web3.arxiv.org/abs/2408.15852):
+If you use chemtrain, please cite the following [paper](https://www.sciencedirect.com/science/article/pii/S0010465525000153):
 
 ```
-@misc{fuchs2024chemtrain,
-      title={chemtrain: Learning Deep Potential Models via Automatic Differentiation and Statistical Physics}, 
-      author={Paul Fuchs and Stephan Thaler and Sebastien Röcken and Julija Zavadlav},
-      year={2024},
-      eprint={2408.15852},
-      archivePrefix={arXiv},
-      primaryClass={physics.chem-ph},
-      url={https://arxiv.org/abs/2408.15852}, 
+@article{fuchs2025chemtrain,
+    title = {chemtrain: Learning deep potential models via automatic differentiation and statistical physics},
+    journal = {Computer Physics Communications},
+    volume = {310},
+    pages = {109512},
+    year = {2025},
+    issn = {0010-4655},
+    doi = {https://doi.org/10.1016/j.cpc.2025.109512},
+    url = {https://www.sciencedirect.com/science/article/pii/S0010465525000153},
+    author = {Paul Fuchs and Stephan Thaler and Sebastien Röcken and Julija Zavadlav},
 }
 ```
 
