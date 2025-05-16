@@ -48,7 +48,7 @@ Examples:
     >>> train, val, test = train_val_test_split(position_data, train_ratio=0.8, shuffle=False)
     >>> # Print the coordinates of the Calpha atom
     >>> print(test[0, 4, :])
-    [0.8808514  0.72712505 0.25590205]
+    [0.01607744 0.5087251  0.21884884]
 
     Alternatively, we can directly instanciate ``jax_sgmc`` data-loaders based
     on the split datasets by using:

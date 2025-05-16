@@ -24,8 +24,8 @@ classifiers = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    'jax <= 0.4.30',
-    'jaxlib <= 0.4.30',
+    'jax <= 0.4.37',
+    'jaxlib <= 0.4.37',
     'scipy < 1.13', # Removed scipy.linal.tril, etc.
     'jax-md',
     'jax-sgmc',
