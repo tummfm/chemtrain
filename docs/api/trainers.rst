@@ -23,7 +23,6 @@ Base Trainers
    Difftre
    PropertyPrediction
    ForceMatching
-   DifftreActive
    RelativeEntropy
    SGMCForceMatching
 

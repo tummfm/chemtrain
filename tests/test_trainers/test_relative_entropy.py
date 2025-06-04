@@ -20,6 +20,7 @@ import optax
 
 import pytest
 
+import jax_md_mod
 from jax_md import space, energy, partition, simulate
 
 from chemtrain.data import preprocessing
@@ -148,6 +149,7 @@ class TestRelativeEntropy:
             state_kwargs, reference_state,
         )
 
+        # Sets up step size adaption for all statepoints
         relative_entropy.init_step_size_adaption(0.25)
 
         return relative_entropy, b0, kb, epochs

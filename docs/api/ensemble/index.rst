@@ -9,7 +9,6 @@ potential theory to transfer information between perturbed and unperturbed
 ensembles.
 
 .. toctree::
-   :caption: Learning
    :titlesonly:
 
    evaluation

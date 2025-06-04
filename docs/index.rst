@@ -129,12 +129,22 @@ API Documentation
    :titlesonly:
 
    api/data/index
+   api/deploy/index
    api/learn/index
    api/quantity/index
    api/ensemble/index
    api/trainers
    api/typing
 
+.. toctree::
+   :titlesonly:
+   :caption: chemtrain-deploy
+   :maxdepth: 2
+
+   chemtrain-deploy/installation
+   chemtrain-deploy/getting_started
+   chemtrain-deploy/connector
+   chemtrain-deploy/implementation
 
 .. toctree::
    :titlesonly:
@@ -149,6 +159,7 @@ API Documentation
    jax_md_mod/jax_md_mod.custom_quantity
    jax_md_mod/jax_md_mod.custom_space
    jax_md_mod/jax_md_mod.io
+
 
 
 Indices and tables

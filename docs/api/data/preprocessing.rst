@@ -24,3 +24,9 @@ Create Splits
 
 .. autofunction:: train_val_test_split
 
+
+Create Neighborlists
+--------------------
+
+.. autofunction:: allocate_neighborlist
+

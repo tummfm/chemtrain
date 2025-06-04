@@ -23,9 +23,9 @@ import chex
 
 from jax import lax, jit, vmap, numpy as jnp, random, tree_util
 
+from jax_md_mod import custom_quantity
 from jax_md import util as jax_md_util
 from jax_md.partition import NeighborList
-from jax_md_mod import custom_quantity
 
 from chemtrain import util
 from chemtrain.ensemble import evaluation
@@ -75,6 +75,8 @@ class TrajectoryState:
         overflow: True if neighbor list overflowed during trajectory generation
         dynamic_kwargs: Additional information passed to the simulator and
             energy function, e.g., species, thermostat / barostat targets
+        static_kwargs: Same as ``dynamic_kwargs`` but constant for the
+            trajectory.
         aux: Dict of auxilary per-snapshot quantities as defined by quantities
             in trajectory generator.
         key: PRNGKey of the trajectory state.
@@ -88,6 +90,7 @@ class TrajectoryState:
     trajectory: evaluation.State
     overflow: Array = False
     dynamic_kwargs: Dict[str, Array] = None
+    static_kwargs: Dict[str, Array] = None
     aux: Dict[str, Any] = None
     key: Array = None
     energy_params: Any = None
@@ -252,11 +255,17 @@ def run_to_next_printout_neighbors(apply_fn,
         }
 
         # Step the simulator and update the neighbor list to new positions
+        nbrs = util.neighbor_update(state.nbrs, state.sim_state, **apply_kwargs)
         new_state = apply_fn(
-            state.sim_state, neighbor=state.nbrs, **apply_kwargs)
-        new_nbrs = util.neighbor_update(state.nbrs, new_state, **apply_kwargs)
+            state.sim_state, neighbor=nbrs, **apply_kwargs)
 
-        return SimulatorState(sim_state=new_state, nbrs=new_nbrs), t
+        # Cast back to the input types
+        new_state = SimulatorState(sim_state=new_state, nbrs=nbrs)
+        new_state = tree_util.tree_map(
+            lambda x, y: jnp.asarray(x, dtype=y.dtype), new_state, state
+        )
+
+        return new_state, t
 
     def run_small_simulation(start_state: SimulatorState, t_start=0.):
         times = jnp.arange(timings.timesteps_per_printout) * timings.time_step
@@ -328,7 +337,9 @@ def init_simulation_fn(run_to_printout_fn,
 def canonicalize_state_kwargs(state_kwargs: Dict[str, Union[Callable, Array]],
                               t_snapshots: Array,
                               n_trajs: int = 1
-                              ) -> Tuple[Dict[str, Callable], Dict[str, Array]]:
+                              ) -> Tuple[Dict[str, Callable],
+                                         Dict[str, Array],
+                                         Dict[str, Array]]:
     """Converts kwargs to the simulator to time-dependent functions.
 
     Converts constant kwargs to the simulator, such as ``'kT'`` and
@@ -366,22 +377,21 @@ def canonicalize_state_kwargs(state_kwargs: Dict[str, Union[Callable, Array]],
 
     # Convert the kwargs to time-dependent functions
     canonical_kwargs = {}
+
+    dynamic_statepoint_vals = {}
+    static_statepoint_vals = {}
     for key, kwarg in state_kwargs.items():
         if kwarg is None:
             continue
         if not callable(kwarg):
+            static_statepoint_vals[key] = kwarg
             kwarg = partial(constant_fn, c=kwarg)
+        else:
+            dynamic_statepoint_vals[key] = kwarg(t_snapshots)
 
         canonical_kwargs[key] = kwarg
 
-    # Read out all values at the printout times. Tile them for multiple
-    # parallely sampled trajectories.
-    statepoint_vals = {
-        key: replicate(vmap(kwarg)(t_snapshots))
-        for key, kwarg in canonical_kwargs.items()
-    }
-
-    return canonical_kwargs, statepoint_vals
+    return canonical_kwargs, static_statepoint_vals, dynamic_statepoint_vals
 
 
 class GenerateFn(Protocol):
@@ -442,7 +452,7 @@ def trajectory_generator_init(simulator_template, energy_fn_template,
         quantities = {}
 
     # temperature is inexpensive and generally useful: compute it by default
-    quantities['kbT'] = custom_quantity.temperature
+    quantities['kT'] = custom_quantity.temperature
 
     def generate_reference_trajectory(params, sim_state, combine=True, **kwargs):
         """
@@ -478,7 +488,7 @@ def trajectory_generator_init(simulator_template, energy_fn_template,
         assert timings is not None
 
         n_trajs = sim_state.sim_state.position.shape[0]
-        apply_kwargs, printout_kwargs = canonicalize_state_kwargs(
+        apply_kwargs, static_kwargs, dynamic_kwargs = canonicalize_state_kwargs(
             kwargs, timings.t_production_end, n_trajs)
 
         # With the energy function available, we can now initialize the
@@ -496,7 +506,7 @@ def trajectory_generator_init(simulator_template, energy_fn_template,
 
         if combine or not multiple_trajs:
             trajectories = util.tree_combine(trajectories)
-            printout_kwargs = util.tree_combine(printout_kwargs)
+            dynamic_kwargs = util.tree_combine(dynamic_kwargs)
 
         # Restore the original state of the simulator
         if not multiple_trajs:
@@ -506,8 +516,8 @@ def trajectory_generator_init(simulator_template, energy_fn_template,
 
         traj_state = TrajectoryState(
             sim_state=new_sim_state, trajectory=trajectories,
-            overflow=overflow, dynamic_kwargs=printout_kwargs,
-            energy_params=params)
+            overflow=overflow, dynamic_kwargs=dynamic_kwargs,
+            static_kwargs=static_kwargs, energy_params=params)
 
         # Compute auxillary quantities on a trajectory
         aux_trajectory = quantity_traj(
@@ -561,5 +571,6 @@ def quantity_traj(traj_state, quantities, energy_params=None, batch_size=1):
     return evaluation.quantity_multimap(
         traj_state.trajectory, quantities=quantities,
         nbrs=traj_state.reference_nbrs, state_kwargs=traj_state.dynamic_kwargs,
+        constant_state_kwargs=traj_state.static_kwargs,
         energy_params=energy_params, batch_size=batch_size
     )

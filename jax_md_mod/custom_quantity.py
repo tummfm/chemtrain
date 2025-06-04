@@ -84,7 +84,9 @@ def force_wrapper(energy_fn_template, fixed_energy_params=None):
     return energy
 
 
-def energy_force_wrapper(energy_fn_template, fixed_energy_params=None):
+def energy_force_wrapper(energy_fn_template,
+                         fixed_energy_params=None,
+                         has_aux=False):
     """Wrapper around energy_fn to allow energy and force computation via
     traj_util.quantity_traj.
 
@@ -94,6 +96,9 @@ def energy_force_wrapper(energy_fn_template, fixed_energy_params=None):
         fixed_energy_params: Always use the energy function obtained when
             using the fixed energy params. If not given, the function uses
             dynamially specified parameters.
+        has_aux: Whether the energy function has an auxiliary output. In this
+            case, the energy function will be called with the argument
+            ``mode="with_aux"`` and should return a tuple with ``(energy, aux)``.
 
     """
     def energy_and_force_fn(state, neighbor, energy_params, **kwargs):
@@ -102,17 +107,37 @@ def energy_force_wrapper(energy_fn_template, fixed_energy_params=None):
         else:
             energy_fn = energy_fn_template(fixed_energy_params)
 
+        if has_aux:
+            kwargs['mode'] = 'with_aux'
+
         box = kwargs.pop('box', None)
-        @partial(jax.value_and_grad, argnums=(0, 1))
+        @partial(jax.value_and_grad, argnums=(0, 1), has_aux=has_aux)
         def energy_and_grads_fn(R, _box):
             if box is not None:
                 return energy_fn(R, neighbor=neighbor, box=_box, **kwargs)
             else:
                 return energy_fn(R, neighbor=neighbor, **kwargs)
 
-        energy, (neg_force, box_grads) = energy_and_grads_fn(state.position, box)
-        return {'energy': energy, 'force': -neg_force, 'box_grad': box_grads}
+        energy_or_aux, (neg_force, box_grads) = energy_and_grads_fn(state.position, box)
+        if has_aux:
+            energy, aux = energy_or_aux
+        else:
+            aux = None
+            energy = energy_or_aux
+
+        return {'energy': energy, 'force': -neg_force, 'box_grad': box_grads, 'aux': aux}
     return energy_and_force_fn
+
+
+def get_aux(aux_key=""):
+    """Reads out auxiliary output from the energy function."""
+    def snapshot_fn(state, energy_and_force=None, **kwargs):
+        assert energy_and_force is not None, f"Need to provide aux for {aux_key}."
+        assert aux_key in energy_and_force['aux'].keys(), f"Need to provide aux for {aux_key}."
+        print(f"Read out {aux_key} from aux.")
+
+        return energy_and_force['aux'][aux_key]
+    return snapshot_fn
 
 
 def kinetic_energy_wrapper(state, **unused_kwargs):
@@ -134,9 +159,27 @@ def total_energy_wrapper(energy_fn_template):
     return energy
 
 
-def temperature(state, **unused_kwargs):
+def connected(state, neighbor, mask=None, **kwargs):
+    """Checks whether the system is connected."""
+
+    return custom_partition.check_connectivity(neighbor, mask=mask)
+
+
+def temperature(state, mask=None, **kwargs):
     """Temperature function that is consistent with quantity_traj interface."""
-    return quantity.temperature(velocity=state.velocity, mass=state.mass)
+    mass = state.mass
+    velocity = state.velocity
+
+    if mask is None:
+        mask = jnp.ones(velocity.shape[0], dtype=bool)
+    else:
+        print(f"Masked temperature computation")
+
+    velocity = jnp.where(mask[:, jnp.newaxis], velocity, 0.0)
+    mass = jnp.where(mask[:, jnp.newaxis], mass, 1.0)
+    dof = jnp.sum(mask) * jnp.shape(velocity)[-1]
+
+    return jnp.sum(velocity ** 2 * mass) / dof
 
 
 def _dyn_box(reference_box, **kwargs):
@@ -1095,6 +1138,63 @@ def init_rmsd(reference_positions,
 
     return rmsd_fn
 
+
+def init_rigid_body_alignment(displacement_fn, reference_position, weights=None, **kwargs):
+    """Initializes a function that aligns a structure to a reference structure.
+
+    The aligned structure minimizes the (weighted) root mean squared distance
+    to the reference structure under rotations and translations, i.e.,
+    rigig body motions.
+
+    Args:
+        displacement_fn: Displacement function
+        reference_position: Reference positions including all atoms.
+        weights: Weight the rmsd, e.g., with masses of the particles.
+        **kwargs: Additional arguments for the displacement function.
+
+    Returns:
+        Returns a function to compute optimally aligned positions.
+
+    """
+
+    ref_displacement_fn = partial(displacement_fn, **kwargs)
+    n_particles, dim = reference_position.shape
+
+    if weights is None:
+        weights = jnp.ones(n_particles)
+
+    def align_fn(position, **kwargs):
+
+        # Compute the centers of both point sets
+        q = vmap(ref_displacement_fn, in_axes=(0, None))(
+            reference_position, reference_position[0, :])
+        q_bar = jnp.mean(weights[:, jnp.newaxis] * q, axis=0) / jnp.mean(weights)
+        p = vmap(displacement_fn, in_axes=(0, None))(
+            position, position[0, :])
+        p_bar = jnp.mean(weights[:, jnp.newaxis] * p, axis=0) / jnp.mean(weights)
+
+        # Recenter the points
+        p -= p_bar[jnp.newaxis, :]
+        q -= q_bar[jnp.newaxis, :]
+
+        # Compute the [d, d] covariance matrix for p.shape = (N, d) and perform
+        # a singular value decomposition to obtain the optimal rotation and
+        # translation that minimizes the weighted squared distance
+        cov = jnp.einsum('ji,j,jk->ik', p, weights, q)
+
+        U, _, Vh = jnp.linalg.svd(cov, full_matrices=True, compute_uv=True)
+
+        det = jnp.linalg.det(jnp.dot(Vh.T, U.T))
+        sig = jnp.append(jnp.ones(p.shape[1] - 1), det)
+        rotation = jnp.einsum('ji,j,kj->ik', Vh, sig, U)
+        translation = q_bar - jnp.dot(rotation, p_bar)
+
+        # With the rigid body motion we can now compute the rmsd
+        p_opt = jnp.einsum('ij,nj->ni', rotation, p)
+        p_opt += translation[jnp.newaxis, :]
+
+        return p_opt
+    return align_fn
 
 
 def init_velocity_autocorrelation(num_lags):

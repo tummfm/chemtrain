@@ -234,6 +234,23 @@ def init_relative_entropy_traj_fn(kT: float, reference_key = 'ref_energy') -> Tr
     return relative_entropy_traj_fn
 
 
+def init_free_energy(kT, pressure=None, **kwargs):
+    # TODO: Documentation
+
+    assert pressure is None, (
+        "The free energy calculation is not yet implemented for the NPT ensemble."
+    )
+
+    @dynamic_statepoint({'kT': kT})
+    def compute_fn(quantity_trajs, state_dict, weights=None):
+        # Free energy already computed
+        logZ = quantity_trajs['free_energy']
+        free_energy = -state_dict['kT'] * logZ
+        return free_energy
+
+    return compute_fn
+
+
 def init_heat_capacity_nvt(kT, dof, **kwargs):
     """Returns the specific heat capacity of a system in the NPT ensemble via
      the fluctuation formula.

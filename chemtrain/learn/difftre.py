@@ -36,7 +36,7 @@ from typing import Dict, Any, Callable, Tuple
 import numpy as onp
 
 import jax
-from jax import jit, numpy as jnp, lax
+from jax import jit, numpy as jnp, lax, tree_map
 from jax.typing import ArrayLike
 
 from jax_md_mod import custom_quantity
@@ -47,6 +47,7 @@ from chemtrain.ensemble import reweighting, evaluation, sampling
 from chemtrain import util
 
 from chemtrain.typing import TrajFn
+
 
 def init_default_loss_fn(observables: Dict[str, TrajFn],
                          loss_fns: Dict[str, Callable]
@@ -113,7 +114,10 @@ def init_difftre_gradient_and_propagation(
     reweight_fns: Tuple[Callable, Callable, Callable],
     loss_fn,
     quantities: Dict[str, ComputeFn],
-    energy_fn_template: EnergyFnTemplate):
+    energy_fn_template: EnergyFnTemplate,
+    wrapped: bool = True,
+    batched: bool = False,
+    ):
     """Initializes the function to compute the DiffTRe loss and its gradients.
 
     The Differentiable Trajectory Reweighing (DiffTRe) algorithm [#Thaler2021]_
@@ -130,6 +134,8 @@ def init_difftre_gradient_and_propagation(
             quantities from the simulator states.
         energy_fn_template: Template to initialize the energy function that
             is required to compute the weights.
+        wrapped: Return separate weight, propagation, and gradient functions
+        batched: Computes loss for multiple ensembles.
 
     Returns:
         Returns a function to propagate the current trajectory state,
@@ -143,7 +149,7 @@ def init_difftre_gradient_and_propagation(
         energy_fn_template)
     reweighting.checkpoint_quantities(quantities)
 
-    def difftre_loss(params, traj_state, state_dict, targets):
+    def _difftre_loss(params, traj_state, state_dict, targets):
         """Computes the loss using the DiffTRe formalism and
         additionally returns predictions of the current model.
         """
@@ -163,7 +169,51 @@ def init_difftre_gradient_and_propagation(
 
         return loss, predictions
 
-    loss_grad_fn = jax.value_and_grad(difftre_loss, has_aux=True, argnums=0)
+    # TODO: Maybe separate the functions like for force matching
+
+    def difftre_weights_fn(params, traj_state, reduction="min"):
+        partial_weights = functools.partial(weights_fn, params)
+
+        if not batched:
+            return partial_weights(traj_state, reduction=reduction)
+
+        return jax.vmap(partial_weights)(traj_state)
+
+    def difftre_loss_fn(params, traj_state, state_dict, targets):
+        partial_loss = functools.partial(_difftre_loss, params)
+
+        # print(f"Trajstate shapes are {tree_map(jnp.shape, traj_state)}")
+        # print(f"Statedict shapes are {tree_map(jnp.shape, state_dict)}")
+        # print(f"Target shapes are {tree_map(jnp.shape, targets)}")
+
+
+        if not batched:
+            return partial_loss(traj_state, state_dict, targets)
+
+        batched_loss, batched_predictions = jax.vmap(partial_loss)(
+            traj_state, state_dict, targets)
+
+        return jnp.mean(batched_loss), batched_predictions
+
+    def difftre_propagation(params, traj_state, state_dict):
+        """The main DiffTRe function that recomputes trajectories
+        when needed and computes gradients of the loss wrt. energy function
+        parameters for a single state point.
+        """
+        partial_propagation = functools.partial(
+            propagate_fn, params, recompute=True)
+
+        if not batched:
+            return partial_propagation(traj_state, **state_dict)
+
+        return jax.vmap(partial_propagation)(traj_state, **state_dict)
+
+    if not wrapped:
+        return difftre_loss_fn, difftre_propagation, difftre_weights_fn
+
+    assert not batched, "Batched computation requires 'wrapped=False'."
+
+    loss_grad_fn = jax.value_and_grad(difftre_loss_fn, has_aux=True, argnums=0)
 
     # TODO: There is more opportunity to make this general.
     #       We could extend the propagation and gradient function to take
@@ -178,11 +228,11 @@ def init_difftre_gradient_and_propagation(
         when needed and computes gradients of the loss wrt. energy function
         parameters for a single state point.
         """
-        traj_state = propagate_fn(params, traj_state)
+        traj_state = propagate_fn(params, traj_state, **state_dict)
+
         (loss_val, predictions), loss_grad = loss_grad_fn(
             params, traj_state, state_dict, targets)
         return traj_state, loss_val, loss_grad, predictions
-
 
     return difftre_grad_and_propagation
 
@@ -243,15 +293,14 @@ def init_rel_entropy_loss_fn(energy_fn_template, compute_weights, kbt, vmap_batc
 
         # Compute the potential predictions on the reference data
         ref_states = evaluation.SimpleState(position=reference_batch['R'])
-        state_kwargs = {"kT": jnp.repeat(kbt, reference_batch['R'].shape[0])}
 
         nbrs = traj_state.sim_state.nbrs
         if nbrs.reference_position.ndim > 2:
             nbrs = util.tree_get_single(traj_state.sim_state.nbrs)
 
         ref_energies = evaluation.quantity_map(
-            ref_states, ref_quantities, nbrs, state_kwargs, params,
-            vmap_batch_size,
+            ref_states, ref_quantities, nbrs, {},
+            {"kT": kbt}, params, vmap_batch_size,
         )["ref_energy"]
 
         return (jnp.mean(ref_energies) - free_energy) / kbt
@@ -320,7 +369,7 @@ def init_rel_entropy_gradient_and_propagation(reference_dataloader,
     return propagation_and_grad
 
 
-def init_step_size_adaption(weight_fns: Dict[Any, Callable],
+def init_step_size_adaption(weight_fn: Callable,
                             allowed_reduction: ArrayLike = 0.5,
                             interior_points: int = 10,
                             step_size_scale: float = 1e-7
@@ -352,6 +401,8 @@ def init_step_size_adaption(weight_fns: Dict[Any, Callable],
         N = \\left\\lceil -\\log(a) / \\log(n_i + 1)\\right\\rceil.
 
     Args:
+        weight_fn: Function computing a tuple (weights, N_eff) from the
+            parameter states.
         allowed_reduction: Target reduction of the effective sample size
         interior_points: Number of interiour points
         step_size_scale: Accuracy of the found optimal interpolation
@@ -370,15 +421,8 @@ def init_step_size_adaption(weight_fns: Dict[Any, Callable],
     iterations = int(onp.ceil(-onp.log(step_size_scale) / onp.log(interior_points + 1)))
     print(f"[Step size] Use {iterations} iterations for {interior_points} interior points.")
 
-    def _initialize_search(params, traj_states):
-        N_effs = {
-            sim_key: weight_fn(params, traj_states[sim_key])[1]
-            for sim_key, weight_fn in weight_fns.items()
-        }
-        return N_effs
-
     @functools.partial(jax.vmap, in_axes=(0, None, None, None, None, None))
-    def _residual(alpha, params, N_effs, batch_grad, proposal, traj_states):
+    def _residual(alpha, params, N_eff, batch_grad, proposal, traj_state):
         # Find the biggest reduction among the statepoints
 
         new_params = jax.tree_util.tree_map(
@@ -386,20 +430,12 @@ def init_step_size_adaption(weight_fns: Dict[Any, Callable],
             params, proposal
         )
 
-        reductions = []
-        for sim_key, weight_fn in weight_fns.items():
-            # Calculate the expected effective number of weights
-            _, N_eff_new = weight_fn(
-                new_params, traj_states[sim_key]
-            )
-
-            reductions.append(jnp.log(N_eff_new) - jnp.log(N_effs[sim_key]))
-
-        min_reduction = jnp.min(jnp.array(reductions))
+        _, N_eff_new = weight_fn(new_params, traj_state)
+        reduction = jnp.log(N_eff_new) - jnp.log(N_eff)
         # Allow a reduction of the current effective sample size
         # The minimum reduction must still be larger than the allowed reduction
         # i.e. the residual of the final alpha must be greater than zero
-        return min_reduction - jnp.log(allowed_reduction)
+        return reduction - jnp.log(allowed_reduction)
 
     def _step(state, _, params=None, N_effs=None, batch_grad=None, proposal=None, traj_states=None):
         a, b, res_a, res_b = state
@@ -429,12 +465,12 @@ def init_step_size_adaption(weight_fns: Dict[Any, Callable],
         return (a, b, res_a, res_b), None
 
     @jit
-    def _adaptive_step_size(params, batch_grad, proposal, traj_states):
-        N_effs = _initialize_search(params, traj_states)
+    def _adaptive_step_size(params, batch_grad, proposal, traj_state):
+        _, N_eff = weight_fn(params, traj_state)
         a, b = 1.0e-5, 1.0
         res_a, res_b = _residual(
             jnp.asarray([a, b]),
-            params, N_effs, batch_grad, proposal, traj_states)
+            params, N_eff, batch_grad, proposal, traj_state)
 
         # Check that minimum step size is sufficiently small, else just keep
         # the minimum step size
@@ -447,8 +483,8 @@ def init_step_size_adaption(weight_fns: Dict[Any, Callable],
         # In the other case, do the bisection with the unchanged initial
         # values of a and b
         _step_fn = functools.partial(
-            _step, N_effs=N_effs, batch_grad=batch_grad, proposal=proposal,
-            traj_states=traj_states, params=params)
+            _step, N_effs=N_eff, batch_grad=batch_grad, proposal=proposal,
+            traj_states=traj_state, params=params)
         (a, b, res_a, _), _ = lax.scan(
             _step_fn,
             (a, b, res_a, res_b), onp.arange(iterations)

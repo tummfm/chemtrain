@@ -14,6 +14,7 @@
 
 """Pre-defined simulator templates."""
 
+import jax_md_mod
 from jax_md import simulate
 from jax_md.partition import NeighborList
 

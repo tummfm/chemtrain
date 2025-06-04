@@ -61,7 +61,7 @@ def is_box_valid(box: Array) -> bool:
   if jnp.isscalar(box) or box.ndim == 0 or box.ndim == 1:
     return True
   if box.ndim == 2:
-    return jnp.bool_(jnp.all(jnp.triu(box) == box))
+    return jnp.bool_(jnp.logical_not(jnp.all(jnp.triu(box) == box)))
   return False
 
 @dataclasses.dataclass
@@ -111,3 +111,11 @@ jax_md.partition.PartitionError = PartitionError
 random.KeyArray = jax.Array
 uncache('jax_md.partition')
 uncache('jax.random')
+
+# Do some e3nn_jax modifications
+
+import e3nn_jax._src.scatter
+from jax_md_mod import e3nn_mod
+
+e3nn_jax._src.scatter._distinct_but_small = e3nn_mod._distinct_but_small
+uncache('e3nn_jax._src.scatter')

@@ -16,8 +16,10 @@
 requirements."""
 import abc
 import copy
+import functools
 import logging
 import pathlib
+import sys
 import time
 import warnings
 from abc import abstractmethod
@@ -29,20 +31,61 @@ import cloudpickle as pickle
 import jax
 import numpy as onp
 from jax import (
-    tree_map, numpy as jnp, random, vmap, device_count, jit, device_get,
+    tree_map, numpy as jnp, random, device_count, jit, device_get,
     tree_util
 )
 from jax_sgmc import data
 
-import chemtrain.data.data_loaders
 from chemtrain import util
 from chemtrain.data import data_loaders
-from chemtrain.learn import max_likelihood
+from chemtrain.learn import max_likelihood, difftre
 from jax_md_mod.model import dropout
 from chemtrain.ensemble.reweighting import init_pot_reweight_propagation_fns
 from chemtrain.ensemble import sampling
 from chemtrain.typing import EnergyFnTemplate
 from chemtrain.util import format_not_recognized_error
+
+
+class CaptureStdout:
+    """Capture stdout and writes to file.
+
+    This context manager writes messages to stdout and a file.
+
+    Args:
+        file: Path to file where to write the stdout.
+
+    """
+    def __init__(self, file=None):
+        self.files = []
+        if file is not None:
+            self.files = [file]
+
+    def write(self, message):
+        for f in self.out:
+            f.write(message)
+            f.flush()
+
+    def flush(self):
+        for f in self.out:
+            f.flush()
+
+    def __enter__(self):
+        try:
+            self.files = [open(file_path, "w") for file_path in self.files]
+            self.out = (sys.stdout, *self.files)
+            sys.stdout = self
+        except Exception as e:
+            self.__exit__(None, None, None)
+            raise e
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        sys.stdout = self.out[0]
+        for f in self.files:
+            try:
+                f.close()
+            except Exception as e:
+                print(f"Error closing file: {e}")
 
 
 class TrainerInterface(metaclass=abc.ABCMeta):
@@ -72,54 +115,54 @@ class TrainerInterface(metaclass=abc.ABCMeta):
     def energy_fn(self):
         """Returns the energy function for the current parameters."""
         if self.reference_energy_fn_template is None:
-            raise ValueError('Cannot construct energy_fn as no reference '
-                             'energy_fn_template was provided during '
-                             'initialization.')
+            raise ValueError("Cannot construct energy_fn as no reference "
+                             "energy_fn_template was provided during "
+                             "initialization.")
         return self.reference_energy_fn_template(self.params)
 
-    def _dump_checkpoint_occasionally(self, *args, frequency=None, **kwargs):
+    def _dump_checkpoint_occasionally(self, *args, checkpoint_frequency=None, **kwargs):
         """Dumps a checkpoint during training, from which training can
         be resumed.
         """
         assert self.checkpoint_path is not None
-        if frequency is not None:
+        if checkpoint_frequency is not None:
             pathlib.Path(self.checkpoint_path).mkdir(parents=True,
                                                      exist_ok=True)
-            if self._epoch % frequency == 0:  # checkpoint model
-                epoch = str(self._epoch).rjust(5, '0')
+            if self._epoch % checkpoint_frequency == 0:  # checkpoint model
+                epoch = str(self._epoch).rjust(5, "0")
                 file_path = (
-                    pathlib.Path(self.checkpoint_path) / f'epoch{epoch}.pkl')
+                    pathlib.Path(self.checkpoint_path) / f"epoch{epoch}.pkl")
                 self.save_trainer(file_path)
 
-    def save_trainer(self, save_path, format='.pkl'):
+    def save_trainer(self, save_path, format=".pkl"):
         """Saves whole trainer, e.g. for production after training."""
         if self._full_checkpoint:
             data = self
         else:
             data = self._statistics
             try:
-                self._statistics["trainer_state"] = dict(self.state)
+                data["trainer_state"] = dict(self.state)
             except AttributeError:
                 print(f"Skipping trainer state")
 
             # Try to save the best parameters when provided
             try:
-                self._statistics["best_params"] = self.best_params
+                data["best_params"] = self.best_params
             except AttributeError:
                 pass
 
-        if format == '.pkl':
-            with open(save_path, 'wb') as pickle_file:
+        if format == ".pkl":
+            with open(save_path, "wb") as pickle_file:
                 pickle.dump(tree_map(onp.asarray, data), pickle_file)
-        elif format == 'none':
+        elif format == "none":
             return data
 
-    def save_energy_params(self, file_path, save_format='.hdf5', best=False):
+    def save_energy_params(self, file_path, save_format=".hdf5", best=False):
         """Saves energy parameters.
 
         Args:
             file_path: Path to the file where to save the energy parameters.
-                Currently, only saving to pickle files (``'*.pkl'``) is
+                Currently, only saving to pickle files (``"*.pkl"``) is
                 supported.
             save_format: Format in which to save the energy parameters.
             best: If True, tries to save the best parameters, e.g., on the
@@ -139,10 +182,10 @@ class TrainerInterface(metaclass=abc.ABCMeta):
             params = self.params
 
 
-        if save_format == '.hdf5':
+        if save_format == ".hdf5":
             raise NotImplementedError
-        elif save_format == '.pkl':
-            with open(file_path, 'wb') as pickle_file:
+        elif save_format == ".pkl":
+            with open(file_path, "wb") as pickle_file:
                 pickle.dump(device_get(params), pickle_file)
         else:
             format_not_recognized_error(save_format)
@@ -152,14 +195,14 @@ class TrainerInterface(metaclass=abc.ABCMeta):
 
         Args:
             file_path: Path to the file containing the energy parameters.
-                Currently, only loading from pickle files (``'*.pkl'``) is
+                Currently, only loading from pickle files (``"*.pkl"``) is
                 supported.
 
         """
-        if file_path.endswith('.hdf5'):
+        if file_path.endswith(".hdf5"):
             raise NotImplementedError
-        elif file_path.endswith('.pkl'):
-            with open(file_path, 'rb') as pickle_file:
+        elif file_path.endswith(".pkl"):
+            with open(file_path, "rb") as pickle_file:
                 params = pickle.load(pickle_file)
         else:
             format_not_recognized_error(file_path[-4:])
@@ -232,6 +275,7 @@ class MLETrainerTemplate(TrainerInterface):
                  init_state: util.TrainerState,
                  checkpoint_path: PathLike,
                  full_checkpoint: bool = True,
+                 log_file: PathLike = None,
                  reference_energy_fn_template: EnergyFnTemplate = None):
         super().__init__(
             checkpoint_path, reference_energy_fn_template, full_checkpoint)
@@ -241,6 +285,8 @@ class MLETrainerTemplate(TrainerInterface):
         self.gradient_norm_history = []
         self._converged = False
         self._diverged = False
+
+        self.log_file = log_file
 
         self._tasks = {}
 
@@ -266,7 +312,7 @@ class MLETrainerTemplate(TrainerInterface):
 
         Args:
             trigger: The trigger at which the task is executed. Can be
-                ``'pre/post_training/epoch/batch'``.
+                ``"pre/post_training/epoch/batch"``.
             fn_or_method: The function or method to be executed.
 
         Example:
@@ -278,7 +324,7 @@ class MLETrainerTemplate(TrainerInterface):
 
                 def print_parameter(trainer, *args, **kwargs):
                    print(f"Parameter after epoch {trainer._epoch}: "
-                         f"{trainer.state.params['parameter']}")
+                         f"{trainer.state.params["parameter"]}")
 
                 trainer.add_task("post_epoch", print_parameter)
 
@@ -418,37 +464,37 @@ class MLETrainerTemplate(TrainerInterface):
         start_epoch = self._epoch
         end_epoch = start_epoch + max_epochs
 
-        self._execute_tasks("pre_training")
-        for _ in range(start_epoch, end_epoch):
-            try:
-                self._execute_tasks("pre_epoch")
-                for batch in self._get_batch():
-                    self._execute_tasks("pre_batch", batch)
-                    self._update(batch)
-                    self._execute_tasks("post_batch", batch)
-                self._execute_tasks("post_epoch",
-                                    checkpoint_freq=checkpoint_freq,
-                                    convergence_thresh=thresh)
-                self._epoch += 1
-            except RuntimeError as err:
-                # In case the simulation diverges, break the optimization
-                # and checkpoint the last state such that an analysis can
-                # be performed.
-                self._diverged = True
-                if self.checkpoint_path is not None:
-                    path = (self.checkpoint_path
-                            + f'/epoch{self._epoch - 1}_error_state.pkl')
-                    self.save_trainer(save_path=path)
-                print(f'Training has been unsuccessful due to the following'
-                      f' error: {err}')
-                break
+        with CaptureStdout(self.log_file):
+            self._execute_tasks("pre_training")
+            for _ in range(start_epoch, end_epoch):
+                try:
+                    self._execute_tasks("pre_epoch")
+                    for batch in self._get_batch():
+                        self._execute_tasks("pre_batch", batch)
+                        self._update(batch)
+                        self._execute_tasks("post_batch", batch)
+                    self._execute_tasks("post_epoch",
+                                        checkpoint_frequency=checkpoint_freq,
+                                        convergence_thresh=thresh)
+                    self._epoch += 1
+                except RuntimeError as err:
+                    # In case the simulation diverges, break the optimization
+                    # and checkpoint the last state such that an analysis can
+                    # be performed.
+                    self._diverged = True
+                    if self.checkpoint_path is not None:
+                        path = (self.checkpoint_path / f"epoch{self._epoch - 1}_error_state.pkl")
+                        self.save_trainer(save_path=path)
+                    print(f"Training has been unsuccessful due to the following"
+                          f" error: {err}")
+                    break
 
-            if self._converged:
-                break
-        else:
-            if thresh is not None:
-                print('Maximum number of epochs reached without convergence.')
-        self._execute_tasks("post_training")
+                if self._converged:
+                    break
+            else:
+                if thresh is not None:
+                    print("Maximum number of epochs reached without convergence.")
+            self._execute_tasks("post_training")
 
     def _update_dropout(self, batch):
         """Updates params, while keeping track of Dropout."""
@@ -513,9 +559,9 @@ class PropagationBase(MLETrainerTemplate):
     """
     def __init__(self, init_trainer_state, optimizer, checkpoint_path,
                  reweight_ratio=0.9, sim_batch_size=1, energy_fn_template=None,
-                 full_checkpoint=True, key=None):
+                 full_checkpoint=True, key=None, log_dir=None,):
         super().__init__(optimizer, init_trainer_state, checkpoint_path,
-                         full_checkpoint, energy_fn_template)
+                         full_checkpoint, log_dir, energy_fn_template)
         self.sim_batch_size = sim_batch_size
         self.reweight_ratio = reweight_ratio
 
@@ -528,6 +574,9 @@ class PropagationBase(MLETrainerTemplate):
         self.n_statepoints = 0
         self.shuffle_key = random.PRNGKey(0)
 
+        self.weight_fn = {}
+        self._adaptive_step_size = {}
+
     def _init_statepoint(self, reference_state, energy_fn_template,
                          simulator_template, neighbor_fn, timings, state_kwargs,
                          set_key=None, energy_batch_size=10,
@@ -536,11 +585,15 @@ class PropagationBase(MLETrainerTemplate):
                          resample_simstates=False):
         """Initializes the simulation and reweighting functions as well
         as the initial trajectory for a statepoint."""
+
         # TODO ref pressure only used in print and to have barostat values.
         #  Reevaluate this parameter of barostat values not used in reweighting
         # TODO document ref_press accordingly
 
-        assert 'kT' in state_kwargs, (
+        # TODO: Extend this function to allow for multiple statepoints to be
+        #       added. Requires batch argument to be set here.
+
+        assert "kT" in state_kwargs, (
             "Reweighting requires at least the temperature to be specified in "
             "the state_kwargs. "
         )
@@ -567,7 +620,7 @@ class PropagationBase(MLETrainerTemplate):
         self.statepoints[key] = state_kwargs
         npt_ensemble = util.is_npt_ensemble(reference_state.sim_state)
         if npt_ensemble:
-            assert 'pressure' in state_kwargs, (
+            assert "pressure" in state_kwargs, (
                 "Reweighting in the NPT ensemble requires the pressure to be "
                 "defined in the state_kwargs."
             )
@@ -579,17 +632,41 @@ class PropagationBase(MLETrainerTemplate):
             entropy_approximation=entropy_approximation,
             resample_simstates=resample_simstates
         )
+
+        self.key, split = random.split(self.key)
+
+        num_runs = 2
+        # To get the correct timings, first compile before evaluation
+        start = time.time()
+        init_traj_fn = gen_init_traj.lower(split, self.params, reference_state,
+                                           num_runs=num_runs, **state_kwargs)
+        init_traj_fn = init_traj_fn.compile()
+        compile_time = (time.time() - start) / 60.
+        print(
+            f"[Propagation] Time for trajectory compilation {key}: "
+            f"{compile_time} mins"
+        )
+
         if initialize_traj:
-            self.key, split = random.split(self.key)
-            init_traj, runtime = gen_init_traj(
-                split, self.params, reference_state)
-            print(f'Time for trajectory initialization {key}: {runtime} mins')
+            start = time.time()
+            init_traj = init_traj_fn(split, self.params, reference_state, **state_kwargs)
+            run_time = (time.time() - start) / 60. / num_runs
+
+            assert not init_traj.overflow, "[Propagation] Neighborlist buffer overflowed."
+            assert not onp.any(onp.isnan(init_traj.trajectory.position)), "[Propagation] Initial simulation produced NaNs."
+
+            print(
+                f"[Propagation] Time for trajectory simulation {key}: "
+                f"{run_time} mins"
+            )
+
             self.trajectory_states[key] = init_traj
         else:
-            print('Not initializing the initial trajectory is only valid if '
-                  'a checkpoint is loaded. In this case, please be use to add '
-                  'state points in the same sequence, otherwise loaded '
-                  'trajectories will not match its respective simulations.')
+            self.trajectory_states[key] = functools.partial(init_traj_fn, split, self.params, reference_state, **state_kwargs)
+            print("Not initializing the initial trajectory is only valid if "
+                  "a checkpoint is loaded. In this case, please be use to add "
+                  "state points in the same sequence, otherwise loaded "
+                  "trajectories will not match its respective simulations.")
 
         return key, *reweight_fns
 
@@ -621,7 +698,7 @@ class PropagationBase(MLETrainerTemplate):
         elif self.sim_batch_size == -1:
             batch_list = jnp.split(shuffled_indices, 1)
         else:
-            raise NotImplementedError('Only batch_size = 1 or -1 implemented.')
+            raise NotImplementedError("Only batch_size = 1 or -1 implemented.")
 
         return (batch.tolist() for batch in batch_list)
 
@@ -635,21 +712,21 @@ class PropagationBase(MLETrainerTemplate):
                 self._print_measured_statepoint(sim_key)
         else:
             traj = self.trajectory_states[sim_key]
-            print(f'[Statepoint {sim_key}]')
+            print(f"[Statepoint {sim_key}]")
             statepoint = self.statepoints[sim_key]
-            measured_kbt = jnp.mean(traj.aux['kbT'])
-            if 'pressure' in statepoint:  # NPT
-                measured_press = jnp.mean(traj.aux['pressure'])
-                press_print = (f'\n\tpress = {measured_press:.2f} ref_press = '
-                               f'{statepoint["pressure"]:.2f}')
+            measured_kbt = jnp.mean(traj.aux["kT"])
+            if "pressure" in statepoint:  # NPT
+                measured_press = jnp.mean(traj.aux["pressure"])
+                press_print = (f"\n\tpress = {measured_press:.2f} ref_press = "
+                               f"{statepoint['pressure']:.2f}")
             else:
-                press_print = ''
-            print(f'\tkT = {measured_kbt:.3f} ref_kT = '
-                  f'{statepoint["kT"]:.3f}' + press_print)
+                press_print = ""
+            print(f"\tkT = {measured_kbt:.3f} ref_kT = "
+                  f"{statepoint['kT']:.3f}" + press_print)
 
     def train(self, max_epochs, thresh=None, checkpoint_freq=None):
-        assert self.n_statepoints > 0, ('Add at least 1 state point via '
-                                        '"add_statepoint" to start training.')
+        assert self.n_statepoints > 0, ("Add at least 1 state point via "
+                                        "'add_statepoint' to start training.")
         super().train(max_epochs, thresh=thresh,
                       checkpoint_freq=checkpoint_freq)
 
@@ -659,6 +736,33 @@ class PropagationBase(MLETrainerTemplate):
         and logging of auxiliary results. Takes batch of simulation indices
         as input.
         """
+
+    def init_step_size_adaption(self,
+                                allowed_reduction: float = 0.5,
+                                interior_points: int = 10,
+                                step_size_scale: float = 1e-7
+                                ) -> None:
+        """Initializes a line search to tune the step size in each iteration.
+
+        The line search optimizes step size to limit the decrease in the
+        effective sample size (ESS) via the algorithm
+        :func:`chemtrain.learn.difftre.init_step_size_adaption`.
+
+        Args:
+            allowed_reduction: Target reduction of the effective sample size
+            interior_points: Number of interiour points
+            step_size_scale: Accuracy of the found optimal interpolation
+                coefficient
+
+        Returns:
+            Returns the interpolation coefficient :math:`\\alpha`.
+
+        """
+
+        for key, weight_fn in self.weight_fn.items():
+            self._adaptive_step_size[key] = difftre.init_step_size_adaption(
+                weight_fn, allowed_reduction, interior_points, step_size_scale
+            )
 
 
 class DataParallelTrainer(MLETrainerTemplate):
@@ -677,7 +781,7 @@ class DataParallelTrainer(MLETrainerTemplate):
     def __init__(self, loss_fn, model, init_params, optimizer, checkpoint_path,
                  batch_per_device: int,  batch_cache: int = 1,
                  full_checkpoint=True, penalty_fn=None, energy_fn_template=None,
-                 convergence_criterion='window_median',
+                 convergence_criterion="window_median", log_file=None,
                  disable_shmap: bool = False):
 
         self._disable_shmap = disable_shmap
@@ -697,21 +801,25 @@ class DataParallelTrainer(MLETrainerTemplate):
         self.batch_cache = batch_cache
         self.batch_size = batch_per_device * device_count()
 
-        # replicate params and optimizer states for pmap
-        opt_state = optimizer.init(init_params)  # initialize optimizer state
+        if optimizer is None:
+            print(f"No optimizer specified")
+            opt_state = None
+        else:
+            opt_state = optimizer.init(init_params)  # initialize optimizer state
         init_state = util.TrainerState(params=init_params, opt_state=opt_state)
 
         super().__init__(
             optimizer=optimizer, init_state=init_state,
             checkpoint_path=checkpoint_path,
             full_checkpoint=full_checkpoint,
+            log_file=log_file,
             reference_energy_fn_template=energy_fn_template)
 
-        self.train_batch_losses = self.checkpoint('train_batch_losses', [])
-        self.train_losses = self.checkpoint('train_losses', [])
-        self.val_losses = self.checkpoint('val_losses', [])
-        self.train_target_losses = self.checkpoint('train_target_losses', {})
-        self.val_target_losses = self.checkpoint('val_target_losses', {})
+        self.train_batch_losses = self.checkpoint("train_batch_losses", [])
+        self.train_losses = self.checkpoint("train_losses", [])
+        self.val_losses = self.checkpoint("val_losses", [])
+        self.train_target_losses = self.checkpoint("train_target_losses", {})
+        self.val_target_losses = self.checkpoint("val_target_losses", {})
 
         self._batch_states: Dict[str, Any] = {}
         self._batches_per_epoch: Dict[str, int] = {}
@@ -786,7 +894,13 @@ class DataParallelTrainer(MLETrainerTemplate):
 
         self.set_loader(loaders.train_loader, stage=stage, include_all=include_all, **kwargs)
 
-    def set_loader(self, data_loader, stage="training", include_all=False, **kwargs):
+    def set_loader(self,
+                   data_loader,
+                   stage="training",
+                   include_all=False,
+                   batch_size=None,
+                   rng_seed=None,
+                   **kwargs):
         """Sets a data loader for a specific stage, e.g., training.
 
         If the dataset consists of numpy arrays, it is simpler to use
@@ -799,18 +913,26 @@ class DataParallelTrainer(MLETrainerTemplate):
             include_all: Compute the loss for all samples of the split by
                 padding the last batch and masking out double samples.
                 Not applied to the training split.
+            rng_seed: Seed to include random keys in the reference data.
+                The keys are refreshed whenever a new batch is drawn.
+            batch_size: Overwrites the default batch size.
 
         """
         if stage in self.release_fns.keys():
             self.release_fns[stage]()
 
-        observation_count = data_loader.static_information['observation_count']
+        observation_count = data_loader.static_information["observation_count"]
 
         assert observation_count > 0
 
-        batch_size = observation_count
-        if self.batch_size < observation_count:
+        # Overwrite batch size for splits
+        if batch_size is not None:
+            print(f"Chose custom batch size {batch_size} for split {stage}")
+
+        if batch_size is None:
             batch_size = self.batch_size
+        if batch_size > observation_count:
+            batch_size = observation_count
 
         # Ensures that the batch size is divisible by the number of devices
         batch_size -= onp.mod(batch_size, device_count())
@@ -846,7 +968,7 @@ class DataParallelTrainer(MLETrainerTemplate):
         init_train_state, get_train_batch, release = batch_fns
 
         train_batch_state = init_train_state(
-            shuffle=True, in_epochs=include_all, **kwargs
+            shuffle=True, in_epochs=include_all, rng_seed=rng_seed, **kwargs
         )
 
         self._get_batch_fns[stage] = get_train_batch
@@ -859,6 +981,29 @@ class DataParallelTrainer(MLETrainerTemplate):
             self._batch_states[stage], train_batch = self._get_batch_fns[stage](
                 self._batch_states[stage], information=information)
             yield train_batch
+
+
+    def set_batches_per_epoch(self, stage="training", max_batches: int = 1):
+        """Limits the number of updates within an epoch.
+
+        Useful, e.g., when the validation loss should be computed more
+        regularly.
+
+        Args:
+            stage: Key to the stage that should be limited. Currently,
+                stage other than ``"training"`` is not supported to avoid
+                wrongful computations of the validation loss.
+            max_batches: Maximum number of batches, i.e., number of batched
+                optimizer updates.
+
+        """
+        if stage != "training":
+            raise NotImplementedError("Only training stage implemented.")
+
+        self._batches_per_epoch[stage] = min([
+            self._batches_per_epoch[stage], max_batches
+        ])
+
 
     def _get_batch(self):
         return self._get_batch_stage("training")
@@ -1027,12 +1172,12 @@ class DataParallelTrainer(MLETrainerTemplate):
             val_loss = None
 
         log_str = (
-            f'[Epoch {self._epoch}]:\n'
-            f'\tAverage train loss: {mean_train_loss:.5f}\n'
-            f'\tAverage val loss: {val_loss}\n'
-            f'\tGradient norm: {self.gradient_norm_history[-1]}\n'
-            f'\tElapsed time = {duration:.3f} min\n'
-            f'\tPer-target losses:\n'
+            f"[Epoch {self._epoch}]:\n"
+            f"\tAverage train loss: {mean_train_loss:.5f}\n"
+            f"\tAverage val loss: {val_loss}\n"
+            f"\tGradient norm: {self.gradient_norm_history[-1]}\n"
+            f"\tElapsed time = {duration:.3f} min\n"
+            f"\tPer-target losses:\n"
         )
 
         for key in self.train_target_losses:
@@ -1069,8 +1214,8 @@ class DataParallelTrainer(MLETrainerTemplate):
                 only consists of a few observations.
         """
         n_samples = util.tree_multiplicity(sample)
-        assert n_samples <= self.batch_size, ('Number of provided samples must'
-                                              ' not exceed trainer batch size.')
+        assert n_samples <= self.batch_size, ("Number of provided samples must"
+                                              " not exceed trainer batch size.")
         batch = next(self._get_batch())
         updated_batch = util.tree_set(batch, sample, n_samples)
         self._update_with_dropout(updated_batch)
@@ -1173,15 +1318,15 @@ class MCMCForceMatchingTemplate(ProbabilisticFMTrainerTemplate):
             rng_key, consumed_key = random.split(rng_key)
             self.state, info = self.kernel(consumed_key, self.state)
             self.results.append(self.state)
-            print(f'Time for sample {i}: {(time.time() - start_time) / 60.}'
-                  f' min.', info)
+            print(f"Time for sample {i}: {(time.time() - start_time) / 60.}"
+                  f" min.", info)
             self._epoch += 1
             self._dump_checkpoint_occasionally(frequency=checkpoint_freq)
 
     @property
     def list_of_params(self):
         """Returns a list of sampled parameters."""
-        return [state.position['params'] for state in self.results]
+        return [state.position["params"] for state in self.results]
 
     @property
     def params(self):
@@ -1190,8 +1335,8 @@ class MCMCForceMatchingTemplate(ProbabilisticFMTrainerTemplate):
 
     @params.setter
     def params(self, loaded_params):
-        raise NotImplementedError('Setting params seems not meaningful for MCMC'
-                                  ' samplers.')
+        raise NotImplementedError("Setting params seems not meaningful for MCMC"
+                                  " samplers.")
 
 
 class EarlyStopping:
@@ -1201,13 +1346,13 @@ class EarlyStopping:
 
     The following criteria are implemented:
 
-    - ``'window_median'``: 2 windows are placed at the end of the loss
+    - ``"window_median"``: 2 windows are placed at the end of the loss
       history. Stops when the median of the latter window of size "thresh"
       exceeds the median of the prior window of the same size.
 
-    - ``'PQ'``: Stops when the PQ criterion exceeds thresh
+    - ``"PQ"``: Stops when the PQ criterion exceeds thresh
 
-    - ``'max_loss'``: Stops when the loss decreased below the maximum allowed
+    - ``"max_loss"``: Stops when the loss decreased below the maximum allowed
       loss specified via thresh.
 
     Args:
@@ -1232,7 +1377,7 @@ class EarlyStopping:
     def _is_converged(self, thresh):
         converged = False
         if thresh is not None:  # otherwise no early stopping used
-            if self.criterion == 'window_median':
+            if self.criterion == "window_median":
                 window_size = thresh
                 if len(self._epoch_losses) >= 2 * window_size:
                     prior_window = onp.array(
@@ -1241,7 +1386,7 @@ class EarlyStopping:
                     converged = (onp.median(latter_window)
                                  > onp.median(prior_window))
 
-            elif self.criterion == 'PQ':
+            elif self.criterion == "PQ":
                 if len(self._epoch_losses) >= self.pq_window_size:
                     best_loss = min(self._epoch_losses)
                     loss_window = self._epoch_losses[-self.pq_window_size:]
@@ -1252,12 +1397,12 @@ class EarlyStopping:
                     pq = gen_loss / progress
                     converged = pq > thresh
 
-            elif self.criterion == 'max_loss':
+            elif self.criterion == "max_loss":
                 converged = self._epoch_losses[-1] < thresh
             else:
-                raise ValueError(f'Convergence criterion {self.criterion} '
-                                 f'unknown. Select "max_loss", "ave_loss" or '
-                                 f'"std".')
+                raise ValueError(f"Convergence criterion {self.criterion} "
+                                 f"unknown. Select 'max_loss', 'ave_loss' or "
+                                 f"'std'.")
         return converged
 
     def early_stopping(self, curr_epoch_loss, thresh, params=None,
@@ -1280,8 +1425,8 @@ class EarlyStopping:
         self._epoch_losses.append(curr_epoch_loss)
 
         if save_best_params:
-            assert params is not None, ('If best params are saved, they need to'
-                                        ' be provided in early_stopping.')
+            assert params is not None, ("If best params are saved, they need to"
+                                        " be provided in early_stopping.")
             improvement = self.best_loss - curr_epoch_loss
             if improvement > 0.:
                 self.best_loss = curr_epoch_loss

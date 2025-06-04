@@ -25,18 +25,26 @@ try:
 except:
     ArrayLike = Any
 
-def load_box(filename):
+def load_box(filename, frame=-1, top=None):
     """Loads initial configuration using the file loader from MDTraj.
 
     Args:
         filename: String providing the location of the file to load.
+        frame: Frame of the trajectory to read data from.
+        top: Topology file, necessary if the file does not contain sufficient
+            information to generate the system topology.
 
     Returns:
         Tuple of jnp arrays of box, coordinates, mass, and species.
     """
-    traj = mdtraj.load(filename)
-    coordinates = traj.xyz[0]
-    box = traj.unitcell_lengths[0]
+    if top is not None:
+        top = mdtraj.load_topology(top)
+    traj = mdtraj.load(filename, top=top)
+    coordinates = traj.xyz[frame]
+
+    box = traj.unitcell_lengths
+    if box is not None:
+        box = jnp.asarray(box[frame])
 
     species = onp.zeros(coordinates.shape[0])
     masses = onp.zeros_like(species)
@@ -46,7 +54,7 @@ def load_box(filename):
 
     # _, bonds = traj.topology.to_dataframe()
 
-    return (jnp.array(box), jnp.array(coordinates), jnp.array(masses),
+    return (box, jnp.array(coordinates), jnp.array(masses),
             jnp.array(species, dtype=jnp.int32))
 
 

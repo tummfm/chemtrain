@@ -23,6 +23,7 @@ try:
 except:
     ArrayLike = Any
 
+import jax_md_mod
 from jax_md.energy import NeighborList
 
 # Energy Functions

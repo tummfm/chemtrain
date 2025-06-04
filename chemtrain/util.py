@@ -19,12 +19,13 @@ from typing import Any
 import chex
 import cloudpickle as pickle
 # import h5py
-from jax import tree_map, tree_util, device_count, numpy as jnp
-from jax_md import simulate
+import jax
+from jax import tree_map, tree_util, device_count, numpy as jnp, tree_unflatten, lax
+
+import jax_md_mod
+from jax_md import simulate, partition
 import numpy as onp
 
-
-from jax_md import partition
 
 # freezing seems to give slight performance improvement
 @partial(chex.dataclass, frozen=True)
@@ -154,6 +155,17 @@ def tree_take(tree, indicies, axis=0, on_cpu=True):
     """Tree-wise application of numpy.take."""
     numpy = onp if on_cpu else jnp
     return tree_map(lambda x: numpy.take(x, indicies, axis), tree)
+
+
+def tree_put(tree, indicies, values, axis=0, on_cpu=True):
+    """Tree-wise application of numpy.put_along_axis."""
+    if on_cpu:
+        return tree_map(
+            lambda x, y: onp.put_along_axis(x, indicies, y, axis), values)
+    else:
+        assert axis == 0, 'Only axis=0 is supported for jax.'
+        return tree_map(
+            lambda x, y: x.at[indicies, ...].set(y), tree, values)
 
 
 def tree_delete(tree, indicies, axis=None, on_cpu=True):
@@ -299,3 +311,55 @@ def load_trainer(file_path):
 def format_not_recognized_error(file_format):
     raise ValueError(f'File format {file_format} not recognized. '
                      f'Expected ".hdf5" or ".pkl".')
+
+def batch_map(f, xs, batch_size: int = 1):
+    """Maps a function over an array in batches.
+
+    Substitute for ``lax.map`` with batch size argument from later jax versions.
+
+    Args:
+        f: Function to map.
+        xs: List of arguments to map over.
+        batch_size: Size of each batch.
+
+    Returns:
+        Returns results of f evaluated at element entry of xs.
+
+    """
+
+    f_vmapped = jax.vmap(f)
+    tree_leaves, tree_structure = tree_util.tree_flatten(xs)
+
+    # Ensure that the batch size is not larger than the number of samples
+    batch_size = onp.min([batch_size, tree_leaves[0].shape[0]])
+
+    # First, we split the pytree into batch and remainder part
+    batches = []
+    remainders = []
+
+    for leave in tree_leaves:
+        n_batches = leave.shape[0] // batch_size
+        remainder = leave.shape[0] % batch_size
+
+        if n_batches > 0:
+            batches.append(jnp.reshape(leave[:n_batches * batch_size], (n_batches, batch_size, *leave.shape[1:])))
+        if remainder > 0:
+            remainders.append(leave[-remainder:])
+
+    # Then, we map over the batches and compute the remainder in a single pass
+    batch_results = lax.map(
+        f_vmapped, tree_util.tree_unflatten(tree_structure, batches))
+    # We are done if we can split the data into batches without remainder
+    if len(remainders) == 0:
+        return tree_concat(batch_results)
+
+    remainder_results = f_vmapped(
+        tree_util.tree_unflatten(tree_structure, remainders))
+
+    # Concatenate remainder results and batches
+    results = tree_util.tree_map(
+        lambda x, y: jnp.concat([x, y], axis=0),
+        tree_concat(batch_results), remainder_results
+    )
+
+    return results

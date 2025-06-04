@@ -39,6 +39,7 @@ dependencies = [
     'jaxopt',
     'dm-tree',
     'networkx',
+    'protobuf<=3.20'
 ]
 dynamic = ["version"]
 
@@ -52,7 +53,8 @@ dynamic = ["version"]
     "mdtraj",
     "matplotlib",
     'tomli',
-    'tomli-w'
+    'tomli-w',
+    "scikit-learn",
 ]
 "test" = [
     "pylint",
@@ -65,7 +67,9 @@ dynamic = ["version"]
     "sphinx-autodoc-typehints == 1.11.1",
     "myst-nb",
     "matplotlib",
-    "sphinx-remove-toctrees"
+    "sphinx-remove-toctrees",
+    "breathe",
+    "sphinxcontrib-mermaid"
 ]
 "stable" = [
     "jax == 0.3.25",

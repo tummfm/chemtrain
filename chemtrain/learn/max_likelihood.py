@@ -393,9 +393,12 @@ def _batch_masked_loss(per_sample_loss, mask=None):
 def _masked_loss(per_element_loss, mask=None, weights=None):
     """Computes average loss, accounting for masked elements, if applicable."""
     if weights is not None:
-        per_element_loss = jnp.moveaxis(per_element_loss, 0, -1)
-        per_element_loss *= weights
-        per_element_loss = jnp.moveaxis(per_element_loss, -1, 0)
+        if per_element_loss.ndim > 0:
+            per_element_loss = jnp.moveaxis(per_element_loss, 0, -1)
+            per_element_loss *= weights
+            per_element_loss = jnp.moveaxis(per_element_loss, -1, 0)
+        else:
+            per_element_loss *= weights
 
     if mask is None:
         return jnp.mean(per_element_loss)
@@ -436,7 +439,11 @@ def mae_loss(predictions, targets, mask=None, weights=None):
     Returns:
         Mean absolute error value.
     """
-    abs_err = jnp.abs(targets - predictions)
+
+    # Set gradients to zero at singularity
+    safe_mask = (targets - predictions) != 0.0
+    safe_diff = jnp.where(safe_mask, targets - predictions, 1.0)
+    abs_err = jnp.abs(safe_diff) * safe_mask
     return _masked_loss(abs_err, mask, weights)
 
 
@@ -458,6 +465,6 @@ def identity_loss(predictions, *args, **kwargs):
 
 def step_optimizer(params, opt_state, grad, optimizer):
     """Steps optimizer and updates state using the gradient."""
-    scaled_grad, new_opt_state = optimizer.update(grad, opt_state)
+    scaled_grad, new_opt_state = optimizer.update(grad, opt_state, params)
     new_params = optax.apply_updates(params, scaled_grad)
     return new_params, new_opt_state

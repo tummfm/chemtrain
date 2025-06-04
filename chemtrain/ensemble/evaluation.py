@@ -17,10 +17,10 @@ from typing import Any, Dict, Callable, NamedTuple
 import numpy as onp
 from jax import tree_util, numpy as jnp, vmap, lax, Array
 from jax._src.basearray import ArrayLike
-from jax_md import simulate
 
-from jax_md.partition import NeighborList
 from jax_md_mod import custom_partition
+from jax_md import simulate
+from jax_md.partition import NeighborList
 
 from chemtrain import util
 from chemtrain.typing import QuantityDict
@@ -56,6 +56,7 @@ def quantity_map(states: State,
                  quantities: QuantityDict,
                  nbrs: NeighborList = None,
                  state_kwargs: Dict[str, Array] = None,
+                 constant_state_kwargs: Dict[str, Array] = None,
                  energy_params: Any = None,
                  batch_size: int = 1,
                  feature_extract_fns: Dict[str, Callable] = None):
@@ -99,6 +100,8 @@ def quantity_map(states: State,
         nbrs: Reference neighbor list to compute new neighbor list
         state_kwargs: Kwargs to supply reference ``'kT'`` and/or ``'pressure'``
             to the energy function or the quantity functions.
+        constant_state_kwargs: Kwargs to supply information to the energy
+            function that is constant over all states.
         energy_params: Energy params for energy_fn_template to initialize
             the current energy_fn
         batch_size: Number of batches for vmap
@@ -110,15 +113,17 @@ def quantity_map(states: State,
         input quantity function.
     """
     return quantity_multimap(
-        states, quantities=quantities, nbrs=nbrs,
-         state_kwargs=state_kwargs, energy_params=energy_params,
-         batch_size=batch_size, feature_extract_fns=feature_extract_fns)
+       states, quantities=quantities, nbrs=nbrs,
+        state_kwargs=state_kwargs, constant_state_kwargs=constant_state_kwargs,
+        energy_params=energy_params, batch_size=batch_size,
+        feature_extract_fns=feature_extract_fns)
 
 
 def quantity_multimap(*states: State,
                       quantities: QuantityDict,
                       nbrs: NeighborList = None,
                       state_kwargs: Dict[str, Array] = None,
+                      constant_state_kwargs: Dict[str, Array] = None,
                       energy_params: Any = None,
                       batch_size: int = 1,
                       feature_extract_fns: Dict[str, Callable] = None):
@@ -144,6 +149,8 @@ def quantity_multimap(*states: State,
         nbrs: Reference neighbor list to compute new neighbor list
         state_kwargs: Kwargs to supply reference ``'kT'`` and/or ``'pressure'``
             to the energy function or the quantity functions.
+        constant_state_kwargs: Kwargs to supply information to the energy
+            function that is constant over all states.
         energy_params: Energy params for energy_fn_template to initialize
             the current energy_fn
         batch_size: Number of batches for vmap
@@ -185,6 +192,7 @@ def quantity_multimap(*states: State,
         states, kwargs = single_snapshot
 
         kwargs.update(energy_params=energy_params)
+        kwargs.update(constant_state_kwargs)
 
         # Add a masked neighbor list if masked and neighbor list are provided
         if util.is_npt_ensemble(states):
