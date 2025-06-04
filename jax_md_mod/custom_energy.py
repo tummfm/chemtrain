@@ -340,7 +340,6 @@ def truncated_lennard_jones_neighborlist(
     return energy_fn
 
 
-
 def generic_repulsion(dr: Array,
                       sigma: Array = 1.,
                       epsilon: Array = 1.,

@@ -18,7 +18,8 @@ Directly learnable quantities are, for example, energy, forces, or virial
 pressure.
 
 """
-from typing import Callable, TypedDict, Tuple, List, Dict
+import collections
+from typing import Callable, TypedDict, Tuple, List, Dict, DefaultDict, Union
 from typing_extensions import Required
 
 from jax import vmap, value_and_grad, numpy as jnp
@@ -191,23 +192,23 @@ def init_model(nbrs_init: NeighborList,
         batch_size = states.position.shape[0]
 
         predictions = evaluation.quantity_map(
-            states, quantities, nbrs_init, dynamic_kwargs, energy_params,
-            batch_size, feature_extract_fns
+            states, quantities, nbrs_init, dynamic_kwargs, {},
+            energy_params, batch_size, feature_extract_fns
         )
 
         return predictions
     return fm_model
 
 
-def init_loss_fn(error_fn: ErrorFn = max_likelihood.mse_loss,
+def init_loss_fn(error_fns: Union[ErrorFn, dict[str, ErrorFn]] = None,
                  individual: bool = True,
                  gammas: dict[str, float] = None,
                  weights_keys: Dict[str, str] = None):
     """Initializes loss function for energy/force matching.
 
     Args:
-        error_fn: Function quantifying the deviation of the model and the
-            targets. By default, a mean-squared error.
+        error_fns: Functions quantifying the deviation of the model and the
+            targets. By default, mean-squared error functions.
         individual: Return the loss values for the individual targets, e.g., for
             testing purposes. If False, the loss function returns a scalar loss
             value from the individual loss contributions, weighted by the
@@ -226,9 +227,14 @@ def init_loss_fn(error_fn: ErrorFn = max_likelihood.mse_loss,
     if weights_keys is None:
         weights_keys = {}
 
-    # Default weights for the common quantities
-    gamma_U = gammas.pop('U', 1.0)
-    gamma_F = gammas.pop('F', 1.0)
+    # Preserve old behaviour if error_fns is a single function.
+    if isinstance(error_fns, collections.abc.Callable):
+        _error_fns = collections.defaultdict(lambda: error_fns)
+    else:
+        _error_fns = collections.defaultdict(lambda: max_likelihood.mse_loss)
+
+    if isinstance(error_fns, dict):
+        _error_fns.update(error_fns)
 
     def loss_fn(predictions, targets):
         errors = {}
@@ -237,19 +243,21 @@ def init_loss_fn(error_fn: ErrorFn = max_likelihood.mse_loss,
         # Always present.
         if 'U' in targets.keys():
             weights = targets.get(weights_keys.get('U'))
-            errors['U'] = error_fn(predictions['U'], targets['U'], weights=weights)
-            loss_val += gamma_U * errors['U']
+            errors['U'] = _error_fns['U'](predictions['U'], targets['U'], weights=weights)
+            loss_val += gammas.get('U', 1.0) * errors['U']
         if 'F' in targets.keys():
-            weights = targets.get(weights_keys.get('U'))
-            errors['F'] = error_fn(predictions['F'], targets['F'], weights=weights)
-            loss_val += gamma_F * errors['F']
+            weights = targets.get(weights_keys.get('F'))
+            errors['F'] = _error_fns['F'](predictions['F'], targets['F'], weights=weights)
+            loss_val += gammas.get('F', 1.0) * errors['F']
 
         for key, gamma in gammas.items():
+            if key in ['U', 'F']: continue
+
             weights = None
             if key in weights_keys.keys():
                 weights = targets[weights_keys[key]]
 
-            errors[key] = error_fn(predictions[key], targets[key], weights=weights)
+            errors[key] = _error_fns[key](predictions[key], targets[key], weights=weights)
             loss_val += gamma * errors[key]
 
         if individual:

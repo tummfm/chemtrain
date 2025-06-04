@@ -27,6 +27,33 @@ from jax_md import partition
 
 from chemtrain.typing import ComputeFn
 
+def readout_wrapper(energy_fn_template, mode="energy"):
+    """Utility function to read out additional predictions from energy function.
+
+    The energy function returned by the energy function template must have
+    a keyword argument to select the return mode, e.g.
+
+    >>> def energy_fn(pos, neighbor, mode=None, **kwargs):
+    ...     ...
+    ...     if mode is None:
+    ...         return pot
+    ...     if mode == "some_property":
+    ...         return some_property
+
+    The energy function can then be used to predict also other quantities:
+    >>> quantity_dict = {
+    ...     "some_property": readout_wrapper(energy_fn_template, mode="some_property")
+    ... }
+
+    """
+    def snapshot_fn(state, neighbor=None, energy_params=None, **kwargs):
+        assert energy_params is not None, "Energy parameters must be provided."
+
+        prediction = energy_fn_template(energy_params)(state.position, neighbor, mode=mode, **kwargs)
+        return prediction
+    return snapshot_fn
+
+
 def molecular_property_predictor(model, n_per_atom=0):
     """Wraps models that predict per-atom quantities to predict both global and
     per-atom quantities.

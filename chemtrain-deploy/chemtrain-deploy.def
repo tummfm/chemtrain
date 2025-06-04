@@ -1,0 +1,102 @@
+Bootstrap: docker
+From: tensorflow/build:2.17-python3.11
+
+%files
+    # Copy necessary files
+    ./connector /chemsim/connector
+    ./lammps_plugin /chemsim/lammps_plugin
+    ./third_party /chemsim/third_party
+    ./.bazelversion /chemsim/.bazelversion
+    ./build.py /chemsim/build.py
+    ./jax.bazelrc /chemsim/jax.bazelrc
+    ./WORKSPACE /chemsim/WORKSPACE
+
+%post
+    export CUDA_COMPUTE_CAPABILITIES="8.6,8.0"
+    export CUDA_CUDNN_VERSION="8.9.6"
+    export CUDA_VERSION="12.3.1"
+
+    echo "Installing required packages..."
+
+    # Update and install required packages
+    apt-get update && apt-get install -y \
+        bash \
+        build-essential \
+        cmake \
+        gcc \
+        gfortran \
+        git \
+        g++ \
+        file \
+        libfftw3-dev \
+        libjpeg-dev \
+        libpng-dev \
+        libhdf5-dev \
+        make \
+        python3-dev \
+        python3-pip \
+        python3-numpy \
+        python3-scipy \
+        python3-matplotlib \
+        python3-h5py \
+        python3-yaml \
+        python3-lxml \
+        python3-six \
+        python3-setuptools \
+        python3-wheel \
+        wget \
+        && apt-get clean \
+        && rm -rf /var/lib/apt/lists/*
+
+    echo "Installing Open MPI"
+    export OMPI_DIR=/opt/ompi
+    export OMPI_VERSION=4.0.5
+    export OMPI_URL="https://download.open-mpi.org/release/open-mpi/v4.0/openmpi-$OMPI_VERSION.tar.bz2"
+    mkdir -p /tmp/ompi
+    mkdir -p /opt
+    # Download
+    cd /tmp/ompi && wget -O openmpi-$OMPI_VERSION.tar.bz2 $OMPI_URL && tar -xjf openmpi-$OMPI_VERSION.tar.bz2
+    # Compile and install
+    cd /tmp/ompi/openmpi-$OMPI_VERSION && ./configure --prefix=$OMPI_DIR && make -j8 install
+
+    # Set env variables so we can compile our application
+    export PATH=$OMPI_DIR/bin:$PATH
+    export LD_LIBRARY_PATH=$OMPI_DIR/lib:$LD_LIBRARY_PATH
+
+
+    # Compile the connector
+    cd /chemsim && \
+        python build.py --build_gpu_pjrt_plugin --enable_cuda --cuda_version $CUDA_VERSION --cuda_compute_capabilities $CUDA_COMPUTE_CAPABILITIES --cudnn_version $CUDA_CUDNN_VERSION && \
+        python build.py
+
+    # Fetch LAMMPS and build the plugin
+    cd /chemsim && \
+        git clone https://github.com/lammps/lammps.git && \
+        cd lammps && \
+        git checkout stable_29Aug2024 && \
+        mkdir build && \
+        cd build && \
+        cmake -D PKG_PLUGIN=yes ../cmake && \
+        cmake --build . -j $(nproc)
+
+    cd /chemsim && \
+        mkdir build && \
+        cd build && \
+        cmake -D LAMMPS_HEADER_DIR=/chemsim/lammps/src ../lammps_plugin && \
+        cmake --build . -j $(nproc)
+
+%environment
+    export PATH="/chemsim/lammps/build:$PATH"
+    export LAMMPS_PLUGIN_PATH="/chemsim/build/"
+    export JCN_PJRT_PATH="/chemsim/lib"
+
+    # Point to OMPI binaries, libraries, man pages
+    export OMPI_DIR=/opt/ompi
+    export PATH="$OMPI_DIR/bin:$PATH"
+    export LD_LIBRARY_PATH="$OMPI_DIR/lib:$LD_LIBRARY_PATH"
+    export MANPATH="$OMPI_DIR/share/man:$MANPATH"
+
+%labels
+    Author Paul Fuchs
+    Version 0.1
+    chemsim-deploy LAMMPS plugin

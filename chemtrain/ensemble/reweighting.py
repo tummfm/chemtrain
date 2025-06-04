@@ -24,7 +24,7 @@ Likewise, an example to use the reweighting approach for ensemble averages is
 provided here: :doc:`/algorithms/difftre`.
 
 """
-
+import functools
 import time
 import warnings
 from functools import partial
@@ -32,14 +32,15 @@ from functools import partial
 import numpy as onp
 
 import jax_sgmc.util
-from jax import (checkpoint, lax, random, tree_util, vmap, numpy as jnp, jit)
+from jax import (checkpoint, lax, random, tree_util, vmap, numpy as jnp, jit,
+                 debug)
 
+from jax_md_mod import custom_quantity
 import jax_md.util
 from jax_md import util as jax_md_util, simulate
 
 from chemtrain import util
 from chemtrain.ensemble import sampling
-from jax_md_mod import custom_quantity
 from chemtrain.quantity import constants, observables
 
 from typing import Dict, Any, Union, Callable, Tuple, Protocol
@@ -51,6 +52,15 @@ except:
 from jax_md.partition import NeighborFn
 from chemtrain.typing import EnergyFnTemplate
 from chemtrain.typing import ComputeFn
+
+
+def dynamic_statepoint(default_kwargs: dict, **kwargs) -> dict:
+    """Overwrites default statepoint with dynamically defined values."""
+    statepoint = default_kwargs.copy()
+    statepoint.update(kwargs)
+
+    return statepoint
+
 
 def checkpoint_quantities(compute_fns: dict[str, ComputeFn]) -> None:
     """Applies checkpoint to all compute_fns to save memory on backward pass.
@@ -436,7 +446,7 @@ def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
                                       state_kwargs: Dict[str, ArrayLike],
                                       reweight_ratio: float = 0.9,
                                       npt_ensemble: bool = False,
-                                      energy_batch_size: int = 10,
+                                      energy_batch_size: int = 1,
                                       entropy_approximation: bool = False,
                                       max_iter_bar: int = 25,
                                       safe_propagation: bool = True,
@@ -526,7 +536,6 @@ def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
     )
     trajectory_generator = jit(trajectory_generator)
 
-    beta = 1. / state_kwargs['kT']
     checkpoint_quantities(reweighting_quantities)
 
     def resample_new_simstate(params, traj_state):
@@ -571,10 +580,16 @@ def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
         reweight_properties = sampling.quantity_traj(
             traj_state, reweighting_quantities, params, energy_batch_size)
 
+        beta = 1. / traj_state.static_kwargs['kT']
+        assert (jnp.isscalar(beta) or beta.shape == ()), (
+            "Reweighting requires a constant temperature."
+        )
+
         # Note: Difference in pot. Energy is difference in total energy
         # as kinetic energy is the same and cancels
-        exponent = -beta * (reweight_properties['energy']
-                            - traj_state.aux['energy'])
+        exponent = reweight_properties['energy'] - traj_state.aux['energy']
+        exponent *= -beta
+        # debug.print("Energy differences are between {} and {}", dU.min(), dU.max())
 
         weights, n_eff = _build_weights(exponent)
 
@@ -591,20 +606,12 @@ def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
             free_energy_diff *= -1. / beta
 
             if entropy_approximation:
-                # Use an approximate formulation of the entropy with an
-                # analytically equivalent gradient
-                w_fixed = lax.stop_gradient(weights)
-                entropy = jnp.sum(
-                    (reweight_properties['energy'].T ** 2) * w_fixed)
-                entropy -= jnp.sum(
-                    reweight_properties['energy'].T * w_fixed) ** 2
-                entropy -= jnp.var(traj_state.aux['energy'])
-                entropy *= -constants.kb * beta ** 2
-            else:
-                # This is the thermodynamic entropy definition
-                eng_diff = jnp.sum(reweight_properties['energy'].T * weights)
-                eng_diff -= jnp.mean(traj_state.aux['energy'])
-                entropy = constants.kb * beta * (eng_diff - free_energy_diff)
+                raise NotImplementedError("Approximation not implemented.")
+
+            # This is the thermodynamic entropy definition
+            eng_diff = jnp.sum(reweight_properties['energy'].T * weights)
+            eng_diff -= jnp.mean(traj_state.aux['energy'])
+            entropy = eng_diff - free_energy_diff
 
             # Add the differences with respect to the initial potential
             entropy += traj_state.entropy_diff
@@ -621,7 +628,7 @@ def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
         """Recomputes the reference trajectory, starting from the last
         state of the previous trajectory to save equilibration time.
         """
-        params, traj_state = inputs
+        params, traj_state, kwargs = inputs
         # give kT here as additional input to be handed through to energy_fn
         # for kbt-dependent potentials
 
@@ -629,13 +636,19 @@ def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
             traj_state = resample_new_simstate(params, traj_state)
 
         updated_traj = trajectory_generator(
-            params, traj_state.sim_state, **state_kwargs)
+            params, traj_state.sim_state, **kwargs)
         updated_traj = updated_traj.replace(key=traj_state.key)
 
         # Apply the BAR procedure to obtain the free energy difference between
         # the old and new trajectory
 
-        dfe, ds = bennett_free_energy(traj_state, updated_traj)
+        # TODO: Update BAR method to use the correct statepoint.
+        #       E.g., change from U to exp, where exp is the generalized
+        #       exponent of the ensemble
+        dfe, ds = bennett_free_energy(
+            traj_state, updated_traj, **traj_state.dynamic_kwargs,
+            **traj_state.static_kwargs
+        )
         updated_traj = updated_traj.replace(
             entropy_diff=traj_state.entropy_diff + ds,
             free_energy_diff=traj_state.free_energy_diff + dfe
@@ -644,7 +657,7 @@ def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
         return updated_traj
 
     @jit
-    def propagation_fn(params, traj_state):
+    def propagation_fn(params, traj_state, recompute=False, **kwargs):
         """Checks if a trajectory can be re-used. If not, a new trajectory
         is generated ensuring trajectories are always valid.
         Takes params and the traj_state as input and returns a
@@ -652,14 +665,21 @@ def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
         indicating if the neighborlist buffer overflowed during trajectory
         generation.
         """
+        kwargs = dynamic_statepoint(state_kwargs, **kwargs)
+
         _, n_eff = compute_weights(params, traj_state)
         n_snapshots = traj_state.aux['energy'].size
 
-        recompute = n_eff < reweight_ratio * n_snapshots
+        recompute |= n_eff < reweight_ratio * n_snapshots
+
+        debug.print(f"[Propagate] Effective sample size: {{}} "
+                    f"({reweight_ratio * n_snapshots}) "
+                    f"-> Recompute is {{}}", n_eff, recompute)
+
         propagated_state = lax.cond(recompute,
                                     recompute_trajectory,
                                     trajectory_identity_mapping,
-                                    (params, traj_state))
+                                    (params, traj_state, kwargs))
         return propagated_state
 
 
@@ -730,11 +750,11 @@ def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
         Due to the recomputation of the neighbor list, this function cannot be
         jit.
         """
-        new_traj_state = propagation_fn(params, traj_state)
+        new_traj_state = propagation_fn(params, traj_state, **kwargs)
         return new_traj_state
 
-    safe_propagation_fn = safe_propagate(propagate, multiple_arguments=False)
-    def init_first_traj(key, params, reference_state):
+    @functools.partial(jit, static_argnames=("num_runs"))
+    def init_first_traj(key, params, reference_state, num_runs=2, **kwargs):
         """Initializes initial trajectory to start optimization from.
 
         We dump the initial trajectory for equilibration, as initial
@@ -749,17 +769,16 @@ def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
                 f"chain states."
             )
 
-        dump_traj = trajectory_generator(
-            params, reference_state, **state_kwargs)
+        kwargs = dynamic_statepoint(state_kwargs, **kwargs)
 
-        t_start = time.time()
-        init_traj = trajectory_generator(
-            params, dump_traj.sim_state, **state_kwargs)
-        init_traj = init_traj.replace(key=key)
-        runtime = (time.time() - t_start) / 60.  # in mins
+        def _run_fn(sim_state, _):
+            traj = trajectory_generator(params, sim_state, **kwargs)
+            return traj.sim_state, traj
 
-
-        init_traj = safe_propagation_fn(params, init_traj)
+        # Run multiple times
+        _, init_traj = lax.scan(_run_fn, reference_state, jnp.arange(num_runs))
+        # Select the last trajectory
+        init_traj = tree_util.tree_map(lambda x: x[-1], init_traj)
 
         # Use the initial trajectory as a reference for entropy and free energy
         init_traj = init_traj.replace(
@@ -769,9 +788,11 @@ def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
             key=key
         )
 
-        return init_traj, runtime
+        return init_traj
 
     if safe_propagation:
+        safe_propagation_fn = safe_propagate(propagate,
+                                             multiple_arguments=False)
         return init_first_traj, compute_weights, safe_propagation_fn
     else:
         warnings.warn(
@@ -782,7 +803,7 @@ def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
 
 
 def init_bar(energy_fn_template: EnergyFnTemplate,
-             ref_kbt: ArrayLike,
+             kT: ArrayLike,
              energy_batch_size: int = 10,
              iter_bisection: int = 25
              ) -> Callable[[sampling.TrajectoryState, sampling.TrajectoryState], Tuple[ArrayLike, ArrayLike]]:
@@ -802,7 +823,7 @@ def init_bar(energy_fn_template: EnergyFnTemplate,
     Args:
         energy_fn_template: Function that returns a potential model when
             called with a set of energy parameters.
-        ref_kbt: Reference temperature.
+        kT: Reference temperature.
         energy_batch_size: Batch size of the vectorized potential energy
             computation.
         iter_bisection: Iterations of the bisection method.
@@ -828,10 +849,11 @@ def init_bar(energy_fn_template: EnergyFnTemplate,
     # Helper functions to calculate the free energy and entropy difference via
     # the iterative bar approach
 
-    beta = 1. / ref_kbt
-
     def _vmap_potential_energy_differences(old_traj, new_traj):
         """Performs the reweighting procedure vectorized."""
+        # print(f"Old trajectory has shapes {tree_util.tree_map(jnp.shape, old_traj)}")
+        # print(f"New trajectory has shapes {tree_util.tree_map(jnp.shape, new_traj)}")
+
         @jax_sgmc.util.list_vmap
         def _inner(pair):
             traj_state, params = pair
@@ -846,7 +868,7 @@ def init_bar(energy_fn_template: EnergyFnTemplate,
             (old_traj, new_traj.energy_params),
             (new_traj, old_traj.energy_params))
 
-    def _fr_free_energy(dV_p, dV_0, df):
+    def _fr_free_energy(dV_p, dV_0, df, beta):
         """Returns the forward and reverse estimators for the BAR equation."""
         exponent_p = beta * (dV_p - df)
         exponent_0 = beta * (-dV_0 + df)
@@ -854,23 +876,23 @@ def init_bar(energy_fn_template: EnergyFnTemplate,
         gr = 1.0 / (1 + jnp.exp(exponent_0))
         return gf, gr
 
-    def _bar_residual(df, dV_p, dV_0):
+    def _bar_residual(df, dV_p, dV_0, beta):
         """Squared residual of the implicit BAR equation. """
-        gf, gr = _fr_free_energy(dV_p, dV_0, df)
+        gf, gr = _fr_free_energy(dV_p, dV_0, df, beta)
         # debug.print("[Solve] df = {df} with {gf} and {gr}", df=df, gf=jnp.mean(gf), gr=jnp.mean(gr))
         sum_gf = jax_md.util.high_precision_sum(gf)
         sum_gr = jax_md.util.high_precision_sum(gr)
         return sum_gf - sum_gr
 
-    def _entropy_equation(df, V_0, V_p, rV_p, rV_0):
+    def _entropy_equation(df, V_0, V_p, rV_p, rV_0, beta):
         """Computes the entropy difference from both trajectories."""
         dV_p = V_p - rV_0
         dV_0 = rV_p - V_0
 
         # Forward and reverse estimators once for the perturbed ensemble average
         # and once for the reference ensemble average
-        gf_p, gr_p = _fr_free_energy(dV_p, dV_p, df)
-        gf_0, gr_0 = _fr_free_energy(dV_0, dV_0, df)
+        gf_p, gr_p = _fr_free_energy(dV_p, dV_p, df, beta)
+        gf_0, gr_0 = _fr_free_energy(dV_0, dV_0, df, beta)
 
         alpha_0 = jnp.mean(gf_0 * V_0) - jnp.mean(gf_0) * jnp.mean(V_0)
         alpha_0 += jnp.mean(gf_0 * gr_0 * dV_0)
@@ -883,7 +905,7 @@ def init_bar(energy_fn_template: EnergyFnTemplate,
 
         return constants.kb * beta * (du - df)
 
-    def _init_bisection(dV_p, dV_0):
+    def _init_bisection(dV_p, dV_0, beta):
         # Helper function to find valid initial points by extending the search
         # interval if necessary
         def _expand_interval(state, _):
@@ -891,8 +913,8 @@ def init_bar(energy_fn_template: EnergyFnTemplate,
             # sign
 
             df_p, df_0 = state
-            loss_p = _bar_residual(df_p, dV_p, dV_0)
-            loss_0 = _bar_residual(df_0, dV_p, dV_0)
+            loss_p = _bar_residual(df_p, dV_p, dV_0, beta)
+            loss_0 = _bar_residual(df_0, dV_p, dV_0, beta)
 
             # Extend the search interval by a factor of four if solution is
             # not contained in the interval. Ensure that the interval is
@@ -928,14 +950,14 @@ def init_bar(energy_fn_template: EnergyFnTemplate,
         # debug.print("[BAR INIT] Initialize a = {df_a} and b = {df_b}", df_a = df_p, df_b = df_0)
 
         (df_p, df_0), _ = lax.scan(_expand_interval, (df_p, df_0), onp.arange(10))
-        res_a = _bar_residual(df_p, dV_p, dV_0)
-        res_b = _bar_residual(df_0, dV_p, dV_0)
+        res_a = _bar_residual(df_p, dV_p, dV_0, beta)
+        res_b = _bar_residual(df_0, dV_p, dV_0, beta)
 
         def _bisection_step(state, _):
             df_a, df_b = state
             df_c = 0.5 * (df_a + df_b)
-            loss_a = _bar_residual(df_a, dV_p, dV_0)
-            loss_c = _bar_residual(df_c, dV_p, dV_0)
+            loss_a = _bar_residual(df_a, dV_p, dV_0, beta)
+            loss_c = _bar_residual(df_c, dV_p, dV_0, beta)
 
             # debug.print("[BAR : {idx}] Residual {residual} in [{a}, {b}] for df = {df} in [{fa}, {fb}]", idx=idx, residual=loss_c, df=df_c, a=loss_a, b=loss_b, fa=df_a, fb=df_b)
 
@@ -955,7 +977,8 @@ def init_bar(energy_fn_template: EnergyFnTemplate,
         return (df_p, df_0), _bisection_step
 
     def bennett_free_energy(old_traj: sampling.TrajectoryState,
-                            new_traj: sampling.TrajectoryState):
+                            new_traj: sampling.TrajectoryState,
+                            **kwargs):
         """Compute the free energy and entropy difference.
 
          The algorithm from [#wyczalkowski2010] uses the BAR method to derive
@@ -977,6 +1000,11 @@ def init_bar(energy_fn_template: EnergyFnTemplate,
          .. [#wyczalkowski2010] New Estimators for Calculating Solvation Entropy and Enthalpy and Comparative Assessments of Their Accuracy and Precision. Matthew A. Wyczalkowski, Andreas Vitalis, and Rohit V. Pappu in The Journal of Physical Chemistry B 2010 114 (24), 8166-8180, DOI: 10.1021/jp103050u
 
          """
+        _kT = kwargs.get('kT', kT)
+        beta = 1. / _kT
+        assert (jnp.isscalar(beta) or beta.shape == ()), (
+            "Reweighting requires a constant temperature."
+        )
 
         # Calculate the differences in potential energy for both trajectories
         rew_0, rew_p = _vmap_potential_energy_differences(old_traj, new_traj)
@@ -994,13 +1022,13 @@ def init_bar(energy_fn_template: EnergyFnTemplate,
         dV_p = V_p - rV_0
         dV_0 = rV_p - V_0
 
-        init_f, update_f = _init_bisection(dV_p, dV_0)
+        init_f, update_f = _init_bisection(dV_p, dV_0, beta)
         (dfe, df2), _ = lax.scan(update_f, init_f, onp.arange(iter_bisection))
 
-        res_a = _bar_residual(dfe, dV_p, dV_0)
-        res_b = _bar_residual(df2, dV_p, dV_0)
+        res_a = _bar_residual(dfe, dV_p, dV_0, beta)
+        res_b = _bar_residual(df2, dV_p, dV_0, beta)
 
-        ds = _entropy_equation(dfe, V_0, V_p, rV_p, rV_0)
+        ds = _entropy_equation(dfe, V_0, V_p, rV_p, rV_0, beta)
 
         return dfe, ds
 

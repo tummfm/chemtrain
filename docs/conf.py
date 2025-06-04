@@ -12,6 +12,8 @@
 #
 import os
 import sys
+import subprocess
+
 sys.path.insert(0, os.path.abspath('..'))
 
 from datetime import datetime
@@ -23,9 +25,16 @@ project = 'Chemtrain'
 copyright = (f'{datetime.now().year}, Multiscale Modeling of Fluid Materials, '
              f'TU Munich')
 author = 'Multiscale Modeling of Fluid Materials'
-
+#
 release = chemtrain_version
 
+
+# -- Build docs with Doxygen -------------------------------------------------
+
+subprocess.call("doxygen Doxyfile", shell=True)
+
+breathe_projects = { "chemtrain-deploy": "doxygen/xml" }
+breathe_default_project = "chemtrain-deploy"
 
 # -- General configuration ---------------------------------------------------
 
@@ -43,7 +52,9 @@ extensions = [
     'sphinx.ext.viewcode',
     'sphinx_autodoc_typehints',
     'sphinx_remove_toctrees',
+    'sphinxcontrib.mermaid',
     'myst_nb',
+    'breathe',
 ]
 
 napoleon_numpy_docstring = False
