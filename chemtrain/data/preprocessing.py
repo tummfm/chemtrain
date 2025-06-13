@@ -198,18 +198,17 @@ def map_dataset(position_dataset,
                 shift_fn,
                 c_map,
                 d_map=None,
-                force_dataset = None):
-    """Maps fine-scaled positions and forces to a coarser scale.
+                force_dataset=None):
+    """
+    Maps fine-scaled positions and forces to a coarser scale.
 
     Uses the linear mapping from [Noid2008]_ to map fine-scaled positions and
     forces to coarse grained positions and forces via the relations:
 
     .. math::
-
         \\mathbf R_I = \\sum_{i \\in \\mathcal I_I} c_{Ii} \\mathbf r_i,\\quad \\text{and}
 
         \\mathbf{F}_I = \\sum_{i \\in \\mathcal I_I} \\frac{d_{Ii}}{c_{Ii}} \\mathbf f_i.
-
 
     Args:
         position_dataset: Dataset of fine-scaled positions.
@@ -232,49 +231,49 @@ def map_dataset(position_dataset,
            *The multiscale coarse-graining method. I. A rigorous bridge between
            atomistic and coarse-grained models*. J. Chem. Phys. 28 June 2008;
            128 (24): 244114. https://doi-org.eaccess.tum.edu/10.1063/1.2938860
-
-
     """
-    # Compute the mapping via displacements to take care of periodic
-    # boundary conditions
+    # Normalise mapping weights
+    c_norm = c_map / jnp.sum(c_map, axis=1, keepdims=True)
+    if d_map is not None:
+        d_norm = d_map / jnp.sum(d_map, axis=1, keepdims=True)
+    else:
+        d_norm = None
 
-    disp_fn = jax.vmap(displacement_fn, in_axes=(None, 0))
+    def _map_single(ipt, shift_fn, displacement_fn, c_norm, d_norm):
+        pos, forc = ipt
 
-    ref_positions = jnp.zeros_like(position_dataset[0, 0, :])
-    displacements = lax.map(
-        functools.partial(disp_fn, ref_positions),
-        position_dataset
-    )
+        # Choose reference for each CG bead
+        ref_idx = jnp.argmax(c_map, axis=1)
+        ref_positions = pos[ref_idx, :]
+        
+        # Compute displacements for each reference position and map 
+        disp = jax.vmap(
+            lambda r: jax.vmap(lambda p: displacement_fn(p, r))(pos)
+        )(ref_positions)
+        cg_disp = jnp.einsum('Ii,Iid->Id', c_map, disp)
+        cg_positions = jax.vmap(shift_fn)(ref_positions, cg_disp)
+        
+        
+        if (forc is not None) and (d_norm is not None):
+            mask = (c_norm > 0.0)
+            safe_c = jnp.where(mask, c_norm, 1.0)
+            cg_forces = jnp.einsum('Ii, id->Id', mask * d_norm / safe_c, forc)
+        else:
+            cg_forces = None
 
-    c_map /= jnp.sum(c_map, axis=1, keepdims=True)
+        return cg_positions, cg_forces
 
-    cg_dislacements = lax.map(
-        functools.partial(jnp.einsum, 'Ii..., id->Id', c_map),
-        -displacements
-    )
-
-    cg_positions = lax.map(
-        functools.partial(jax.vmap(shift_fn, in_axes=(None, 0)), ref_positions),
-        cg_dislacements
-    )
-
-    # Map forces if provided
+    _map_single = functools.partial(_map_single,
+                                    shift_fn=shift_fn,
+                                    displacement_fn=displacement_fn,
+                                    c_norm=c_norm,
+                                    d_norm=d_norm)
 
     if force_dataset is None:
-        return cg_positions
-
-    d_map /= jnp.sum(d_map, axis=1, keepdims=True)
-
-    # Avoid division by zero.
-    mask = (c_map > 0.0)
-    safe_c = jnp.where(mask, c_map, 1.0)
-
-    cg_forces = lax.map(
-        functools.partial(jnp.einsum, 'Ii..., id->Id', mask * d_map / safe_c),
-        force_dataset
-    )
-
-    return cg_positions, cg_forces
+        # map positions only
+        return lax.map(lambda pos: _map_single((pos, None))[0], position_dataset)
+    else:
+        return lax.map(_map_single, (position_dataset, force_dataset))
     
 
 def allocate_neighborlist(dataset,
