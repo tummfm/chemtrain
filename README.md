@@ -1,11 +1,15 @@
 # Training Molecular Dynamics Potentials in JAX
 
-[**Documentation**](https://chemtrain.readthedocs.io/en/latest/) | [**Preprint**](https://web3.arxiv.org/abs/2408.15852) | [**Getting Started**](#getting-started) | [**Installation**](#installation) | [**Contents**](#contents) | [**Contact**](#contact)
+[**Documentation**](https://chemtrain.readthedocs.io/en/latest/) | [**Getting Started**](#getting-started) | [**Installation**](#installation) | [**Contents**](#contents) | [**Contact**](#contact)
 
 [![PyPI version](https://badge.fury.io/py/chemtrain.svg)](https://badge.fury.io/py/chemtrain)
 [![Documentation Status](https://readthedocs.org/projects/chemtrain/badge/?version=latest)](https://chemtrain.readthedocs.io/en/latest/?badge=latest)
 [![Test](https://github.com/tummfm/chemtrain/actions/workflows/test.yml/badge.svg)](https://github.com/tummfm/chemtrain/actions/workflows/test.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Paper](https://img.shields.io/badge/Paper-chemtrain-yellow)](https://doi.org/10.1016/j.cpc.2025.109512)
+[![Paper](https://img.shields.io/badge/Paper-chemtrain--deploy-yellow)
+](https://doi.org/10.1021/acs.jctc.5c00996)
+
 
 Neural Networks are promising models for enhancing the accuracy of classical molecular
 simulations. However, the training of accurate models is challenging.
@@ -130,9 +134,9 @@ Within the repository, we provide the following directories:
 
 ## Citation
 
-If you use chemtrain, please cite the following [paper](https://www.sciencedirect.com/science/article/pii/S0010465525000153):
+If you use chemtrain or chemtrain-deploy, please cite the following [paper](https://www.sciencedirect.com/science/article/pii/S0010465525000153):
 
-```
+```bibtex
 @article{fuchs2025chemtrain,
     title = {chemtrain: Learning deep potential models via automatic differentiation and statistical physics},
     journal = {Computer Physics Communications},
@@ -143,6 +147,19 @@ If you use chemtrain, please cite the following [paper](https://www.sciencedirec
     doi = {https://doi.org/10.1016/j.cpc.2025.109512},
     url = {https://www.sciencedirect.com/science/article/pii/S0010465525000153},
     author = {Paul Fuchs and Stephan Thaler and Sebastien Röcken and Julija Zavadlav},
+}
+```
+
+```bibtex
+@article{fuchsChemtrainDeploy2025,
+  title = {Chemtrain-{{Deploy}}: {{A Parallel}} and {{Scalable Framework}} for {{Machine Learning Potentials}} in {{Million-Atom MD Simulations}}},
+  author = {Fuchs, Paul and Chen, Weilong and Thaler, Stephan and Zavadlav, Julija},
+  year = {2025},
+  month = jul,
+  journal = {Journal of Chemical Theory and Computation},
+  publisher = {American Chemical Society},
+  issn = {1549-9618},
+  doi = {10.1021/acs.jctc.5c00996}
 }
 ```
 
