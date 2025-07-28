@@ -15,6 +15,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: MacOS",
     "Operating System :: POSIX :: Linux",
@@ -24,10 +25,10 @@ classifiers = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    'jax <= 0.4.37',
-    'jaxlib <= 0.4.37',
+    'jax <= 0.7.0',
+    'jaxlib <= 0.7.0',
     'scipy < 1.13', # Removed scipy.linal.tril, etc.
-    'jax-md',
+    'jax-md @ git+https://github.com/jax-md/jax-md@jax-md-v0.2.25',
     'jax-sgmc',
     'optax',
     'dm-haiku',

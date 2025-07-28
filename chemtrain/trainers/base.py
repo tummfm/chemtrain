@@ -31,9 +31,10 @@ import cloudpickle as pickle
 import jax
 import numpy as onp
 from jax import (
-    tree_map, numpy as jnp, random, device_count, jit, device_get,
+    numpy as jnp, random, device_count, jit, device_get,
     tree_util
 )
+from jax.tree_util import tree_map
 from jax_sgmc import data
 
 from chemtrain import util

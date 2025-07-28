@@ -20,7 +20,8 @@ import chex
 import cloudpickle as pickle
 # import h5py
 import jax
-from jax import tree_map, tree_util, device_count, numpy as jnp, tree_unflatten, lax
+from jax import tree_util, device_count, numpy as jnp, lax
+from jax.tree_util import tree_map
 
 import jax_md_mod
 from jax_md import simulate, partition

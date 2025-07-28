@@ -18,8 +18,9 @@
 from functools import partial
 
 import jax
-from jax import (lax, vmap, pmap, value_and_grad, tree_map, device_count,
+from jax import (lax, vmap, value_and_grad, device_count,
                  numpy as jnp, device_put, jit)
+from jax.tree_util import tree_map
 from jax.sharding import Mesh, PartitionSpec, NamedSharding, SingleDeviceSharding
 from jax.experimental.shard_map import shard_map
 from jax_sgmc import data
