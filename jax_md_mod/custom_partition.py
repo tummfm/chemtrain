@@ -286,7 +286,7 @@ def exclude_from_neighbor_list(neighbor: partition.NeighborList,
 
         >>> displacement_fn, shift_fn = space.periodic_general(box, fractional_coordinates=True)
         >>> neighbor_fns = masked_neighbor_list(
-        ...     displacement_fn, r_cutoff=1.0, dr_threshold=0.05, disable_cell_list=False
+        ...     displacement_fn, r_cutoff=1.0, dr_threshold=0.05,
         ... )
 
         We can now exclude, e.g., the first C atom from the neighbor list
