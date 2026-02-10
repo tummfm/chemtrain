@@ -334,7 +334,7 @@ def mace_jax_neighborlist_from_torch(
     return jax.tree.map(jnp.asarray, variables), jax.jit(apply_fn)
 
 
-def mace_jax_neighborlist_pp(
+def mace_jax_neighborlist(
     *,
     displacement: space.DisplacementFn,
     r_cutoff: float,
