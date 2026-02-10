@@ -191,12 +191,13 @@ def masked_neighbor_list(displacement_or_metric,
                          neighbors = None,
                          extra_capacity: int = 0,
                          **kwargs) -> partition.NeighborList:
+        N = position.shape[0]
+        mask = kwargs.get("mask", jnp.ones(N, dtype=jnp.bool_))
+        position = jnp.where(mask[:, jnp.newaxis], position, jnp.inf)
         def neighbor_fn(position_and_error, max_occupancy=None):
             position, err = position_and_error
-            N = position.shape[0]
             idx = candidate_fn(position.shape)
-
-            idx = mask_dense(idx, mask=kwargs.get("mask", jnp.ones(N, dtype=jnp.bool_)))
+            idx = mask_dense(idx, mask=mask)
 
             if partition.is_sparse(format):
                 idx, occupancy = prune_neighbor_list_sparse(position, idx, **kwargs)
@@ -245,7 +246,10 @@ def masked_neighbor_list(displacement_or_metric,
             return neighbor_fn((position, nbrs.error))
         else:
             return jax.lax.cond(
-                jnp.any(d(position, nbrs.reference_position) > threshold_sq),
+                jnp.logical_or(
+                    jnp.any(d(position, nbrs.reference_position) > threshold_sq),
+                    jnp.any(jnp.logical_xor(position == jnp.inf, nbrs.reference_position == jnp.inf))
+                ),
                 (position, nbrs.error), neighbor_fn,
                 nbrs, lambda x: x)
 
