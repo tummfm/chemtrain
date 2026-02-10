@@ -1,6 +1,7 @@
 """The spherical Bessel Function utility file from the original DimeNet
 implementation (https://github.com/klicperajo/dimenet).
-Licenced under Hippocratic License 2.1.
+Licenced under Hippocratic License 2.1 (see LICENSE.md).
+Adapted to work with newer version of scipy and numpy.
 """
 
 import numpy as np
@@ -82,7 +83,7 @@ def sph_harm_prefactor(l: int, m: int):
         m: :math:`-l<=m<=l`
 
     """
-    return ((2*l+1) * np.math.factorial(l-abs(m)) / (4*np.pi*np.math.factorial(l+abs(m))))**0.5
+    return ((2*l+1) * sp.factorial(l-abs(m)) / (4*np.pi*sp.factorial(l+abs(m))))**0.5
 
 
 def associated_legendre_polynomials(l, zero_m_only=True):

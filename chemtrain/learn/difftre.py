@@ -36,7 +36,7 @@ from typing import Dict, Any, Callable, Tuple
 import numpy as onp
 
 import jax
-from jax import jit, numpy as jnp, lax, tree_map
+from jax import jit, numpy as jnp, lax
 from jax.typing import ArrayLike
 
 from jax_md_mod import custom_quantity
@@ -181,10 +181,6 @@ def init_difftre_gradient_and_propagation(
 
     def difftre_loss_fn(params, traj_state, state_dict, targets):
         partial_loss = functools.partial(_difftre_loss, params)
-
-        # print(f"Trajstate shapes are {tree_map(jnp.shape, traj_state)}")
-        # print(f"Statedict shapes are {tree_map(jnp.shape, state_dict)}")
-        # print(f"Target shapes are {tree_map(jnp.shape, targets)}")
 
 
         if not batched:

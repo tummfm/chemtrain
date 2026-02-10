@@ -26,7 +26,7 @@ import optax
 
 import pytest
 
-import jax_md_mod
+from jax_md_mod import custom_partition
 from jax_md import space, energy, partition
 
 from chemtrain.data import preprocessing
@@ -72,9 +72,8 @@ class TestForceMatching:
 
         displacement_fn, shift_fn = space.periodic_general(
             box, fractional_coordinates=True)
-        neighbor_fn = partition.neighbor_list(
-            displacement_fn, box, 1.0, fractional_coordinates=True,
-            disable_cell_list=True)
+        neighbor_fn = custom_partition.masked_neighbor_list(
+            displacement_fn,  r_cutoff=1.0)
 
         nbrs_init = neighbor_fn.allocate(r_init)
 

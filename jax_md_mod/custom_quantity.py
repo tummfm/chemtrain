@@ -182,10 +182,16 @@ def temperature(state, mask=None, **kwargs):
     return jnp.sum(velocity ** 2 * mass) / dof
 
 
-def _dyn_box(reference_box, **kwargs):
+def _dyn_box(reference_box, state, **kwargs):
     """Gets box dynamically from kwargs, if provided, otherwise defaults to
     reference. Ensures that a box is provided and deletes from kwargs.
     """
+    # Get the dynamic box if simulation is in NPT ensemble
+    if hasattr(state, 'box_position'):
+        return simulate.npt_box(state), kwargs
+    elif hasattr(state, 'box'):
+        return state.box, kwargs
+
     box = kwargs.pop('box', reference_box)
     assert box is not None, ('If no reference box is given, needs to be '
                              'given as kwarg "box".')
@@ -201,12 +207,10 @@ def _dyn_kT(kT, **kwargs):
     return kT, kwargs
 
 
-def volume_npt(state, **unused_kwargs):
-    """Returns volume of a single snapshot in the NPT ensemble, e.g. for use in
-     DiffTRe learning of thermodynamic fluctiations in chemtrain.traj_quantity.
-     """
+def volume(state, **kwargs):
+    """Returns volume of a single snapshot."""
     dim = state.position.shape[-1]
-    box = simulate.npt_box(state)
+    box, _ = _dyn_box(None, state, **kwargs)
     volume = quantity.volume(dim, box)
     return volume
 
@@ -223,7 +227,7 @@ def density(state, **unused_kwargs):
     """Returns density of a single snapshot of the NPT ensemble."""
     masses = _canonicalized_masses(state)
     total_mass = jnp.sum(masses)
-    volume = volume_npt(state)
+    volume = volume(state)
     return total_mass / volume
 
 
@@ -557,7 +561,7 @@ def init_rdf(displacement_fn,
         return mean_pair_corr
 
     def rdf_compute_fun(state, species=None, **kwargs):
-        box, _ = _dyn_box(reference_box, **kwargs)
+        box, _ = _dyn_box(reference_box, state, **kwargs)
 
         # Note: we cannot use neighbor list since RDF cutoff and
         # neighbor list cut-off don't coincide in general
@@ -895,7 +899,7 @@ def init_tcf_nbrs(displacement_fn,
             state.position, neighbor, dyn_displacement,
             max_triplets=max_triplets, return_mask=True)
 
-        box, _ = _dyn_box(reference_box, **kwargs)
+        box, _ = _dyn_box(reference_box, state, **kwargs)
         n_particles, spatial_dim = state.position.shape
         total_vol = quantity.volume(spatial_dim, box)
         particle_density = n_particles / total_vol
@@ -1033,7 +1037,7 @@ def init_local_structure_index(displacement_fn,
         return (count > 0) * lsi
 
     def lsi_fn(state, **kwargs):
-        box, _ = _dyn_box(reference_box, **kwargs)
+        box, _ = _dyn_box(reference_box, state, **kwargs)
         # Incorporate the dynamic box and compute the distance between all
         # pairs of the particles
 
@@ -1102,7 +1106,7 @@ def init_rmsd(reference_positions,
     Y = q - qbar
 
     def rmsd_fn(state, **kwargs):
-        box, _ = _dyn_box(reference_box, **kwargs)
+        box, _ = _dyn_box(reference_box, state, **kwargs)
         dyn_displacement = partial(displacement_fn, box=box)
 
         ref_p = state.position[idx[0]]
@@ -1419,35 +1423,35 @@ def kinetic_energy_tensor(state):
     average_velocity = jnp.mean(state.velocity, axis=0)
     thermal_excitation_velocity = state.velocity - average_velocity
     diadic_velocity_product = vmap(lambda v: jnp.outer(v, v))
-    velocity_tensors = diadic_velocity_product(thermal_excitation_velocity)
-    return util.high_precision_sum(state.mass * velocity_tensors, axis=0)
+    velocity_tensors = diadic_velocity_product(
+        jnp.sqrt(state.mass) * thermal_excitation_velocity)
+    return util.high_precision_sum(velocity_tensors, axis=0)
 
 
 def virial_potential_part(energy_fn,
                           state,
                           nbrs,
-                          box_tensor,
+                          reference_box,
                           energy_and_force=None,
+                          fractional_coordinates=True,
                           **kwargs):
     """Interaction part of the virial pressure tensor for a single snaphot
     based on the formulation of Chen at al. (2020). See
     init_virial_stress_tensor. for details."""
     position = state.position  # in unit box if fractional coordinates used
+    box, kwargs = _dyn_box(reference_box, state, **kwargs)
 
     if energy_and_force is None:
         energy_fn_ = lambda pos, neighbor, box: energy_fn(
             pos, neighbor=neighbor, box=box, **kwargs)  # for grad
         negative_forces, box_gradient = grad(energy_fn_, argnums=[0, 2])(
-            position, nbrs, box_tensor)
+            position, nbrs, box)
     else:
         print(f"[Virial] Found precomputed forces.")
-        negative_forces = -1.0 * energy_and_force['force']
         box_gradient = energy_and_force['box_grad']
 
-    position = space.transform(box_tensor, position)  # back to real positions
-    force_contribution = jnp.dot(negative_forces.T, position)
-    box_contribution = jnp.dot(box_gradient, box_tensor.T)
-    return force_contribution + box_contribution
+    box_contribution = jnp.dot(box_gradient, box.T)
+    return box_contribution
 
 
 def init_virial_stress_tensor(energy_fn_template, reference_box=None,
@@ -1455,12 +1459,10 @@ def init_virial_stress_tensor(energy_fn_template, reference_box=None,
     """Initializes a function that computes the virial stress tensor for a
     single state.
 
-    This function is applicable to arbitrary many-body interactions, even
-    under periodic boundary conditions. This implementation is based on the
-    formulation of Chen et al. (2020), which is well-suited for vectorized,
-    differentiable MD libararies. This function requires that `energy_fn`
-    takes a `box` keyword argument, usually alongside `periodic_general`
-    boundary conditions.
+    This function is applicable to arbitrary many-body interactions without
+    explicit volume dependence, e.g., that only model interactions between
+    images with minimum distance. It does not respect the volume dependence
+    of, e.g., long-range electrostatic correction in periodic systems.
 
     Chen et al. "TensorAlloy: An automatic atomistic neural network program
     for alloys". Computer Physics Communications 250 (2020): 107057
@@ -1490,7 +1492,7 @@ def init_virial_stress_tensor(energy_fn_template, reference_box=None,
         # Note: this workaround with the energy_template was needed to keep
         #       the function jitable when changing energy_params on-the-fly
         # TODO function to transform box to box-tensor
-        box, kwargs = _dyn_box(reference_box, **kwargs)
+        box, kwargs = _dyn_box(reference_box, state, **kwargs)
         energy_fn = energy_fn_template(energy_params)
         virial_tensor = virial_potential_part(
             energy_fn, state, neighbor, box, **kwargs)
@@ -1575,7 +1577,7 @@ def init_sigma_born(energy_fn_template, reference_box=None):
         Born contribution to the stress tensor.
     """
     def sigma_born(state, neighbor, energy_params, **kwargs):
-        box, kwargs = _dyn_box(reference_box, **kwargs)
+        box, kwargs = _dyn_box(reference_box, state, **kwargs)
         spatial_dim = state.position.shape[-1]
         volume = quantity.volume(spatial_dim, box)
         epsilon0 = jnp.zeros((spatial_dim, spatial_dim))
@@ -1634,7 +1636,7 @@ def init_stiffness_tensor_stress_fluctuation(energy_fn_template, reference_box):
         C^B_ijkl = d^2 U / d epsilon_ij d epsilon_kl
         """
         # check if box is passed in dynamic kwargs and use it if provided, else use reference box
-        box, kwargs = _dyn_box(reference_box, **kwargs)
+        box, kwargs = _dyn_box(reference_box, state, **kwargs)
         spatial_dim = state.position.shape[-1]
         volume = quantity.volume(spatial_dim, box)
         epsilon0 = jnp.zeros((spatial_dim, spatial_dim))

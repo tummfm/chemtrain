@@ -63,7 +63,7 @@ namespace jcn {
     private:
         ModelProperties get_model_properties();
 
-        std::unique_ptr<chemsim::Model> model;
+        std::unique_ptr<jcn::Model> model;
 
         std::unique_ptr<xla::PjRtClient> client;
         std::unique_ptr<xla::PjRtLoadedExecutable> executable;

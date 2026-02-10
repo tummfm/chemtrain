@@ -22,7 +22,7 @@ import jax
 import jax.numpy as jnp
 from jax import tree_util
 
-import jax_md_mod
+from jax_md_mod import custom_partition
 from jax_md import space, energy, partition
 
 import optax
@@ -129,8 +129,7 @@ $\theta_1 = \log b_0,\ \theta_2= \log k_B$.
 r_init = position_dataset[0, ...]
 
 displacement_fn, shift_fn = space.periodic_general(box, fractional_coordinates=True)
-neighbor_fn = partition.neighbor_list(
-    displacement_fn, box, 1.0, fractional_coordinates=True, disable_cell_list=True)
+neighbor_fn = custom_partition.masked_neighbor_list(displacement_fn, r_cutoff=1.0)
 
 nbrs_init = neighbor_fn.allocate(r_init)
 

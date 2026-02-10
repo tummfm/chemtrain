@@ -30,12 +30,15 @@ limitations under the License.
 
 namespace jcn {
 
+    GraphBuilder::GraphBuilder(
+        std::vector<std::string> statistics
+        ) : statistics_keys(statistics) {}
+
     /** Simple sparse neighbor list ******************************************/
 
     void SimpleSparseNeighborList::initialize(std::vector<float> multipliers) {
         edge_multiplier = multipliers[0];
     }
-
 
     NeighborListShapes SimpleSparseNeighborList::get_neighbor_list_shapes(
         int max_atoms, int inum, int* numneigh, bool check_buffers) {
@@ -196,27 +199,14 @@ namespace jcn {
 
 
     bool SimpleSparseNeighborList::evaluate_statistics(
-        std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>& results,
+        std::map<std::string, std::unique_ptr<xla::PjRtBuffer>> statistics,
         bool check_buffers) {
 
         bool success = true;
 
-
-        // Check if the results vector is properly initialized
-        if (results.empty() || results[0].size() < 4) {
-            std::cerr << "Error: Invalid results vector. Size is only " << results[0].size() << " and " << results.size() << std::endl;
-            return false;
-        }
-
-        // Check if the PjRtBuffer objects are properly initialized
-        if (results[0][2] == nullptr || results[0][3] == nullptr) {
-            std::cerr << "Error: PjRtBuffer is null" << std::endl;
-            return false;
-        }
-
 	    // Check if more valid edges are necessary
-        absl::StatusOr<std::shared_ptr<xla::Literal>> valid_edges = results[0][2]->ToLiteralSync();
-        absl::StatusOr<std::shared_ptr<xla::Literal>> overlong = results[0][3]->ToLiteralSync();
+        absl::StatusOr<std::shared_ptr<xla::Literal>> valid_edges = statistics["max_neighbors"]->ToLiteralSync();
+        absl::StatusOr<std::shared_ptr<xla::Literal>> overlong = statistics["overlong"]->ToLiteralSync();
 
     	if (!valid_edges.ok() || !overlong.ok()) {
         	std::cerr << "Error: Failed to convert PjRtBuffer to Literal" << std::endl;
@@ -412,14 +402,14 @@ namespace jcn {
 
 
     bool SimpleDenseNeighborList::evaluate_statistics(
-        std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>& results,
+        std::map<std::string, std::unique_ptr<xla::PjRtBuffer>> statistics,
         bool check_buffers) {
 
         bool success = true;
 
         // Check if more valid edges or triplets are necessary
-        absl::StatusOr<std::shared_ptr<xla::Literal>> valid_edges = results[0][2]->ToLiteralSync();
-        absl::StatusOr<std::shared_ptr<xla::Literal>> valid_triplets = results[0][3]->ToLiteralSync();
+        absl::StatusOr<std::shared_ptr<xla::Literal>> valid_edges = statistics["max_neighbors"]->ToLiteralSync();
+        absl::StatusOr<std::shared_ptr<xla::Literal>> valid_triplets = statistics["overlong"]->ToLiteralSync();
 
         int req_valid_edges = valid_edges.value()->data<int>().data()[0];
         int req_valid_triplets = valid_triplets.value()->data<int>().data()[0];
@@ -582,16 +572,16 @@ namespace jcn {
 
 
     bool DeviceSparseNeighborList::evaluate_statistics(
-        std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>& results,
+        std::map<std::string, std::unique_ptr<xla::PjRtBuffer>> statistics,
         bool check_buffers) {
 
         throw std::runtime_error("Not yet implemented.");
 
         bool success = true;
 
-        absl::StatusOr<std::shared_ptr<xla::Literal>> min_cell_capacity = results[0][2]->ToLiteralSync();
-        absl::StatusOr<std::shared_ptr<xla::Literal>> cell_too_small = results[0][3]->ToLiteralSync();
-        absl::StatusOr<std::shared_ptr<xla::Literal>> min_neighbors = results[0][4]->ToLiteralSync();
+        absl::StatusOr<std::shared_ptr<xla::Literal>> min_cell_capacity = statistics["min_cell_capacity"]->ToLiteralSync();
+        absl::StatusOr<std::shared_ptr<xla::Literal>> cell_too_small = statistics["cell_too_small"]->ToLiteralSync();
+        absl::StatusOr<std::shared_ptr<xla::Literal>> min_neighbors = statistics["max_neighbors"]->ToLiteralSync();
 
         if (!min_cell_capacity.ok() || !cell_too_small.ok() || !min_neighbors.ok()) {
             throw std::runtime_error("Failed to convert buffer to literal");
@@ -629,10 +619,11 @@ namespace jcn {
 
         // We must remove these buffers from the results vector or they
         // will be deleted after the evaluation function finished
-        receivers_buffer = std::move(results[0].back());
-        results[0].pop_back();
-        senders_buffer = std::move(results[0].back());
-        results[0].pop_back();
+        // TODO: Fix
+//        receivers_buffer = std::move(results[0].back());
+//        results[0].pop_back();
+//        senders_buffer = std::move(results[0].back());
+//        results[0].pop_back();
 
         // Returns whether rerun with bigger capacities is necessary
         return success;

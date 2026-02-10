@@ -128,7 +128,7 @@ def process_printouts(time_step, total_time, t_equilib, print_every, t_start=0):
     Args:
         time_step: Time step size
         total_time: Total simulation run length
-        t_equilib: Equilibration run length
+        t_equilib: Equilibration run length (can be 0)
         print_every: Time after which a state is saved
         t_start: Starting time. Only relevant for time-dependent
             thermostat/barostat.
@@ -137,17 +137,24 @@ def process_printouts(time_step, total_time, t_equilib, print_every, t_start=0):
         A class containing information for the simulator
         on which states to save.
     """
-    assert total_time > 0. and t_equilib > 0., 'Times need to be positive.'
+    assert total_time > 0., 'Total time needs to be positive.'
+    assert t_equilib >= 0., 'Equilibration time needs to be non-negative.'
     assert total_time > t_equilib, ('Total time needs to exceed equilibration '
                                     'time, otherwise no trajectory will be '
                                     'sampled.')
+    
     timesteps_per_printout = int(print_every / time_step)
-    n_production = int((total_time - t_equilib) / print_every)
+    
+    # Calculate number of frames for each phase
     n_dumped = int(t_equilib / print_every)
+    n_production = int((total_time - t_equilib) / print_every)
+    
+    # Generate time arrays (automatically empty if n=0)
     equilibration_t_start = jnp.arange(n_dumped) * print_every + t_start
     production_t_start = (jnp.arange(n_production) * print_every
                           + t_equilib + t_start)
     production_t_end = production_t_start + print_every
+    
     timings = TimingClass(t_equilib_start=equilibration_t_start,
                           t_production_start=production_t_start,
                           t_production_end=production_t_end,

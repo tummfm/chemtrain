@@ -205,8 +205,8 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
                            max_edge_multiplier: float = 1.25,
                            max_edges=None,
                            max_triplets=None,
-                           n_global=1,
-                           n_local=0,
+                           mode: Union[str, Tuple[int]] = "energy",
+                           per_particle: bool = False,
                            **dimenetpp_kwargs
                            ) -> Tuple[nn.InitFn, Callable[[Any, util.Array],
                                                           Tuple[util.Array]]]:
@@ -250,8 +250,11 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
             triplets.
         max_edges: Expected maximum of valid edges.
         max_triplets: Expected maximum of valid triplets.
-        n_global: Number of global graph properties, e.g., potential energy.
-        n_local: Number of node properties, e.g., partial charges.
+        mode: Select what the model should return. If set to 'energy' (default),
+            returns a single scalar quantity, i.e., the potential energy.
+            If set to tuple ``(n_global, n_local)``, returns a tuple of global
+            and local atomic properties.
+        per_particle: If True, returns the energy per particle.
         dimenetpp_kwargs: Kwargs to change the default structure of DimeNet++.
             For definition of the kwargs, see DimeNetPP.
 
@@ -285,7 +288,8 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
     def model(positions: jnp.ndarray,
               neighbor: partition.NeighborList,
               species: jnp.ndarray = None,
-              **dynamic_kwargs) -> Union[jnp.ndarray, Tuple[jnp.ndarray]]:
+              **dynamic_kwargs) -> Union[jnp.ndarray,
+                                         Tuple[jnp.ndarray, jnp.ndarray]]:
         """Evalues the DimeNet++ model and predicts the potential energy.
 
         Args:
@@ -313,25 +317,30 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
         # TODO: return overflow to detect possible overflow
         del overflow
 
+        if mode == "energy":
+            n_global = 1
+            n_local = 0
+        else:
+            n_global, n_local = mode
+
         net = DimeNetPP(r_cutoff, n_species, num_targets=n_global + n_local, **dimenetpp_kwargs)
         features = net(graph_rep, **dynamic_kwargs)
 
         if "mask" in dynamic_kwargs:
             features *= dynamic_kwargs["mask"][:, jnp.newaxis]
 
-        out = []
-        if n_global > 0:
-            global_features = util.high_precision_sum(
-                features[:, :n_global], axis=0)
-            out.append(global_features)
-        if n_local > 0:
-            out.append(features[:, n_global:])
+        # Default behaviour
+        if mode == "energy":
+            if per_particle:
+                return features.squeeze(axis=-1)
+            else:
+                return util.high_precision_sum(features)
 
-        # Restores default behaviour
-        if len(out) == 1:
-            return out[0]
+        global_features = util.high_precision_sum(
+            features[:, :n_global], axis=0)
+        local_features = features[:, n_global:]
 
-        return tuple(out)
+        return global_features, local_features
 
     return dropout.model_init_apply(model, dimenetpp_kwargs)
 

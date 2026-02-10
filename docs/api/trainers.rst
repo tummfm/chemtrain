@@ -21,6 +21,7 @@ Base Trainers
    :template: class.rst
 
    Difftre
+   DifftreParallel
    PropertyPrediction
    ForceMatching
    RelativeEntropy

@@ -14,33 +14,42 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-syntax = "proto2";
+syntax = "proto3";
 
-package chemsim;
+package jcn;
 
 message Model {
 
-  required string mlir_module = 1;
+  string mlir_module = 1;
 
   enum NeighborListType {
-    SIMPLE_SPARSE = 0;
-    SIMPLE_DENSE = 2;
+    UNSPECIFIED = 0;
     DEVICE_SPARSE = 1;
+    SIMPLE_DENSE = 2;
+    SIMPLE_SPARSE = 3;
   }
 
   message NeighborList {
-    required NeighborListType type = 1;
-    required float cutoff = 2;
+    NeighborListType type = 1;
+    float cutoff = 2;
 
     // To which order neighbors are required for the newton and the
     // non-newton setting
     repeated int32 nbr_order = 3;
 
     optional bool half_list = 4; // Expect only a half neighbor list
+
+    // Keys for returned statistics
+    repeated string statistics_keys = 5;
+
   }
 
-  required NeighborList neighbor_list=4;
+  NeighborList neighbor_list=4;
 
   optional string unit_style = 5; // LAMMPS unit style definition
+
+  // Return additional quantities besides the energy and force
+
+  repeated string quantities = 6;
 
 }

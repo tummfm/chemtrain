@@ -18,7 +18,6 @@ import abc
 import functools
 
 import jax
-from fontTools.misc.cython import returns
 from jax import numpy as jnp, export, lax
 
 from typing import Dict, NamedTuple, Any, List, Tuple, Callable, NoReturn
@@ -92,6 +91,8 @@ class Exporter(metaclass=abc.ABCMeta):
         unit_style: Specifies the units in which the potential requires
             positions and returns energies. The force units depend solely
             on the length and energy units.
+        has_aux: If True, the energy function returns additional quantities
+            besides the potential energy as dictionary.
 
     """
 
@@ -103,12 +104,12 @@ class Exporter(metaclass=abc.ABCMeta):
     nbr_order: List[int] = [1, 1]
 
     r_cutoff: float
-
     unit_style: str = "real"
+    has_aux: bool = False
 
-    _symbols: List[str] = []
-    _constraints: List[str] = []
-    _init_fns: List[Callable] = []
+    _symbols: List[str] = None
+    _constraints: List[str] = None
+    _init_fns: List[Callable] = None
     _proto: model_proto.Model = None
 
     @abc.abstractmethod
@@ -164,20 +165,25 @@ class Exporter(metaclass=abc.ABCMeta):
         # Expects particles to be sorted by local, ghost, and padding atoms
 
         valid_mask = jnp.arange(position.shape[0]) < (n_local + n_ghost)
-        ghost_mask = jnp.arange(position.shape[0]) < n_local
+        local_mask = jnp.arange(position.shape[0]) < n_local
 
         graph, build_statistics = self.graph_type.create_from_args(
             self.r_cutoff, self.nbr_order, position, species,
-            ghost_mask, valid_mask, newton, *graph_args)
+            local_mask, valid_mask, newton, *graph_args)
         graph = lax.stop_gradient(graph)
 
         @functools.partial(jax.grad, has_aux=True)
         def force_and_aux(pos):
-            per_atom_energies = self.energy_fn(pos, species, graph)
+            out = self.energy_fn(pos, species, graph)
+            if self.has_aux:
+                per_atom_energies, aux = out
+            else:
+                per_atom_energies = out
+                aux = {}
 
-            assert per_atom_energies.shape == ghost_mask.shape, (
+            assert per_atom_energies.shape == local_mask.shape, (
                 f"Per particle energies have shape {per_atom_energies.shape}, "
-                f"but should have shape {ghost_mask.shape}."
+                f"but should have shape {local_mask.shape}."
             )
 
             # Attention: Force is negative gradient of potential.
@@ -189,7 +195,7 @@ class Exporter(metaclass=abc.ABCMeta):
             total_energy = md_util.high_precision_sum(
                 jnp.where(valid_mask, per_atom_energies, jnp.float32(0.0)))
             local_energy = md_util.high_precision_sum(
-                jnp.where(ghost_mask, per_atom_energies, jnp.float32(0.0))
+                jnp.where(local_mask, per_atom_energies, jnp.float32(0.0))
             )
 
             force_energy = jnp.where(newton, local_energy, total_energy)
@@ -197,13 +203,27 @@ class Exporter(metaclass=abc.ABCMeta):
 
             # Differentiate w.r.t. the total potential in the box, but exclude
             # ghost atom contributions to the total potential
-            aux = local_energy, *build_statistics
-            return force_energy, aux
 
-        return force_and_aux(position)
+            return force_energy, (per_atom_energies, aux)
+
+        force, (energy, aux) = force_and_aux(position)
+        predictions = dict(U=energy, F=force, **aux)
+
+        for key, value in predictions.items():
+            assert value.shape[0] == local_mask.size, (
+                f"Wrong shape for prediction {value}. All model outputs "
+                f"must be per-atom quantities."
+            )
+
+        return predictions, build_statistics
 
     def export(self) -> None:
         """Exports the potential model to an MLIR module."""
+
+        # Create a new context for each export
+        self._symbols: List[str] = []
+        self._constraints: List[str] = []
+        self._init_fns: List[Callable] = []
 
         proto = model_proto.Model()
 
@@ -215,7 +235,6 @@ class Exporter(metaclass=abc.ABCMeta):
             "the newton and non-newton setting."
         )
         proto.neighbor_list.nbr_order.extend(self.nbr_order)
-
         self.graph_type.set_properties(proto)
 
         # Using the ghost mask in the last layer we can compute correct forces
@@ -225,10 +244,17 @@ class Exporter(metaclass=abc.ABCMeta):
         self._add_shapes(self._define_position_shapes)
         self._add_shapes(self.graph_type.create_symbolic_input_format)
 
+        export_fn = jax.jit(self._energy_fn)
+
         shapes = self._create_shapes()
 
-        exp: export.Exported = export.export(
-            jax.jit(self._energy_fn), platforms=["cuda"])(*shapes)
+        exp: export.Exported = export.export(export_fn, platforms=["cuda"])(*shapes)
+
+        # Reconstruct the output to save the returned statistics and...
+        predictions, statistics = exp.out_tree.unflatten(exp.out_avals)
+
+        proto.neighbor_list.statistics_keys.extend(statistics.keys())
+        proto.quantities.extend(predictions.keys())
 
         proto.mlir_module = exp.mlir_module()
 

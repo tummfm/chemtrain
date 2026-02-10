@@ -231,7 +231,78 @@ class ForceMatching(tt.DataParallelTrainer):
 class DifftreParallel(tt.MLETrainerTemplate):
     """Trainer class for parametrizing potentials via the DiffTRe method.
 
-    TODO: Documentation
+    This method performs simulations and updates for multiple statepoints in
+    parallel using vmap.
+
+    Args:
+        init_params: Initial energy parameters
+        optimizer: Optimizer from optax
+        energy_fn_template: Function that takes energy parameters and
+            initializes a new energy function.
+        simulator_template: Function that takes an energy function and
+            returns a simulator function.
+        neighbor_fn: Neighbor function. Must be of
+            :func:`jax_md_mod.custom_partition.masked_neighbor_list` if the
+            statepoints have a different number of atoms.
+        timings: Instance of TimingClass containing information about the
+            trajectory length and which states to retain
+        state_kwargs: Properties defining the thermodynamic state. Must at least
+            contain the temperature 'kT'. For a non-exhaustive list, see
+            :class:`chemtrain.ensemble.templates.StatePoint`.
+        quantities: Dict containing for each observable specified by the key a
+            corresponding function to compute it for each snapshot using
+            :func:`ensemble.sampling.quantity_traj`.
+        targets: Dict containing the same keys as quantities and containing
+            another dict providing 'gamma' and 'target' for each observable.
+        observables: Optional dictionary providing the observable functions
+            for the targets.
+        initial_trajstates: Initial trajectory states of the statepoints.
+            It is usually simpler to let the trainer generate the initial
+            trajectory states by providing `reference_states`.
+        reference_states: Initial simulator states from which DiffTRe can
+            compute the initial trajectory states.
+        num_runs_init: Number of runs to perform for the initial trajectory
+            states. This number can be increased to ensure a better
+            equilibration when starting from less favourable initial states.
+        reweight_ratio: Ratio of reference samples required for n_eff to
+            surpass to allow re-use of previous reference trajectory state.
+            If trajectories should not be re-used, a value > 1 can be
+            specified.
+        allowed_reduction: Allowed reduction of the effective sample size
+            through a parameter update.
+        step_size_scale: Initial step size scale for the step size adaption.
+        interior_points: Number of interior points to use for the step size
+            adaption.
+        sim_batch_size: Number of state-points to be processed as a single
+            batch. Gradients will be averaged over the batch before stepping the
+            optimizer.
+        full_checkpoint: If True, the whole trainer state is saved, otherwise
+            only important parameters are stored as a dictionary.
+        target_loss_fns: Dictionary of loss functions to use for each target.
+        loss_fn: Custom loss function to use for the training.
+        vmap_batch: Number of samples to process simultaneously when computing
+            instantaneous quantities for a trajectory.
+        bucket_recompute: Groups together statepoints that need a recomputation.
+        resample_simstates: Resample the sim states from all trajectories
+            instead of simulating independent chains.
+        convergence_criterion: Either 'max_loss' or 'ave_loss'.
+            If 'max_loss', stops if the maximum loss across all batches in
+            the epoch is smaller than convergence_thresh. 'ave_loss'
+            evaluates the average loss across the batch. For a single state
+            point, both are equivalent. A criterion based on the rolling
+            standatd deviation 'std' might be implemented in the future.
+        checkpoint_path: Name of folders to store checkpoints in.
+        log_dir: Path to the log file where to store training progress.
+
+    Attributes:
+        batch_losses: List of losses for each batch in each epoch.
+        epoch_losses: List of losses for each epoch.
+        step_size_history: List of step sizes for each batched update.
+        gradient_norm_history: List of gradient norms for each batched update.
+        batch_gradient_norms: List of gradient norms for each batch.
+        predictions: Dictionary containing the predictions for each statepoint
+            at each epoch.
+        early_stop: Instance of EarlyStopping to check for convergence.
 
     """
 
@@ -248,6 +319,8 @@ class DifftreParallel(tt.MLETrainerTemplate):
                  targets: Dict[str, Any],
                  observables: Dict[str, TrajFn],
                  initial_trajstates = None,
+                 reference_states = None,
+                 num_runs_init: int = 1,
                  reweight_ratio: ArrayLike = 0.9,
                  allowed_reduction: ArrayLike = 0.95,
                  step_size_scale: float = 1e-4,
@@ -257,7 +330,7 @@ class DifftreParallel(tt.MLETrainerTemplate):
                  target_loss_fns: Dict[str, Callable] = None,
                  loss_fn=None,
                  vmap_batch: int = 10,
-                 set_key: str = None,
+                 bucket_recompute: bool = True,
                  resample_simstates: bool = False,
                  convergence_criterion: str = "window_median",
                  checkpoint_path: os.PathLike = "Checkpoints",
@@ -276,6 +349,8 @@ class DifftreParallel(tt.MLETrainerTemplate):
             entropy_approximation=False,
             resample_simstates=resample_simstates
         )
+
+        self._bucket_recompute = bucket_recompute
 
         # TODO: Parallelize over multiple devices
         if target_loss_fns is None:
@@ -300,7 +375,24 @@ class DifftreParallel(tt.MLETrainerTemplate):
         self.weights = jax.jit(batched_weights)
 
         self.targets = targets
-        self.traj_states = initial_trajstates
+
+        if initial_trajstates is not None:
+            self.traj_states = initial_trajstates
+        else:
+            n_statepoints = targets[list(targets.keys())[0]]["target"].shape[0]
+
+            self.key, split = random.split(key)
+            self.traj_states = util.batch_map(
+                lambda ops: gen_init_traj(
+                    ops[0][0], init_params, ops[0][1],
+                    num_runs=num_runs_init, **ops[1]
+                ),
+                (
+                    (random.split(split, n_statepoints), reference_states),
+                    state_kwargs
+                ), batch_size=sim_batch_size
+            )
+
 
         if allowed_reduction is not None:
             self._adaptive_step_size = difftre.init_step_size_adaption(
@@ -326,15 +418,12 @@ class DifftreParallel(tt.MLETrainerTemplate):
         self.gradient_norm_history = self.checkpoint("gradient_norm_history", [])
         self.predictions = self.checkpoint("predictions", {})
 
-        if initial_trajstates is not None:
-            for key in range(self.n_statepoints):
-                self.predictions[key] = {}
+        # Initial trajstates should be set by now
+        for key in range(self.n_statepoints):
+            self.predictions[key] = {}
 
         self.early_stop = tt.EarlyStopping(
             self.params, convergence_criterion)
-
-    def initialize_statepoint(self, reference_state):
-        pass
 
     @property
     def params(self):
@@ -352,14 +441,58 @@ class DifftreParallel(tt.MLETrainerTemplate):
 
     def _get_batch(self):
         """Returns the next batch of statepoints to be processed."""
-
-        self.key, split = random.split(self.key)
+        self.key, key = random.split(self.key)
         num_statepoints = self.traj_states.trajectory.position.shape[0]
-        batches = random.permutation(split, num_statepoints)
+        mask = jnp.ones(num_statepoints)
 
         for i in range(num_statepoints // self.batch_size):
-            yield batches[i * self.batch_size:(i + 1) * self.batch_size]
+            key, split = random.split(key)
 
+            # If bucketing is no longer possible or disabled, return back
+            # a random batch of statepoints. Otherwise, return a full batch of
+            # statepoints that either need or don't need reweighting.
+            if not self._bucket_recompute or 2 * self.batch_size > jnp.sum(mask):
+                batches = random.choice(
+                    split, num_statepoints, (self.batch_size,),
+                    replace=False, p=mask
+                )
+            else:
+                # Compute the effective sample size for twice as many samples
+                candidates = random.choice(
+                    split, num_statepoints, (2 * self.batch_size,),
+                    replace=False, p=mask
+                )
+
+                trajstates = util.tree_take(self.traj_states, candidates,
+                                            on_cpu=False)
+
+                # Compute the effective sample sizes
+                _, n_eff = self.weights(self.params, trajstates)
+                min_n_eff = self.traj_states.trajectory.position.shape[
+                                1] * self.reweight_ratio
+
+                recompute = n_eff < min_n_eff
+
+                # Select samples only from the largest class. At least one
+                # of the conditions should be fulfilled:
+                # a) At least BS samples must be recomputed
+                # b) At least BS samples do not need a recomputation
+                key, split = random.split(key)
+                if jnp.sum(recompute) > self.batch_size:
+                    select = jnp.float32(recompute)
+                else:
+                    select = jnp.float32(~recompute)
+
+                # Select from the class at random. The not selected samples
+                # should remain in the pool.
+                batches = random.choice(
+                    split, candidates, (self.batch_size,),
+                    replace=False, p=select
+                )
+
+            # Mark the samples as drawn
+            mask = mask.at[batches].set(0.0)
+            yield batches
 
     def _update(self, batch):
         """Computes gradient averaged over the sim_batch by propagating
@@ -438,6 +571,55 @@ class DifftreParallel(tt.MLETrainerTemplate):
         self.batch_losses.append(onp.asarray(loss))
         self.step_size_history.append(onp.asarray(alpha))
 
+    def predict(self, batch):
+        """Predict for a batch of statepoints."""
+
+        # Select the relevant trajstates and targets
+
+        trajstates = util.tree_take(self.traj_states, batch, on_cpu=False)
+        targets = util.tree_take(self.targets, batch, on_cpu=False)
+        statepoints = util.tree_take(self.statepoints, batch, on_cpu=False)
+
+        # Compute the effective sample sizes and print
+        _, n_eff = self.weights(self.params, trajstates)
+        min_n_eff = self.traj_states.trajectory.position.shape[
+                        1] * self.reweight_ratio
+
+        ## Determine if recompute is necessary #################################
+
+        print(
+            f"[DifftreParallel] Effective sample sizes (limit: {min_n_eff})")
+        for b, eff in zip(batch, n_eff):
+            info = "-> recompute" if eff < min_n_eff else ""
+            print(
+                f"\t[Statepoint {b}] Effective sample size: {eff:.2f} {info}")
+
+        if onp.any(n_eff < min_n_eff):
+            print(f"[DifftreParallel] Recomputing trajectories...")
+            start = time.time()
+            trajstates = self.propagate(self.params, trajstates,
+                                        statepoints)
+            print(
+                f"[DifftreParallel] Recomputed trajectories in {(time.time() - start) / 60.:.2f} min")
+
+            # Save the recomputed trajectories
+            self.traj_states = util.tree_put(self.traj_states, batch,
+                                             trajstates, on_cpu=False)
+
+        ## Compute the loss ####################################################
+
+        print(f"[DifftreParallel] Start predictions...")
+        for idx, b in enumerate(batch):
+            print(f"\t[Statepoint {b}]")
+            for key, val in statepoints.items():
+                if not jnp.isscalar(val[idx]): continue
+                print(f"\t\t{key} = {val[idx]}")
+
+        (_, state_point_predictions), _ = self.model(
+            self.params, trajstates, statepoints, targets
+        )
+
+        return state_point_predictions
 
     def _evaluate_convergence(self, *args, thresh=None, **kwargs):
         # sim_batch_size = -1 means all statepoints are processed in one batch.
@@ -562,6 +744,8 @@ class Difftre(tt.PropagationBase):
         # after all statepoints to be considered have been set up.
         self._recompute = False
 
+        self._adaptive_step_size_threshold = adaptive_step_size_threshold
+
         self.state_dicts = {}
         self.weight_fn = {}
         self.targets = {}
@@ -574,7 +758,6 @@ class Difftre(tt.PropagationBase):
         self.batch_losses = self.checkpoint("batch_losses", [])
         self.epoch_losses = self.checkpoint("epoch_losses", [])
         self.step_size_history = self.checkpoint("step_size_history", [])
-        self.gradient_norm_history = self.checkpoint("gradient_norm_history", [])
         self.predictions = self.checkpoint("predictions", {})
 
         self.early_stop = tt.EarlyStopping(self.params,
@@ -618,7 +801,7 @@ class Difftre(tt.PropagationBase):
                 list, see :class:`chemtrain.ensemble.templates.StatePoint`.
             quantities: Dict containing for each observable specified by the
                 key a corresponding function to compute it for each snapshot
-                using traj_util.quantity_traj.
+                using :func:`ensemble.sampling.quantity_traj`.
             reference_state: Tuple of initial simulation state and neighbor list
             targets: Dict containing the same keys as quantities and containing
                 another dict providing 'gamma' and 'target' for each observable.
@@ -718,6 +901,41 @@ class Difftre(tt.PropagationBase):
         # Reset loss measures if new state point es added since loss values
         # are not necessarily comparable
         self.early_stop.reset_convergence_losses()
+
+    def predict(self, *, key: int):
+        """Get predictions for a specific statepoint.
+
+        This method predicts the target quantities for a specific
+        statepoint. If necessary, the statepoint performs a trajectory
+        regeneration.
+
+        Args:
+            key: The key of the statepoint to predict.
+
+        Returns:
+            Returns a dictionary containing the predicted observables
+            given the current parameter values.
+
+        """
+        traj_state = self.trajectory_states[key]
+        try:
+            traj_state.overflow
+        except:
+            start = time.time()
+            traj_state = traj_state()
+            compute_time = (time.time() - start) / 60.
+
+            print(
+                f"Delayed initialization of trajectory state in {compute_time :.2f} min.")
+
+        grad_fn = self.grad_fns[key]
+        (new_traj_state, *_, state_point_predictions) = grad_fn(
+            self.params, traj_state, self.state_dicts[key], self.targets[key],
+            recompute=self._recompute
+        )
+
+        self.trajectory_states[key] = new_traj_state
+        return state_point_predictions
 
     def _update(self, batch):
         """Computes gradient averaged over the sim_batch by propagating

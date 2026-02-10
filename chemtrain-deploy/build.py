@@ -657,7 +657,7 @@ def main():
 
   with open("config.bazelrc", "w") as f:
       f.write(__BAZELRC)
-      f.write("\n".join(build_options))
+      f.write("\n".join(f"build {flag}" for flag in build_options))
 
   if args.configure_only:
     return

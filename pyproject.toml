@@ -15,6 +15,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: MacOS",
     "Operating System :: POSIX :: Linux",
@@ -24,10 +25,10 @@ classifiers = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    'jax <= 0.4.37',
-    'jaxlib <= 0.4.37',
-    'scipy < 1.13', # Removed scipy.linal.tril, etc.
-    'jax-md',
+    'jax <= 0.7.0',
+    'jaxlib <= 0.7.0',
+    'scipy',
+    'jax-md @ git+https://github.com/jax-md/jax-md@jax-md-v0.2.25',
     'jax-sgmc',
     'optax',
     'dm-haiku',
@@ -39,7 +40,7 @@ dependencies = [
     'jaxopt',
     'dm-tree',
     'networkx',
-    'protobuf<=3.20'
+    'protobuf'
 ]
 dynamic = ["version"]
 
@@ -71,12 +72,8 @@ dynamic = ["version"]
     "breathe",
     "sphinxcontrib-mermaid"
 ]
-"stable" = [
-    "jax == 0.3.25",
-    "jaxlib == 0.3.25",
-    "chex == 0.1.5",
-    "orbax-checkpoint == 0.1.1",
-    "orbax == 0.1.1"
+"mace-jax" = [
+    "mace-jax @ git+https://github.com/ACEsuit/mace-jax.git@7e9d467d1701290b6606a20ff2c625c27e973254"
 ]
 
 [tool.setuptools.packages.find]

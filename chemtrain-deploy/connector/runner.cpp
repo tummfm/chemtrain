@@ -162,7 +162,7 @@ namespace jcn {
 
         atom_builder = std::make_unique<AtomBuilder>(
             config.atom_multiplier, config.newton);
-        model = std::make_unique<chemsim::Model>();
+        model = std::make_unique<jcn::Model>();
 
         // Deserialize the protobuffer
         if (config.model.empty()) {
@@ -176,26 +176,43 @@ namespace jcn {
         // Pass the mlir module to the compiler
         compiler = std::make_unique<Compiler>(model->mlir_module());
 
+        // Read out statistics required for the neighbor lists
+        std::vector<std::string> statistics_keys;
+        for (int i = 0; i < model->neighbor_list().statistics_keys_size(); i++) {
+            statistics_keys.push_back(model->neighbor_list().statistics_keys(i));
+        }
+
         // Select from the available neighbor list types
         switch (model->neighbor_list().type()) {
-            case chemsim::Model::SIMPLE_SPARSE:
-                neighbor_list = std::make_unique<SimpleSparseNeighborList>();
+            case jcn::Model::SIMPLE_SPARSE:
+                neighbor_list = std::make_unique<SimpleSparseNeighborList>(
+                    statistics_keys
+                );
                 neighbor_list->initialize(config.neighbor_list_multipliers);
 
                 logger.log(LogLevel::INFO, "Initialize SimpleSparseNeighborList");
                 break;
-            case chemsim::Model::SIMPLE_DENSE:
-                neighbor_list = std::make_unique<SimpleDenseNeighborList>();
+            case jcn::Model::SIMPLE_DENSE:
+                neighbor_list = std::make_unique<SimpleDenseNeighborList>(
+                    statistics_keys
+                );
                 neighbor_list->initialize(config.neighbor_list_multipliers);
 
                 logger.log(LogLevel::INFO, "Initialize SimpleDenseNeighborList");
                 break;
-            case chemsim::Model::DEVICE_SPARSE:
-                neighbor_list = std::make_unique<DeviceSparseNeighborList>();
+            case jcn::Model::DEVICE_SPARSE:
+                neighbor_list = std::make_unique<DeviceSparseNeighborList>(
+                    statistics_keys
+                );
                 neighbor_list->initialize(config.neighbor_list_multipliers);
 
                 logger.log(LogLevel::INFO, "Initialize DeviceSparseNeighborList");
                 break;
+            default:
+                throw std::runtime_error(
+                    "Unknown neighbor list type: "
+                    + std::to_string(model->neighbor_list().type())
+                );
         }
 
         return get_model_properties();
@@ -336,7 +353,18 @@ namespace jcn {
             // Now we have to copy the results back to the host
             std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>> results_buffers = std::move(results).value();
 
-            bool success = neighbor_list->evaluate_statistics(results_buffers, allow_recompile);
+            // Sort out the results buffers. First two entries in the buffer are energy and forces.
+            // TODO: Add support for arbitrary potential quantities
+            std::map<std::string, std::unique_ptr<xla::PjRtBuffer>> statistics;
+            for (int i = 0; i < neighbor_list->statistics_keys.size(); i++) {
+                statistics.emplace(
+                    neighbor_list->statistics_keys[i],
+                    std::move(results_buffers[0][i + 2]) // TODO: Fixed number of potential outputs for now
+                );
+            }
+
+            bool success = neighbor_list->evaluate_statistics(
+                std::move(statistics), allow_recompile);
 
             end = std::chrono::high_resolution_clock::now();
             duration = end - start;
@@ -396,8 +424,8 @@ namespace jcn {
         }
 
         switch (model->neighbor_list().type()) {
-            case chemsim::Model::SIMPLE_SPARSE:
-            case chemsim::Model::SIMPLE_DENSE:
+            case jcn::Model::SIMPLE_SPARSE:
+            case jcn::Model::SIMPLE_DENSE:
                 // Neighbor list cutoff must be larger than the model cutoff
                 properties.cutoff = model->neighbor_list().cutoff();
 
@@ -417,7 +445,7 @@ namespace jcn {
                 };
 
                 break;
-            case chemsim::Model::DEVICE_SPARSE:
+            case jcn::Model::DEVICE_SPARSE:
                 // Does not specify a cutoff for the particles as neighbor
                 // list is computed on the device
                 properties.cutoff = 0.0;
