@@ -17,7 +17,7 @@ Common Quantities
    kinetic_energy_wrapper
    total_energy_wrapper
    temperature
-   volume_npt
+   volume
    density
 
 

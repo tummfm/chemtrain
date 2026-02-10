@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 from typing import Any, Dict, Callable, NamedTuple
 
 import numpy as onp
@@ -27,12 +26,12 @@ from chemtrain.typing import QuantityDict
 
 from typing import Protocol
 
-""""""
+"""Functions to compute snapshots quantities for many samples."""
 
 class State(Protocol):
     """State of a molecular system.
 
-    All states require must at least prescribe the particle positions.
+    All states must at least prescribe the particle positions.
     Other attributes, such as velocities, forces, etc., might be necessary
     for some instantaneous quantities.
 
@@ -85,7 +84,7 @@ def quantity_map(states: State,
                 'feature': custom_feature_compute_fn
             }
 
-            quantity_trajs = quantity_traj(
+            quantity_trajs = quantity_map(
                 trajectory, quantities, reference_nbrs, dynamic_kwargs,
                 energy_params, feature_extract_fns=feature_extract_fns
             )
@@ -129,7 +128,7 @@ def quantity_multimap(*states: State,
                       feature_extract_fns: Dict[str, Callable] = None):
     """Computes quantities of interest for all states in a trajectory.
 
-    This function extends :func:`quantity_traj`
+    This function extends :func:`quantity_map`
     to quantities with respect to multiple reference states.
     Therefore, the quantity function signature changes to
 
@@ -161,9 +160,13 @@ def quantity_multimap(*states: State,
         A dict of quantity trajectories saved under the same key as the
         input quantity function.
     """
+    nbrs_update_fn = nbrs.update_fn
+
     # Check that all states have the same format
     if state_kwargs is None:
         state_kwargs = {}
+    if constant_state_kwargs is None:
+        constant_state_kwargs = {}
 
     assert len(states) > 0, 'Need at least one trajectory.'
     ref_leaves, ref_struct = tree_util.tree_flatten(states[0])
@@ -199,7 +202,7 @@ def quantity_multimap(*states: State,
             box = simulate.npt_box(states[0])
             kwargs['box'] = box
         if nbrs is not None:
-            new_nbrs = util.neighbor_update(nbrs, states[0], **kwargs)
+            new_nbrs = nbrs_update_fn(states[0].position, nbrs, **kwargs)
             mask = kwargs.get(
                 "mask", jnp.ones(new_nbrs.reference_position.shape[0]))
             kwargs["neighbor"] = custom_partition.mask_neighbor_list(
@@ -223,10 +226,30 @@ def quantity_multimap(*states: State,
             }
         return computed_quantities
 
-    batched_samples = util.tree_vmap_split(
-        (states, state_kwargs), batch_size
-    )
+    # If the batch size is larger than the number of samples, reduce the
+    # batch size to compute all samples in one batch.
+    # If the batch size does not divide the number of samples, we compute
+    # the remainder in a separate call to avoid padding.
 
-    bachted_quantity_trajs = lax.map(single_state_quantities, batched_samples)
+    ipt = (states, state_kwargs)
+    if states[0].position.shape[0] < batch_size:
+        batch_size = states[0].position.shape[0]
 
-    return util.tree_combine(bachted_quantity_trajs)
+    remainder = states[0].position.shape[0] % batch_size
+
+    if remainder > 0:
+        rmd = tree_util.tree_map(lambda x: x[-remainder:], ipt)
+        ipt = tree_util.tree_map(lambda x: x[:-remainder], ipt)
+
+    batched_samples = util.tree_vmap_split(ipt, batch_size)
+    batched_quantity_trajs = lax.map(single_state_quantities, batched_samples)
+    quantity_trajs = util.tree_combine(batched_quantity_trajs)
+
+    if remainder > 0:
+        rmd_trajs = single_state_quantities(rmd)
+        quantity_trajs = tree_util.tree_map(
+            lambda a, b: jnp.concatenate([a, b], axis=0),
+            quantity_trajs, rmd_trajs
+        )
+
+    return quantity_trajs

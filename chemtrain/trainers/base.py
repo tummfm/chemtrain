@@ -16,6 +16,7 @@
 requirements."""
 import abc
 import copy
+import dataclasses
 import functools
 import logging
 import pathlib
@@ -31,9 +32,10 @@ import cloudpickle as pickle
 import jax
 import numpy as onp
 from jax import (
-    tree_map, numpy as jnp, random, device_count, jit, device_get,
+    numpy as jnp, random, device_count, jit, device_get,
     tree_util
 )
+from jax.tree_util import tree_map
 from jax_sgmc import data
 
 from chemtrain import util
@@ -88,6 +90,12 @@ class CaptureStdout:
                 print(f"Error closing file: {e}")
 
 
+@dataclasses.dataclass
+class CheckpointAttr:
+    name: str
+    object: Any
+
+
 class TrainerInterface(metaclass=abc.ABCMeta):
     """Abstract class defining the user interface of trainers as well as
     checkpointing functionality.
@@ -105,10 +113,10 @@ class TrainerInterface(metaclass=abc.ABCMeta):
         checkpoint_path = pathlib.Path(checkpoint_path)
         checkpoint_path.mkdir(exist_ok=True, parents=True)
 
-        self._statistics = {}
+        self._statistics: Dict[str, str] = {}
         self._full_checkpoint = full_checkpoint
         self.checkpoint_path = checkpoint_path
-        self._epoch = 0
+        self._epoch = self.checkpoint("epoch", 0)
         self.reference_energy_fn_template = reference_energy_fn_template
 
     @property
@@ -133,27 +141,26 @@ class TrainerInterface(metaclass=abc.ABCMeta):
                 file_path = (
                     pathlib.Path(self.checkpoint_path) / f"epoch{epoch}.pkl")
                 self.save_trainer(file_path)
+                print(f"[{type(self).__name__}] Checkpoint created sucessfully at: {str(file_path)}")
 
     def save_trainer(self, save_path, format=".pkl"):
         """Saves whole trainer, e.g. for production after training."""
         if self._full_checkpoint:
             data = self
         else:
-            data = self._statistics
-            try:
-                data["trainer_state"] = dict(self.state)
-            except AttributeError:
-                print(f"Skipping trainer state")
-
-            # Try to save the best parameters when provided
-            try:
-                data["best_params"] = self.best_params
-            except AttributeError:
-                pass
+            data = {
+                name: self.__getattribute__(key)
+                for key, name in self._statistics.items()
+            }
 
         if format == ".pkl":
+            leaves, treedef = tree_util.tree_flatten(data)
+            leaves = [
+                onp.asarray(leaf) if isinstance(leaf, jnp.ndarray) else leaf
+                for leaf in leaves
+            ]
             with open(save_path, "wb") as pickle_file:
-                pickle.dump(tree_map(onp.asarray, data), pickle_file)
+                pickle.dump(tree_util.tree_unflatten(treedef, leaves), pickle_file)
         elif format == "none":
             return data
 
@@ -180,7 +187,6 @@ class TrainerInterface(metaclass=abc.ABCMeta):
                 params = self.params
         else:
             params = self.params
-
 
         if save_format == ".hdf5":
             raise NotImplementedError
@@ -232,19 +238,71 @@ class TrainerInterface(metaclass=abc.ABCMeta):
     def checkpoint(self, name, object):
         """Marks attribute to be saved in a partial checkpoint.
 
-        This requires that the object to be saved is only mutated but not
-        replaced during training.
+        The marked attribute is saved to a checkpoint dictionary under
+        the specified name.
 
         Args:
             name: Name of the statistic in the saved dictionary
-            object: Mutable object to be saved via pickle
+            object: Object to initialize the attribute
 
         Returns:
-            Returns the original object unchanged.
+            Returns the original object wrapped as a CheckpointNode.
 
         """
-        self._statistics.update({name: object})
-        return object
+        return CheckpointAttr(name, object)
+
+    def __setattr__(self, key, value):
+        if isinstance(value, CheckpointAttr):
+            # The wrapper class is only to identify attributes to be checkpointed.
+            # We now track these attributes in a dictionary and remove the wrapper,
+            # which is no longer needed.
+            if value.name in self._statistics.values():
+                for duplicate_key, duplicate_value in self._statistics.items():
+                    if duplicate_key == key:
+                        warnings.warn(f"[{self.__class__.__name__}] Attribute {duplicate_key} is marked for checkpoining twice.")
+                        continue
+
+                    if duplicate_value == value.name:
+                        raise ValueError(
+                            f"Duplicate checkpoint name found for attribute {key}. "
+                            f"Name '{value.name}' is already used for attribute {duplicate_key}."
+                        )
+
+            self._statistics[key] = value.name
+
+            object.__setattr__(self, key, value.object)
+        else:
+            object.__setattr__(self, key, value)
+
+    def restore(self, checkpoint):
+        """Restores the trainer from a checkpoint.
+
+        Args:
+            checkpoint: Checkpoint to restore from. Can be a path to a file or
+                a dictionary containing the trainer state.
+
+        """
+        with open(checkpoint, "rb") as f:
+            checkpoint = pickle.load(f)
+
+        # Restore all attributes that were marked as checkpointable
+        restored = []
+        for attr, key in self._statistics.items():
+            object.__setattr__(self, attr, checkpoint[key])
+            restored.append(attr)
+
+        # Finish this epoch
+        self._epoch += 1
+
+        # Write summary
+        print(f"[{self.__class__.__name__}] Attributes Restored:")
+        print(f", ".join(restored))
+
+        unchanged = [
+            attr for attr in self.__dict__.keys() if attr not in restored
+        ]
+        print(f"[{self.__class__.__name__}] Attributes Unchanged:")
+        print(f", ".join(unchanged))
 
 
 class MLETrainerTemplate(TrainerInterface):
@@ -257,6 +315,7 @@ class MLETrainerTemplate(TrainerInterface):
         checkpoint_path: Path to folder where checkpoints are saved
         full_checkpoint: Whether to save the full trainer with pickle or only
             a subset of attributes.
+        log_file: Write loggs of Trainer to the file specified by path.
         reference_energy_fn_template: Function returning a concrete energy
             function for the current parameters
 
@@ -279,22 +338,22 @@ class MLETrainerTemplate(TrainerInterface):
                  reference_energy_fn_template: EnergyFnTemplate = None):
         super().__init__(
             checkpoint_path, reference_energy_fn_template, full_checkpoint)
-        self.state = init_state
         self.optimizer = optimizer
-        self.update_times = []
-        self.gradient_norm_history = []
-        self._converged = False
-        self._diverged = False
+
+        self.state = self.checkpoint("trainer_state", init_state)
+        self.update_times = self.checkpoint("update_times", [])
+        self.gradient_norm_history = self.checkpoint("gradient_norm_history", [])
+        self._converged = self.checkpoint("converged", False)
+        self._diverged = self.checkpoint("diverged", False)
 
         self.log_file = log_file
-
         self._tasks = {}
 
         # Add standard tasks
         self.add_task("pre_epoch", self._update_times_start)
         self.add_task("post_epoch", self._update_times_end)
-        self.add_task("post_epoch", self._dump_checkpoint_occasionally)
         self.add_task("post_epoch", self._evaluate_convergence)
+        self.add_task("post_epoch", self._dump_checkpoint_occasionally)
 
         # Dropout only if params indicate necessity
         if dropout.dropout_is_used(self.params):
@@ -570,9 +629,11 @@ class PropagationBase(MLETrainerTemplate):
 
         # store for each state point corresponding traj_state and grad_fn
         # save in distinct dicts as grad_fns need to be deleted for checkpoint
-        self.grad_fns, self.trajectory_states, self.statepoints = {}, {}, {}
+        self.grad_fns, self.statepoints = {}, {}
         self.n_statepoints = 0
-        self.shuffle_key = random.PRNGKey(0)
+
+        self.trajectory_states = self.checkpoint("trajectory_states", {})
+        self.shuffle_key = self.checkpoint("key", random.PRNGKey(0))
 
         self.weight_fn = {}
         self._adaptive_step_size = {}
@@ -582,7 +643,7 @@ class PropagationBase(MLETrainerTemplate):
                          set_key=None, energy_batch_size=10,
                          initialize_traj=True,
                          safe_propagation=True, entropy_approximation=False,
-                         resample_simstates=False):
+                         resample_simstates=False, num_init_runs=2):
         """Initializes the simulation and reweighting functions as well
         as the initial trajectory for a statepoint."""
 
@@ -635,11 +696,10 @@ class PropagationBase(MLETrainerTemplate):
 
         self.key, split = random.split(self.key)
 
-        num_runs = 2
         # To get the correct timings, first compile before evaluation
         start = time.time()
         init_traj_fn = gen_init_traj.lower(split, self.params, reference_state,
-                                           num_runs=num_runs, **state_kwargs)
+                                           num_runs=num_init_runs, **state_kwargs)
         init_traj_fn = init_traj_fn.compile()
         compile_time = (time.time() - start) / 60.
         print(
@@ -650,7 +710,7 @@ class PropagationBase(MLETrainerTemplate):
         if initialize_traj:
             start = time.time()
             init_traj = init_traj_fn(split, self.params, reference_state, **state_kwargs)
-            run_time = (time.time() - start) / 60. / num_runs
+            run_time = (time.time() - start) / 60. / num_init_runs
 
             assert not init_traj.overflow, "[Propagation] Neighborlist buffer overflowed."
             assert not onp.any(onp.isnan(init_traj.trajectory.position)), "[Propagation] Initial simulation produced NaNs."
@@ -1155,6 +1215,7 @@ class DataParallelTrainer(MLETrainerTemplate):
         self.train_losses.append(mean_train_loss)
         duration = self.update_times[self._epoch]
 
+        start = time.time()
         if "validation" in self._batch_states:
             val_loss, val_target_losses = self.evaluate("validation")
 
@@ -1171,12 +1232,15 @@ class DataParallelTrainer(MLETrainerTemplate):
         else:
             val_loss = None
 
+        # Add the time for the validation
+        total_duration = (time.time() - start) / 60. + duration
+
         log_str = (
             f"[Epoch {self._epoch}]:\n"
             f"\tAverage train loss: {mean_train_loss:.5f}\n"
             f"\tAverage val loss: {val_loss}\n"
             f"\tGradient norm: {self.gradient_norm_history[-1]}\n"
-            f"\tElapsed time = {duration:.3f} min\n"
+            f"\tElapsed time = {total_duration:.3f} min (total), {duration:.3f} min (training)\n"
             f"\tPer-target losses:\n"
         )
 

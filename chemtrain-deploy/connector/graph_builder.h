@@ -52,8 +52,8 @@ namespace jcn {
      */
     class GraphBuilder {
     public:
-        GraphBuilder() = default;
-        ~GraphBuilder() = default;
+        GraphBuilder(std::vector<std::string> statistics);
+        virtual ~GraphBuilder() = default;
 
         virtual void initialize(std::vector<float> multiplier) = 0;
 
@@ -66,9 +66,11 @@ namespace jcn {
                 int *numneigh, int **firstneigh, bool update) = 0;
 
         virtual bool evaluate_statistics(
-            std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>& results,
+            std::map<std::string, std::unique_ptr<xla::PjRtBuffer>> statistics,
             bool check_buffers
         ) { return true; }; // Returns success if not required
+
+        std::vector<std::string> statistics_keys;
 
     protected:
         Logger logger = Logger::getlogger();
@@ -82,6 +84,9 @@ namespace jcn {
     class SimpleSparseNeighborList : public GraphBuilder {
 
         public:
+            SimpleSparseNeighborList(std::vector<std::string> statistics)
+                : GraphBuilder(statistics) {};
+
             /**
              * Initializes the interface.
              *
@@ -128,7 +133,7 @@ namespace jcn {
                 int *numneigh, int **firstneigh, bool update) override;
 
             bool evaluate_statistics(
-                std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>& results,
+                std::map<std::string, std::unique_ptr<xla::PjRtBuffer>> statistics,
                 bool check_buffers
             ) override;
 
@@ -157,6 +162,9 @@ namespace jcn {
     class SimpleDenseNeighborList : public GraphBuilder {
 
         public:
+            SimpleDenseNeighborList(std::vector<std::string> statistics)
+                : GraphBuilder(statistics) {};
+
             /**
              * Initializes the interface.
              *
@@ -203,7 +211,7 @@ namespace jcn {
                 int *numneigh, int **firstneigh, bool update) override;
 
             bool evaluate_statistics(
-                std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>& results,
+                std::map<std::string, std::unique_ptr<xla::PjRtBuffer>> statistics,
                 bool check_buffers
             ) override;
 
@@ -231,6 +239,9 @@ namespace jcn {
     class DeviceSparseNeighborList : public GraphBuilder {
 
         public:
+            DeviceSparseNeighborList(std::vector<std::string> statistics)
+                : GraphBuilder(statistics) {};
+
             /**
              * Initializes the interface.
              *
@@ -295,7 +306,7 @@ namespace jcn {
              *     no overflow occured.
              */
             bool evaluate_statistics(
-                std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>& results,
+                std::map<std::string, std::unique_ptr<xla::PjRtBuffer>> statistics,
                 bool check_buffers
             ) override;
 

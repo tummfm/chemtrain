@@ -219,7 +219,12 @@ cc_library(
     hdrs = ["utils.h"],
 )
 
-tf_proto_library(
+proto_library(
     name = "model_proto",
     srcs = ["model.proto"],
+)
+
+cc_proto_library(
+    name = "model_proto_cc",
+    deps = [":model_proto"],
 )

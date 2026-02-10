@@ -44,7 +44,6 @@ class TestMappingAla2:
             'shift_fn': shift_fn
         }
 
-    @pytest.mark.test_mapping_combined
     def test_map_ala2(self, setup_problem):
         # Get data from setup
         data = setup_problem
@@ -69,7 +68,6 @@ class TestMappingAla2:
         assert jnp.allclose(mapped_F, data['CG_F'], rtol=1e-3, atol=1e-3), \
             "Mapped forces not close to expected CG forces"
             
-    @pytest.mark.test_mapping_positions
     def test_map_ala2_positions(self, setup_problem):
         # Get data from setup
         data = setup_problem

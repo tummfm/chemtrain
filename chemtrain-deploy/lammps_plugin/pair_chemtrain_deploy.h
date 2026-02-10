@@ -34,6 +34,7 @@ class ChemtrainDeploy : public Pair {
   void init_style() override;
   double init_one(int, int) override;
   void finish() override;
+  void *extract(const char *, int &) override;
 
  protected:
 //  bool allocated;
@@ -41,6 +42,7 @@ class ChemtrainDeploy : public Pair {
   // double cut_global;
   double **cut;
   double **xold;
+  double scale = 1.0;
 
   // Statistics
   int recompilations;

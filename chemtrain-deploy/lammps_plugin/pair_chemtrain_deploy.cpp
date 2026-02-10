@@ -140,9 +140,20 @@ void ChemtrainDeploy::compute(int eflag, int vflag)
     );
   }
 
+  // Scale the forces
+  if (scale != 1.0) {
+    double **f = atom->f;
+    for (int i = 0; i < inum; i++) {
+      f[i][0] *= scale;
+      f[i][1] *= scale;
+      f[i][2] *= scale;
+    }
+  }
+
+
   // Pass the evaluated potential energy to LAMMPS
   if (eflag) {
-    eng_vdwl = results.potential;
+    eng_vdwl = scale * results.potential;
   }
 
   // TODO: Log additional statistics
@@ -220,7 +231,6 @@ void ChemtrainDeploy::settings(int narg, char **arg)
   if (narg > 1) {
     config.memory_fraction = std::stof(arg[1]);
   }
-
 
   // Initialize the model within XLA
   connector = std::make_unique<jcn::Connector>(config);
@@ -361,4 +371,11 @@ void ChemtrainDeploy::finish()
             min_comp, avg_comp, max_comp, sum_comp,
             min_flops, avg_flops, max_flops, sum_flops
            );
+}
+
+void *ChemtrainDeploy::extract(const char *str, int &dim)
+{
+  dim = 0;
+  if (strcmp(str, "scale") == 0) return (void *) &scale;
+  return nullptr;
 }

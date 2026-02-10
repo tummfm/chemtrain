@@ -193,6 +193,28 @@ def scale_dataset_fractional(positions, reference_box=None, box=None):
         return jax.vmap(scale_fn)(positions)
 
 
+def scale_dataset(dataset, scale_R, scale_U, scale_e, fractional=True):
+    """Scales the dataset from Hartee to kJ/mol and Bohr to nm."""
+
+    box = 10 * (dataset["R"].max() - dataset["R"].min())
+
+    if fractional:
+        dataset['R'] = dataset['R'] / box
+    else:
+        dataset['R'] = dataset['R'] * scale_R
+
+    print(f"Scale dataset by {scale_R} for R and {scale_U} for U.")
+
+    scale_F = scale_U / scale_R
+    dataset['box'] = scale_R * onp.tile(box * onp.eye(3), (dataset['R'].shape[0], 1, 1))
+    dataset['U'] *= scale_U
+    dataset['F'] *= scale_F
+    dataset['charge'] *= scale_e
+    dataset['dipole'] *= scale_e * scale_R
+
+    return dataset
+
+
 def map_dataset(position_dataset,
                 displacement_fn,
                 shift_fn,
@@ -314,7 +336,7 @@ def allocate_neighborlist(dataset,
         box: Either a float specifying the size of the box, an array of
             shape `[spatial_dim]` specifying the box size for a cubic box in
             each spatial dimension, or a matrix of shape
-            `[spatial_dim, spatial_dim]` that is _upper triangular_ and
+            `[spatial_dim, spatial_dim]` that is upper triangular and
             specifies the lattice vectors of the box.
         r_cutoff: A scalar specifying the neighborhood radius.
         capacity_multiplier: A floating point scalar specifying the fractional
@@ -357,11 +379,8 @@ def allocate_neighborlist(dataset,
     # We use the masked neighbor list to avoid interference of masked particles
     # and required neighbor list capacity.
     neighbor_fn = custom_partition.masked_neighbor_list(
-        displacement, box, r_cutoff, dr_threshold=0.0,
-        capacity_multiplier=capacity_multiplier,
-        disable_cell_list=disable_cell_list,
-        fractional_coordinates=fractional_coordinates, format=format,
-        **static_kwargs
+        displacement, r_cutoff, dr_threshold=None,
+        capacity_multiplier=capacity_multiplier, format=format,
     )
 
     assert pairwise_distances, (

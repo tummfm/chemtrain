@@ -15,6 +15,7 @@
 """Custom functions simplifying the handling of fractional coordinates."""
 from typing import Union, Tuple, Callable
 
+import jax
 from jax_md import space, util
 import jax.numpy as jnp
 from jax import vmap
@@ -51,3 +52,49 @@ def init_fractional_coordinates(box: Box) -> Tuple[Box, Callable]:
         return jnp.dot(inv_box, positions.T).T
 
     return box, scale_fn
+
+
+def general_space(box: Box,
+                  periodic: jax.Array,
+                  wrapped: bool = True,
+                  fractional: bool = False) -> space.Space:
+    """TODO
+    """
+
+    def displacement_fn(Ra: jax.Array, Rb: jax.Array, **kwargs):
+        _periodic = kwargs.get('periodic', periodic)
+        _box = kwargs.get('box', box)
+
+        if not fractional:
+            _inv_box = jnp.linalg.inv(_box)
+            Ra = space.transform(_inv_box, Ra)
+            Rb = space.transform(_inv_box, Rb)
+
+        dR = space.pairwise_displacement(Ra, Rb)
+        dR = jnp.where(_periodic, space.periodic_displacement(1.0, dR), dR)
+        dR = space.transform(_box, dR)
+
+        return dR
+
+    if wrapped:
+        def shift_fn(R: jax.Array, dR: jax.Array, **kwargs):
+            _periodic = kwargs.get('periodic', periodic)
+            _box = kwargs.get('box', box)
+            
+            if not fractional:
+                _inv_box = jnp.linalg.inv(_box)
+                R = space.transform(_inv_box, R)
+                dR = space.transform(_inv_box, dR)
+
+            R = jnp.where(_periodic, space.periodic_shift(1.0, R, dR), R + dR)
+            
+            if not fractional:
+                R = space.transform(_box, R)
+            
+            return R
+    else:
+        def shift_fn(R: jax.Array, dR: jax.Array, **kwargs):
+            del kwargs
+            return R + dR
+
+    return displacement_fn, shift_fn

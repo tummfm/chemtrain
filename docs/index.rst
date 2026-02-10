@@ -128,6 +128,7 @@ API Documentation
    :maxdepth: 2
    :titlesonly:
 
+   api/compose/index
    api/data/index
    api/deploy/index
    api/learn/index
@@ -153,6 +154,7 @@ API Documentation
 
 
    jax_md_mod/model/index
+   jax_md_mod/jax_md_mod.custom_electrostatics
    jax_md_mod/jax_md_mod.custom_energy
    jax_md_mod/jax_md_mod.custom_interpolate
    jax_md_mod/jax_md_mod.custom_partition

@@ -32,6 +32,11 @@ from typing import NamedTuple, Tuple
 from . import util
 from ._protobuf import model_pb2 as model_proto
 
+
+# Does not have to be typed
+ListStatistics = typing.Dict
+
+
 @dataclasses.dataclass
 class NeighborList(metaclass=abc.ABCMeta):
     """Abstract class for neighbor list graphs."""
@@ -70,7 +75,8 @@ class NeighborList(metaclass=abc.ABCMeta):
                          valid_mask,
                          newton,
                          *args,
-                         half=True):
+                         half=True
+                         ) -> Tuple["NeighborList", "ListStatistics"]:
         """Creates the neighbor list from inputs to the exported function."""
 
 
@@ -104,7 +110,7 @@ class SimpleSparseNeighborList(NeighborList):
 
     @staticmethod
     def set_properties(proto: model_proto.Model):
-        proto.neighbor_list.type = proto.NeighborListType.SIMPLE_SPARSE
+        proto.neighbor_list.type = model_proto.Model.NeighborListType.SIMPLE_SPARSE
         proto.neighbor_list.half_list = True
 
     @staticmethod
@@ -156,9 +162,12 @@ class SimpleSparseNeighborList(NeighborList):
             graph, ghost_mask
         )
 
-        statistics = NeighborListStatistics(max_neighbors, jnp.sum(~invalid))
+        statistics = NeighborListStatistics(
+            max_neighbors=max_neighbors,
+            overlong=jnp.sum(~invalid)
+        )
 
-        return graph, statistics.tuple
+        return graph, statistics
 
     def to_neighborlist(self):
         idx = jnp.stack([self.senders, self.receivers], axis=0)
@@ -225,7 +234,7 @@ class SimpleDenseNeighborList(NeighborList):
                          ghost_mask,
                          valid_mask,
                          newton,
-                         *args) -> Tuple["SimpleSparseNeighborList",
+                         *args) -> Tuple["SimpleDenseNeighborList",
                                          "NeighborListStatistics"]:
         # Make edges undirected by adding their counterpart
         invalid_idx = species.size
@@ -256,9 +265,12 @@ class SimpleDenseNeighborList(NeighborList):
             graph, ghost_mask
         )
 
-        statistics = NeighborListStatistics(max_edges, max_triplets)
+        statistics = NeighborListStatistics(
+            max_neighbors=max_edges,
+            overlong=max_triplets
+        )
 
-        return graph, statistics.tuple
+        return graph, statistics
 
     def to_neighborlist(self):
         nbrs = partition.NeighborList(
@@ -368,34 +380,17 @@ class DeviceSparseNeighborList(NeighborList):
         return SimpleSparseNeighborList(*graph), (*statistics.tuple, *graph)
 
 
-@dataclasses.dataclass
-class ListStatistics:
-    """Statistics of the neighbor list construction.
-
-    Each neighbor list can return statistics to optimally adapt it to the
-    system. For example, the class:`SimpleSparseNeighborList` returns the
-    maximum number of relevant edges. This number is relevant to efficiently
-    size the neighbor list buffer, which has to be set statically in JAX.
-    """
-
-    @property
-    def tuple(self):
-        return dataclasses.astuple(self)
-
-
-@dataclasses.dataclass
-class DeviceListStatistics(ListStatistics):
+class DeviceListStatistics(typing.TypedDict, total=True):
     """Statistics for the :class:`DeviceSparseNeighborList`."""
-    min_cell_capacity: int
-    cell_too_small: int
-    max_neighbors: int
+    min_cell_capacity: typing.Required[int]
+    cell_too_small: typing.Required[int]
+    max_neighbors: typing.Required[int]
 
 
-@dataclasses.dataclass
-class NeighborListStatistics(ListStatistics):
+class NeighborListStatistics(typing.TypedDict, total=True):
     """Statistics for the :class:`SimpleSparseNeighborList`."""
-    max_neighbors: int
-    overlong: int
+    max_neighbors: typing.Required[int]
+    overlong: typing.Optional[int]
 
 
 @jax.jit
@@ -643,8 +638,9 @@ def prune_neighbor_list(list, local, max_edges, nbr_order: int, half_list: bool 
     # the environment. We need the correct energy even for some ghost atoms
     # to compute forces without communication between domains.
     reachable, _ = lax.scan(_update, local, jnp.arange(nbr_order))
-
     mask = reachable[list.senders] & reachable[list.receivers]
+    mask &= (list.senders < local.size) & (list.receivers < local.size)
+
     senders = jnp.where(mask, list.senders, local.size)
     receivers = jnp.where(mask, list.receivers, local.size)
     n_valid = jnp.sum(mask)
@@ -694,16 +690,3 @@ def prune_neighbor_list_dense(list, local, nbr_order: int):
     max_triplets = jnp.sum(nbrs_per_atom * (nbrs_per_atom - 1))
 
     return list.set(nbrs=nbrs), (max_edges, max_triplets)
-
-
-
-if __name__ == "__main__":
-
-    senders = jnp.asarray([0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 0, 2])
-    receivers = jnp.asarray([1, 0, 2, 1, 3, 2, 4, 3, 5, 4, 2, 0])
-
-    list = SimpleSparseNeighborList(senders, receivers, jnp.ones(senders.size))
-
-    print(prune_neighbor_list(list, jnp.asarray([1, 0, 0, 0, 0, 0], dtype=bool), 10, 1))
-
-

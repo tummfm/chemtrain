@@ -15,6 +15,7 @@
 """Functions for io: Loading data to and from Jax M.D."""
 import jax.numpy as jnp
 import mdtraj
+from mdtraj import utils as mdtraj_utils
 import numpy as onp
 
 from typing import Union, List, Any
@@ -42,9 +43,15 @@ def load_box(filename, frame=-1, top=None):
     traj = mdtraj.load(filename, top=top)
     coordinates = traj.xyz[frame]
 
-    box = traj.unitcell_lengths
-    if box is not None:
-        box = jnp.asarray(box[frame])
+    lengths = traj.unitcell_lengths[frame]
+    angles = traj.unitcell_angles[frame]
+
+    if angles is not None:
+        vectors = mdtraj_utils.unitcell.lengths_and_angles_to_box_vectors(
+            *lengths, *angles)
+        box = jnp.stack(vectors, axis=-1)
+    elif lengths is not None:
+        box = jnp.asarray(lengths)
 
     species = onp.zeros(coordinates.shape[0])
     masses = onp.zeros_like(species)

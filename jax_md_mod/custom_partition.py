@@ -1,3 +1,4 @@
+# Copyright 2019 Google LLC
 # Copyright 2023 Multiscale Modeling of Fluid Materials, TU Munich
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,17 +16,18 @@
 """Custom functions to analyze the neighborlist graph."""
 import importlib
 import warnings
-from typing import Union, Tuple, Callable
+from typing import Union
 
 import functools
 
 import jax
 import jax.numpy as jnp
-from jax import Array
+from jax import Array, export
 
 import numpy as onp
 
-from jax_md import partition
+from jax_md import partition, space
+from jax_md_mod.model import sparse_graph
 
 
 def mask_dense(idx, mask=None):
@@ -47,62 +49,6 @@ def mask_dense(idx, mask=None):
     )
 
     return jnp.where(total_mask, idx.shape[0], idx)
-
-
-@functools.wraps(partition.neighbor_list)
-def masked_neighbor_list(displacement_or_metric,
-                         box,
-                         r_cutoff: float,
-                         dr_threshold: float = 0.0,
-                         capacity_multiplier: float = 1.25,
-                         disable_cell_list: bool = True,
-                         fractional_coordinates: bool = False,
-                         format = partition.NeighborListFormat.Dense,
-                         **static_kwargs) -> partition.NeighborFn:
-    """Extension of JAX, M.D. neighbor list with masking functionality."""
-
-    if dr_threshold > 0.0:
-        warnings.warn(
-            "Mask will only be applied if neighbor list must be re-computed. "
-            "Setting a too high threshold might lead to unexpected behavior."
-        )
-
-    def custom_neighbor_list_fn(mask=None):
-        # Enforce neighbor list re-computation if mask changes
-        neighbor_fns = partition.neighbor_list(
-            displacement_or_metric,
-            box,
-            r_cutoff,
-            dr_threshold,
-            capacity_multiplier,
-            disable_cell_list,
-            True,
-            custom_mask_function=functools.partial(mask_dense, mask=mask),
-            fractional_coordinates=fractional_coordinates,
-            format=format,
-            **static_kwargs
-        )
-
-        return neighbor_fns
-
-    # Ensure that the neighbor list calls the correct (modified) update function
-    def init_neighbor_fn(position, extra_capacity: int = 0, mask=None, **kwargs):
-        if mask is not None:
-            position = jnp.where(mask[:, jnp.newaxis], position, 0.0)
-
-        nbrs = custom_neighbor_list_fn(mask).allocate(position, extra_capacity=extra_capacity, **kwargs)
-        # Explicitely set the update function that modifies the mask function
-        return nbrs.set(update_fn=update_neighbor_fn)
-
-    @jax.jit
-    def update_neighbor_fn(position, nbrs, mask=None, **kwargs):
-        if mask is not None:
-            position = jnp.where(mask[:, jnp.newaxis], position, 0.0)
-
-        nbrs = custom_neighbor_list_fn(mask).update(position, neighbors=nbrs, **kwargs)
-        return nbrs.set(update_fn=update_neighbor_fn)
-
-    return partition.NeighborListFns(init_neighbor_fn, update_neighbor_fn)
 
 
 def mask_neighbor_list(nbrs: partition.NeighborList,
@@ -140,6 +86,184 @@ def mask_neighbor_list(nbrs: partition.NeighborList,
     return nbrs.set(idx=new_idx, reference_position=new_position)
 
 
+def masked_neighbor_list(displacement_or_metric,
+                         r_cutoff: float,
+                         dr_threshold: Union[float, None] = None,
+                         capacity_multiplier: float = 1.25,
+                         format = partition.NeighborListFormat.Dense,
+                         ) -> partition.NeighborFn:
+    """Returns a function that builds a list neighbors for collections of points.
+
+    Adapts the JAX, M.D. neighbor list :func:`jax_md.partition.neighbor_list`
+    to allow for masking and to enforce rebuilding of the neighbor list.
+
+    Args:
+      displacement_or_metric: A function `d(R_a, R_b)` that computes the displacement
+          between pairs of points.
+      r_cutoff: A scalar specifying the neighborhood radius.
+      dr_threshold: A scalar specifying the maximum distance particles can move
+          before rebuilding the neighbor list. If specified to None, the neighbor
+          list will always be rebuilt.
+      capacity_multiplier: A floating point scalar specifying the fractional
+          increase in maximum neighborhood occupancy we allocate compared with the
+          maximum in the example positions.
+      format: The format of the neighbor list; see the :meth:`NeighborListFormat` enum
+        for details about the different choices for formats. Defaults to `Dense`.
+
+    Returns:
+        A NeighborListFns object that contains a method to allocate a new neighbor
+        list and a method to update an existing neighbor list.
+    """
+    always_recompute = dr_threshold is None
+    if always_recompute:
+        dr_threshold = 0.0
+
+    partition.is_format_valid(format)
+    r_cutoff = jax.lax.stop_gradient(r_cutoff)
+    dr_threshold = jax.lax.stop_gradient(dr_threshold)
+
+    cutoff = r_cutoff + dr_threshold
+    cutoff_sq = cutoff ** 2
+    threshold_sq = (dr_threshold / partition.f32(2)) ** 2
+    metric_sq = partition._displacement_or_metric_to_metric_sq(displacement_or_metric)
+
+    @functools.partial(jax.jit, static_argnums=0)
+    def candidate_fn(positionShape) -> Array:
+        candidates = jnp.arange(positionShape[0])
+        return jnp.broadcast_to(candidates[None, :],
+                                (positionShape[0], positionShape[0]))
+
+    @jax.jit
+    def mask_self_fn(idx: Array) -> Array:
+        self_mask = idx == jnp.reshape(jnp.arange(idx.shape[0], dtype=partition.i32),
+                                       (idx.shape[0], 1))
+        return jnp.where(self_mask, idx.shape[0], idx)
+
+    @jax.jit
+    def prune_neighbor_list_dense(position: Array, idx: Array, **kwargs
+                                  ) -> Array:
+        d = functools.partial(metric_sq, **kwargs)
+        d = space.map_neighbor(d)
+
+        N = position.shape[0]
+        neigh_position = position[idx]
+        dR = d(position, neigh_position)
+
+        mask = (dR < cutoff_sq) & (idx < N)
+        out_idx = N * jnp.ones(idx.shape, partition.i32)
+
+        cumsum = jnp.cumsum(mask, axis=1)
+        index = jnp.where(mask, cumsum - 1, idx.shape[1] - 1)
+        p_index = jnp.arange(idx.shape[0])[:, None]
+        out_idx = out_idx.at[p_index, index].set(idx)
+        max_occupancy = jnp.max(cumsum[:, -1])
+
+        return out_idx, max_occupancy
+
+    @jax.jit
+    def prune_neighbor_list_sparse(position: Array, idx: Array, **kwargs
+                                   ) -> Array:
+        d = functools.partial(metric_sq, **kwargs)
+        d = space.map_bond(d)
+
+        N = position.shape[0]
+        sender_idx = jnp.broadcast_to(jnp.arange(N)[:, None], idx.shape)
+
+        sender_idx = jnp.reshape(sender_idx, (-1,))
+        receiver_idx = jnp.reshape(idx, (-1,))
+        dR = d(position[sender_idx], position[receiver_idx])
+
+        mask = (dR < cutoff_sq) & (receiver_idx < N)
+        if format is partition.NeighborListFormat.OrderedSparse:
+            mask = mask & (receiver_idx < sender_idx)
+
+        out_idx = N * jnp.ones(receiver_idx.shape, partition.i32)
+
+        cumsum = jnp.cumsum(mask)
+        index = jnp.where(mask, cumsum - 1, len(receiver_idx) - 1)
+        receiver_idx = out_idx.at[index].set(receiver_idx)
+        sender_idx = out_idx.at[index].set(sender_idx)
+        max_occupancy = cumsum[-1]
+
+        return jnp.stack((receiver_idx, sender_idx)), max_occupancy
+
+    def neighbor_list_fn(position: Array,
+                         neighbors = None,
+                         extra_capacity: int = 0,
+                         **kwargs) -> partition.NeighborList:
+        N = position.shape[0]
+        mask = kwargs.get("mask", jnp.ones(N, dtype=jnp.bool_))
+        position = jnp.where(mask[:, jnp.newaxis], position, jnp.inf)
+        def neighbor_fn(position_and_error, max_occupancy=None):
+            position, err = position_and_error
+            idx = candidate_fn(position.shape)
+            idx = mask_dense(idx, mask=mask)
+
+            if partition.is_sparse(format):
+                idx, occupancy = prune_neighbor_list_sparse(position, idx, **kwargs)
+            else:
+                idx, occupancy = prune_neighbor_list_dense(position, idx, **kwargs)
+
+            if max_occupancy is None:
+                _extra_capacity = (extra_capacity if not partition.is_sparse(format)
+                                   else N * extra_capacity)
+                max_occupancy = int(occupancy * capacity_multiplier + _extra_capacity)
+                if max_occupancy > idx.shape[-1]:
+                    max_occupancy = idx.shape[-1]
+                if not partition.is_sparse(format):
+                    capacity_limit = N - 1
+                elif format is partition.NeighborListFormat.Sparse:
+                    capacity_limit = N * (N - 1)
+                else:
+                    capacity_limit = N * (N - 1) // 2
+                if max_occupancy > capacity_limit:
+                    max_occupancy = capacity_limit
+            idx = idx[:, :max_occupancy]
+            update_fn = (neighbor_list_fn if neighbors is None else
+                         neighbors.update_fn)
+            return partition.NeighborList(
+                idx,
+                position,
+                err.update(partition.PEC.NEIGHBOR_LIST_OVERFLOW, occupancy > max_occupancy),
+                None,
+                max_occupancy,
+                format,
+                None,
+                None,
+                update_fn)  # pytype: disable=wrong-arg-count
+
+        nbrs = neighbors
+        if nbrs is None:
+            return neighbor_fn((position, partition.PartitionError(jnp.zeros((), jnp.uint8))))
+
+        neighbor_fn = functools.partial(neighbor_fn, max_occupancy=nbrs.max_occupancy)
+
+        d = functools.partial(metric_sq, **kwargs)
+        d = jax.vmap(d)
+
+        if always_recompute:
+            print(f"Always recompute the neighbor list!")
+            return neighbor_fn((position, nbrs.error))
+        else:
+            return jax.lax.cond(
+                jnp.logical_or(
+                    jnp.any(d(position, nbrs.reference_position) > threshold_sq),
+                    jnp.any(jnp.logical_xor(position == jnp.inf, nbrs.reference_position == jnp.inf))
+                ),
+                (position, nbrs.error), neighbor_fn,
+                nbrs, lambda x: x)
+
+    def allocate_fn(position: Array, extra_capacity: int = 0, **kwargs
+                    ):
+        return neighbor_list_fn(position, extra_capacity=extra_capacity, **kwargs)
+
+    def update_fn(position: Array, neighbors, **kwargs
+                  ):
+        return neighbor_list_fn(position, neighbors, **kwargs)
+
+    return partition.NeighborListFns(allocate_fn, update_fn)  # pytype: disable=wrong-arg-count
+
+
 def exclude_from_neighbor_list(neighbor: partition.NeighborList,
                                exclude_idx,
                                exclude_mask) -> partition.NeighborList:
@@ -166,7 +290,7 @@ def exclude_from_neighbor_list(neighbor: partition.NeighborList,
 
         >>> displacement_fn, shift_fn = space.periodic_general(box, fractional_coordinates=True)
         >>> neighbor_fns = masked_neighbor_list(
-        ...     displacement_fn, box, r_cutoff=1.0, dr_threshold=0.05, disable_cell_list=False
+        ...     displacement_fn, r_cutoff=1.0, dr_threshold=0.05,
         ... )
 
         We can now exclude, e.g., the first C atom from the neighbor list
@@ -410,3 +534,138 @@ def to_networkx(neighbor: partition.NeighborList):
             graph.add_edge(int(i), int(j))
 
     return graph
+
+
+def test_graph_statistics(displacement_fn: space.DisplacementFn,
+                          position: Array,
+                          neighbor: partition.NeighborList,
+                          r_cutoff: Union[float, Array],
+                          max_edge_multiplier: float = 1.5,
+                          ):
+    """Computes neighbor list statistics for test conformation.
+
+    Args:
+        displacement_fn: Displacement function
+        position: Particle position for a representative configuration
+        neighbor: Neighbor list for a representative configuration
+        r_cutoff: Cutoff radius of edges.
+        max_edge_multiplier: Multiplier to increase maximum number of edges
+            based on edges found in representative configuration.
+
+    Returns:
+        Returns a tuple of average number of neighbors and maximum number of
+        edges.
+
+    """
+
+    # Checking only necessary if neighbor list is dense
+    if neighbor.format == partition.Dense:
+        print('Capping edges and triplets. Beware of overflow, which is '
+              'currently not being detected.')
+
+        testgraph, _ = sparse_graph.sparse_graph_from_neighborlist(
+            displacement_fn, position, neighbor, r_cutoff)
+        max_edges = jnp.int32(jnp.ceil(testgraph.n_edges * max_edge_multiplier))
+
+        # cap maximum edges and angles to avoid overflow from multiplier
+        n_particles, n_neighbors = neighbor.idx.shape
+        max_edges = min(max_edges, n_particles * n_neighbors)
+
+        print(f"Estimated max. {max_edges} edges.")
+
+        avg_num_neighbors = testgraph.n_edges / n_particles
+    else:
+        n_particles = neighbor.reference_position.shape[0]
+        max_edges = neighbor.idx.shape[0]
+        avg_num_neighbors = onp.sum(neighbor.idx[0] < n_particles)
+        avg_num_neighbors /= n_particles
+
+    return avg_num_neighbors, max_edges
+
+
+def readout_vectors(displacement_fn: space.DisplacementFn,
+                    r_cutoff: Union[float, Array],
+                    position: Array,
+                    neighbor: partition.NeighborList,
+                    species: Array = None,
+                    mask: Array = None,
+                    max_edges = None,
+                    edges_per_particle: float = None,
+                    **kwargs
+                    ):
+    """Computes neighbor list statistics for test conformation.
+
+    Args:
+        displacement_fn: Displacement function
+        r_cutoff: Cutoff radius of edges.
+        position: Particle position for a representative configuration
+        neighbor: Neighbor list for a representative configuration
+        species: Species of atoms.
+        mask: Mask indicating whether particles are real or padded.
+        max_edges: Maximum number of edges to consider.
+        edges_per_particle: Limit the number of edges to a value proportional
+            to the number of particles.
+        kwargs: Keyword arguments passed to the displacement function.
+
+    Returns:
+        Returns the extracted vectors, senders, and receivers.
+
+    """
+    dyn_displacement = functools.partial(displacement_fn, **kwargs)
+
+    if edges_per_particle is not None:
+        if max_edges is not None:
+            raise ValueError(
+                "Either edges_per_particle or max_edges can be specified, not both."
+            )
+        
+        # Restrict to two digits after the decimal point. This step is required
+        # because JAX symbolic dimensions support only integer operations.
+        factor = int(edges_per_particle * 1000)
+        gcd = onp.gcd(factor, 1000)
+        max_edges = (factor // gcd) * position.shape[0] // (1000 // gcd)
+
+        print(f"Limit the maximum number of edges to {max_edges} "
+              f"({factor // gcd} / {1000 // gcd} edges per particle).")
+
+
+    if species is None:
+        species = jnp.ones(position.shape[0], dtype=jnp.int32)
+    if mask is None:
+        mask = jnp.ones(position.shape[0], dtype=jnp.bool_)
+
+    if max_edges is not None and export.is_symbolic_dim(position.shape[0]):
+        if not export.is_symbolic_dim(max_edges):
+            raise TypeError(
+            "max_edges must be symbolic if used in export."
+        )
+
+    if neighbor.format == partition.Dense:
+        graph, _ = sparse_graph.sparse_graph_from_neighborlist(
+            dyn_displacement, position, neighbor, r_cutoff,
+            species, max_edges=max_edges, species_mask=mask
+        )
+        senders = graph.idx_i
+        receivers = graph.idx_j
+    else:
+        assert neighbor.idx.shape == (
+        2, neighbor.idx.shape[1]), "Neighbor list has wrong shape."
+        senders, receivers = neighbor.idx
+
+    # Set invalid edges to the cutoff to avoid numerical issues
+    vectors = jax.vmap(dyn_displacement)(position[senders], position[receivers])
+    vectors = jnp.where(
+        jnp.logical_and(
+            jnp.logical_and(senders < position.shape[0], mask[senders]),
+            jnp.logical_and(receivers < position.shape[0], mask[senders])
+        )[:, jnp.newaxis], vectors, r_cutoff)
+
+    if max_edges is not None:
+        # Sort vectors by length and remove up to max_edges edges
+        lengths = jnp.linalg.norm(vectors, axis=-1)
+        sort_idx = jnp.argsort(lengths)
+        vectors = vectors[sort_idx][:max_edges]
+        senders = senders[sort_idx][:max_edges]
+        receivers = receivers[sort_idx][:max_edges]
+
+    return vectors, senders, receivers

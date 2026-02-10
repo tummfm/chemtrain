@@ -636,7 +636,8 @@ class Topology:
         angle_idx = angle_idx[mask]
 
         dihedral_idx, species, mask = self.get_dihedrals()
-        mask = onp.logical_and(mask, force_field.get_dihedral_params(*species.T)[1])
+        ff_mask = force_field.get_dihedral_params(*species.T)[1]
+        mask = onp.logical_and(mask, ff_mask.any(axis=1))
         dihedral_idx = dihedral_idx[mask]
 
         top = Topology(
