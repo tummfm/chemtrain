@@ -16,9 +16,6 @@ limitations under the License.
 
 #include <string>
 
-#include "xla/service/hlo_parser.h"
-#include "xla/client/xla_computation.h"
-
 #include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
@@ -51,6 +48,8 @@ limitations under the License.
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/dialect/Version.h"
 #include "stablehlo/transforms/Passes.h"
+
+#include "xla/xla_data.pb.h"
 
 #include "absl/types/span.h"
 
@@ -90,7 +89,6 @@ namespace jcn {
         mlir::MLIRContext export_context;
 
         std::string mlir_module;
-
         mlir::OwningOpRef<mlir::ModuleOp> module_ref;
     };
 }

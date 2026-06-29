@@ -58,7 +58,7 @@ namespace jcn {
         virtual void initialize(std::vector<float> multiplier) = 0;
 
         virtual NeighborListShapes get_neighbor_list_shapes(
-            int max_atoms, int inum, int* numneigh,
+            int max_atoms, int inum, int* ilist, int* numneigh,
             bool check_buffers) = 0;
 
         virtual std::vector<xla::PjRtBuffer*> build_graph(
@@ -102,6 +102,8 @@ namespace jcn {
              *
              * @param max_atoms: The maximum number of atoms in the system.
              * @param inum: The number of local atoms.
+             * @param ilist: Array holding the atom indices included in the
+             *     neighbor list.
              * @param numneigh: Array holding the number of neighbors for each
              *     atom.
              *
@@ -109,7 +111,7 @@ namespace jcn {
              *     dimensions.
              */
             NeighborListShapes get_neighbor_list_shapes(
-                int max_atoms, int inum, int* numneigh,
+                int max_atoms, int inum, int* ilist, int* numneigh,
                 bool check_buffers) override;
 
             /**
@@ -180,6 +182,8 @@ namespace jcn {
              *
              * @param max_atoms: The maximum number of atoms in the system.
              * @param inum: The number of local atoms.
+             * @param ilist: Array holding the atom indices included in the
+             *     neighbor list.
              * @param numneigh: Array holding the number of neighbors for each
              *     atom.
              *
@@ -187,7 +191,7 @@ namespace jcn {
              *     dimensions.
              */
             NeighborListShapes get_neighbor_list_shapes(
-                int max_atoms, int inum, int* numneigh,
+                int max_atoms, int inum, int* ilist, int* numneigh,
                 bool check_buffers) override;
 
             /**
@@ -257,6 +261,8 @@ namespace jcn {
              *
              * @param max_atoms: The maximum number of atoms in the system.
              * @param inum: The number of local atoms.
+             * @param ilist: Array holding the atom indices included in the
+             *     neighbor list.
              * @param numneigh: Array holding the number of neighbors for each
              *     atom.
              *
@@ -264,7 +270,7 @@ namespace jcn {
              *     dimensions.
              */
             NeighborListShapes get_neighbor_list_shapes(
-                int max_atoms, int inum, int* numneigh,
+                int max_atoms, int inum, int* ilist, int* numneigh,
                 bool check_buffers) override;
 
             /**

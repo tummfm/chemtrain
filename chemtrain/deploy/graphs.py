@@ -623,12 +623,15 @@ def prune_neighbor_list(list, local, max_edges, nbr_order: int, half_list: bool 
     list = list.set(senders=senders, receivers=receivers)
 
     def _update(reachable, _):
-        # Send reachable messages to neighbors. May should act like a logical
-        # any
-        reachable |= jax.ops.segment_max(
+        # Pruning is deliberately independent of a model's aggregation
+        # convention. Some models aggregate source -> receiver, while others
+        # scatter onto the first endpoint. Expand through both endpoints, but
+        # preserve the original directed edges passed to the model.
+        reachable_from_receivers = jax.ops.segment_max(
+            reachable[list.receivers], list.senders, reachable.size)
+        reachable_from_senders = jax.ops.segment_max(
             reachable[list.senders], list.receivers, reachable.size)
-        # jax.debug.print("Update {} with {} -> {}", list.senders, reachable[list.senders], list.receivers)
-        # jax.debug.print("After update: {}", reachable)
+        reachable |= reachable_from_receivers | reachable_from_senders
         return reachable, _
 
     # Non-newton case:

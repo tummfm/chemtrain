@@ -33,6 +33,12 @@ namespace jcn {
      * Adapted from https://github.com/openxla/xla/blob/ee9ee727b533dbd14698c9eda979a8c83ed86e11/xla/pjrt/pjrt_stream_executor_client.cc#L1699
      */
     std::unique_ptr<xla::PjRtBuffer> create_buffer(xla::PjRtClient* client, int device_id, xla::Literal* literal) {
+        absl::StatusOr<xla::PjRtMemorySpace *> memory_space = client->addressable_devices()[device_id]->default_memory_space();
+        
+        if (!memory_space.ok()) {
+            throw std::runtime_error("Failed to get memory space: " + memory_space.status().ToString());
+        }
+
         absl::StatusOr<std::unique_ptr<xla::PjRtBuffer>> input_buffer = client->BufferFromHostBuffer(
             literal->untyped_data(),
             literal->shape().element_type(),
@@ -40,7 +46,8 @@ namespace jcn {
             std::optional<absl::Span<int64_t const>>{},
             xla::PjRtClient::HostBufferSemantics::kImmutableZeroCopy,
             []() { /* frees literal */ },
-            client->addressable_devices()[device_id]
+            memory_space.value(),
+            nullptr
         );
 
         if (!input_buffer.ok()) {

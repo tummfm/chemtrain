@@ -3,11 +3,29 @@ import os
 import pathlib
 import sys
 
-if len(sys.argv) > 1:
-    os.environ["CUDA_VISIBLE_DEVICES"] = sys.argv[1]
+
+parser = argparse.ArgumentParser()
+parser.add_argument("device", type=str, nargs="?", default=None)
+parser.add_argument("--epochs", type=int, default=2)
+parser.add_argument("--batch", type=int, default=32)
+parser.add_argument("--async_dataloading", type=bool, action=argparse.BooleanOptionalAction, default=False)
+parser.add_argument("--numpy_loader", type=bool, action=argparse.BooleanOptionalAction, default=False)
+parser.add_argument("--disable_cue", type=bool, default=False)
+parser.add_argument("--outdir", type=str, default="./output")
+args = parser.parse_args()
+
+if args.device is not None and args.device != "-1":
+    # If the caller (e.g. mpirun) already set CUDA_VISIBLE_DEVICES,
+    # do not override it.
+    os.environ.setdefault("CUDA_VISIBLE_DEVICES", args.device)
+
+if "CUDA_VISIBLE_DEVICES" in os.environ:
+    print(f"CUDA_VISIBLE_DEVICES={os.environ['CUDA_VISIBLE_DEVICES']}")
 
 os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.95"
 
+import h5py
+import jax_sgmc
 import numpy as onp
 
 import jax
@@ -23,7 +41,10 @@ from cycler import cycler
 
 from collections import OrderedDict
 
-from chemtrain.data import preprocessing
+import chemtrain
+chemtrain.config.update(async_dataloading=args.async_dataloading)
+
+from chemtrain.data import preprocessing, data_loaders
 from chemtrain.deploy import exporter, graphs
 from chemtrain.compose import mace_jax as mace_jax_compose
 
@@ -35,19 +56,12 @@ from mace_jax.modules.wrapper_ops import CuEquivarianceConfig
 
 
 def get_default_config():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("device", type=str, default="-1")
-    parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--batch", type=int, default=32)
-    parser.add_argument("--disable_cue", type=bool, default=False)
-    args = parser.parse_args()
-
     print(f"Run on device {args.device}")
 
     return OrderedDict(
         optimizer=OrderedDict(
             init_lr=1e-5,
-            lr_decay=1e-2,
+            lr_decay=1e-1,
             epochs=args.epochs,
             batch=args.batch,
             cache=100,
@@ -69,7 +83,7 @@ def get_default_config():
                 "DES",
             ],
             total_charge='total_charge', # Use all samples if commented out
-            max_samples=1000 # Use all samples if commented out
+            max_samples=10000 # Use all samples if commented out
         ),
         gammas=OrderedDict(
             U=1e-3,
@@ -77,12 +91,13 @@ def get_default_config():
             F=1e-2,
         ),
         disable_cue=args.disable_cue,
+        out_dir=args.outdir,
     )
 
 def main():
 
     config = get_default_config()
-    out_dir = pathlib.Path("./output")
+    out_dir = pathlib.Path(args.outdir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     dataset, info = spice.download_spice(
@@ -173,7 +188,7 @@ def main():
 
     trainer_fm = trainers.ForceMatching(
         init_params, optimizer, energy_fn_template, nbrs_init,
-        batch_per_device=config["optimizer"]["batch"] // len(jax.devices()),
+        batch=config["optimizer"]["batch"],
         batch_cache=config["optimizer"]["cache"],
         gammas=config["gammas"],
         weights_keys={
@@ -181,12 +196,38 @@ def main():
         },
     )
 
-    trainer_fm.set_dataset(
-        dataset['training'], stage='training')
-    trainer_fm.set_dataset(
-        dataset['validation'], stage='validation', include_all=True)
-    trainer_fm.set_dataset(
-        dataset['testing'], stage='testing', include_all=True)
+    if args.numpy_loader:
+        with h5py.File("../../../../datasets/spice/training.h5", "r") as f:
+            trainer_fm.set_dataset(
+                {k: onp.asarray(f[k]) for k in f.keys()},
+                stage='training'
+            )
+
+        with h5py.File("../../../../datasets/spice/validation.h5", "r") as f:
+            trainer_fm.set_dataset(
+                {k: onp.asarray(f[k]) for k in f.keys()},
+                stage='validation', include_all=True
+            )
+
+        with h5py.File("../../../../datasets/spice/testing.h5", "r") as f:
+            trainer_fm.set_dataset(
+                {k: onp.asarray(f[k]) for k in f.keys()},
+                stage='testing', include_all=True
+            )
+
+    else:
+        trainer_fm.set_loader(
+            data_loaders.HDF5ParallelDataLoader("../../../../datasets/spice/training.h5"),
+            stage='training'
+        )
+        trainer_fm.set_loader(
+            data_loaders.HDF5ParallelDataLoader("../../../../datasets/spice/validation.h5"),
+            stage='validation', include_all=True
+        )
+        trainer_fm.set_loader(
+            data_loaders.HDF5ParallelDataLoader("../../../../datasets/spice/testing.h5"),
+            stage='testing', include_all=True
+        )
 
     # Train and save the results to a new folder
     trainer_fm.train(config["optimizer"]["epochs"], checkpoint_freq=10)
@@ -194,14 +235,14 @@ def main():
     plot_convergence(trainer_fm, out_dir)
 
 
-    test_predictions = trainer_fm.predict(dataset['testing'],
-                                          batch_size=config["optimizer"][
-                                                         "batch"] // len(
-                                              jax.devices()))
-    train_predictions = trainer_fm.predict(dataset['training'],
-                                           batch_size=config["optimizer"][
-                                                          "batch"] // len(
-                                               jax.devices()))
+    test_predictions = trainer_fm.predict(
+        dataset['testing'],
+        batch_size=config["optimizer"]["batch"],
+    )
+    train_predictions = trainer_fm.predict(
+        dataset['training'],
+        batch_size=config["optimizer"]["batch"],
+    )
     validation_predictions = trainer_fm.predict(
         dataset["validation"], trainer_fm.best_params,
         batch_size=config["optimizer"]["batch"],
@@ -287,9 +328,8 @@ def init_optimizer(config, dataset, key="optimizer"):
     else:
         exit()
 
-    transition_steps = int(
-        config[key]["epochs"] * num_samples
-    ) // config[key]["batch"]
+    global_batch = int(config[key]["batch"])
+    transition_steps = int(config[key]["epochs"] * num_samples) // global_batch
 
     if config[key].get("power") == "exponential":
         lr_schedule_fm = optax.exponential_decay(

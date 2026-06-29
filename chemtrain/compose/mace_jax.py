@@ -23,18 +23,26 @@
 
 """Loads a MACE model from PyTorch via MACE-JAX."""
 
+import functools
+
 from typing import Dict, Any, Tuple, Callable
 
 import jax
 import jax.numpy as jnp
+from flax import nnx
 
 from e3nn_jax import Irreps
 
 from jax_md_mod import custom_partition
 from jax_md import space, partition
 
-from mace_jax.modules.wrapper_ops import CuEquivarianceConfig
+from mace_jax.modules.wrapper_ops import (
+    CuEquivarianceConfig,
+    EquivarianceConfig,
+    resolve_equivariance_config,
+)
 from mace_jax.modules import models as mace_jax_models
+from mace_jax.nnx_config import ConfigDict, ConfigVar
 
 from mace_jax.cli import mace_jax_from_torch
 import torch
@@ -48,110 +56,162 @@ from mace_jax.tools.model_builder import (
 )
 
 
-class JaxMACE(mace_jax_models.ScaleShiftMACE):
-    """MACE-JAX model matching chemtrain's expected __call__ signature."""
+def _variable_value(value):
+    """Read an NNX variable value across Flax versions."""
+    get_value = getattr(value, "get_value", None)
+    if callable(get_value):
+        return get_value()
+    return value.value
 
-    def __call__(
-        self,
-        vectors,  # [n_edges, 3]
-        senders,  # [n_edges]
-        receivers,  # [n_edges]
-        species,  # [n_nodes]
-        mask,  # [n_nodes]
-        *,
-        num_species: int,
-    ) -> jnp.ndarray:
-        batch = jnp.zeros(species.shape, dtype=jnp.int32)
 
-        num_atoms_arange = jnp.arange(species.size)
-        # TODO: How to deal with "heads"?
-        node_heads = jnp.zeros_like(batch)
+def _extract_nnx_value(value):
+    """Convert NNX variables to JAX pytrees while preserving config semantics."""
+    if isinstance(value, ConfigVar):
+        raw = _variable_value(value)
+        # Dict-valued ConfigVars are model configuration, not nested state.
+        # ConfigDict keeps them as a single registered pytree object.
+        if isinstance(raw, dict) and not isinstance(raw, ConfigDict):
+            return ConfigDict(raw)
+        return raw
+    if isinstance(value, nnx.Variable):
+        return _variable_value(value)
+    return value
 
-        # Data defines the following:
-        #
-        # 'node_attrs': one-hot encoding of species -> encoding of chemtrain type species
-        # 'node_attrs_index': class label of species -> chemtrain type species
-        # 'edge_index': [2, n_edges] array of senders and receivers
-        #
-        # For more detauls on deriving data from a graph, see
-        # https://github.com/ACEsuit/mace-jax/blob/7e9d467d1701290b6606a20ff2c625c27e973254/mace_jax/tools/gin_model.py#L234
 
-        lengths = jnp.linalg.norm(vectors, axis=-1, keepdims=True)
-        edge_index = jnp.stack([senders, receivers], axis=0)
-        node_attrs = jax.nn.one_hot(
-            species,
-            num_classes=num_species,
-            dtype=vectors.dtype,
+def _state_to_legacy_variables(state):
+    """Map MACE-JAX's NNX State back to Chemtrain's old variables dict.
+
+    Chemtrain training code expects trainable weights under variables["params"].
+    Newer MACE-JAX returns one flat NNX State, so split out Param leaves and
+    keep all other state/config entries visible at the top level as before.
+    The Param subtree itself is also reshaped to the historical MACE-JAX
+    grouping used by saved Chemtrain pickles, e.g. interactions_0 instead of
+    interactions[0].
+    """
+    if not isinstance(state, nnx.State):
+        return state
+
+    params_state, nonparam_state = nnx.split_state(state, nnx.Param, ...)
+    params = _nnx_params_to_legacy_params(
+        nnx.to_pure_dict(params_state, extract_fn=_extract_nnx_value)
+    )
+    nonparams = nnx.to_pure_dict(nonparam_state, extract_fn=_extract_nnx_value)
+
+    if "params" in nonparams:
+        raise ValueError("MACE-JAX non-param state contains reserved key 'params'.")
+
+    return {"params": params, **nonparams}
+
+
+def _nnx_params_to_legacy_params(params):
+    """Expose NNX module-list params like old Chemtrain MACE-JAX params."""
+    if not isinstance(params, dict):
+        return params
+
+    legacy = {
+        key: value
+        for key, value in params.items()
+        if key not in ("interactions", "products", "readouts")
+    }
+
+    interactions = params.get("interactions")
+    if isinstance(interactions, dict):
+        interaction_indices = sorted(idx for idx in interactions if isinstance(idx, int))
+        legacy["interactions"] = {
+            str(idx): {"conv_tp_weights": {}}
+            for idx in interaction_indices
+        }
+        for idx in interaction_indices:
+            value = interactions[idx]
+            legacy[f"interactions_{idx}"] = _legacy_layer_names(value)
+
+    for group_name in ("products", "readouts"):
+        group = params.get(group_name)
+        if isinstance(group, dict):
+            for idx in sorted(idx for idx in group if isinstance(idx, int)):
+                value = group[idx]
+                legacy[f"{group_name}_{idx}"] = value
+
+    return legacy
+
+
+def _legacy_params_to_nnx_params(params):
+    """Accept old saved MACE-JAX params and rebuild the NNX apply tree."""
+    if not isinstance(params, dict):
+        return params
+
+    nnx_params = {
+        key: value
+        for key, value in params.items()
+        if not (
+            key == "interactions"
+            or key.startswith("interactions_")
+            or key.startswith("products_")
+            or key.startswith("readouts_")
         )
-        node_attrs = node_attrs * mask[:, None]
-        # Cuequivariance implementation raises an error if species with
-        # values outside [0, num_species-1] are given.
-        species = jnp.clip(species, 0, num_species - 1)
+    }
 
-        node_e0 = self.atomic_energies_fn(node_attrs)[num_atoms_arange, node_heads]
+    interactions = _collect_legacy_group(params, "interactions", _nnx_layer_names)
+    if interactions:
+        nnx_params["interactions"] = interactions
 
-        node_feats = self.node_embedding(node_attrs)
-        edge_attrs = self.spherical_harmonics(vectors)
-        edge_feats, cutoff = self.radial_embedding(
-            lengths,
-            node_attrs,
-            edge_index,
-            self._atomic_numbers,
-            node_attrs_index=species,
-        )
+    for group_name in ("products", "readouts"):
+        group = _collect_legacy_group(params, group_name)
+        if group:
+            nnx_params[group_name] = group
 
-        if self.pair_repulsion:
-            pair_node_energy = self.pair_repulsion_fn(
-                lengths,
-                node_attrs,
-                edge_index,
-                self._atomic_numbers,
-                node_attrs_index=species,
-            )
-        else:
-            pair_node_energy = jnp.zeros_like(node_e0)
+    return nnx_params
 
-        node_energies_list = [pair_node_energy]
-        node_feats_list: list[jnp.ndarray] = []
 
-        for idx, (interaction, product) in enumerate(
-            zip(self.interactions, self.products)
-        ):
+def _collect_legacy_group(params, prefix, value_fn=lambda value: value):
+    group = {}
+    marker = f"{prefix}_"
+    for key, value in params.items():
+        if not isinstance(key, str) or not key.startswith(marker):
+            continue
+        index = key[len(marker):]
+        if index.isdigit():
+            group[int(index)] = value_fn(value)
+    return group
 
-            node_feats, sc = interaction(
-                node_attrs=node_attrs,
-                node_feats=node_feats,
-                edge_attrs=edge_attrs,
-                edge_feats=edge_feats,
-                edge_index=edge_index,
-                cutoff=cutoff,
-                first_layer=(idx == 0),
-            )
 
-            node_feats = product(
-                node_feats=node_feats,
-                sc=sc,
-                node_attrs=node_attrs,
-                node_attrs_index=species,
-            )
+def _legacy_layer_names(tree):
+    """Convert NNX MLP layer indices to old layer0/layer1 names."""
+    return _rename_layer_container(tree, from_key="layers", to_key="layer")
 
-            node_feats_list.append(node_feats)
 
-        for idx, readout in enumerate(self.readouts):
-            feat_idx = -1 if len(self.readouts) == 1 else idx
-            node_energies_list.append(
-                readout(node_feats_list[feat_idx], node_heads)[
-                    num_atoms_arange, node_heads
-                ]
-            )
+def _nnx_layer_names(tree):
+    """Convert old layer0/layer1 names back to NNX's layers[index] form."""
+    return _rename_layer_container(tree, from_key="layer", to_key="layers")
 
-        node_inter_es = jnp.sum(jnp.stack(node_energies_list, axis=0), axis=0)
-        node_inter_es = self.scale_shift(node_inter_es, node_heads)
 
-        node_energy = node_e0 + node_inter_es
+def _rename_layer_container(tree, *, from_key, to_key):
+    if not isinstance(tree, dict):
+        return tree
+    converted = dict(tree)
+    conv_weights = converted.get("conv_tp_weights")
+    if not isinstance(conv_weights, dict):
+        return converted
 
-        # Only necessary to return energies per node (for now)
-        return node_energy * mask
+    conv_weights = dict(conv_weights)
+    if from_key == "layers":
+        layers = conv_weights.pop("layers", None)
+        if isinstance(layers, dict):
+            for idx, value in layers.items():
+                conv_weights[f"{to_key}{idx}"] = value
+    else:
+        layers = {}
+        for key in list(conv_weights):
+            if isinstance(key, str) and key.startswith(from_key):
+                index = key[len(from_key):]
+                if index.isdigit():
+                    layers[int(index)] = conv_weights.pop(key)
+        if layers:
+            conv_weights[to_key] = layers
+
+    converted["conv_tp_weights"] = conv_weights
+    return converted
+
 
 
 def load_foundational_model(family: str = "mp", version: str = "medium-0b3"):
@@ -230,13 +290,15 @@ def mace_jax_neighborlist_from_torch(
     config: Dict[str, Any],
     torch_model: Any,
     displacement: space.DisplacementFn,
-    max_edge_multiplier: float = 1.25,
+    max_edge_multiplier: None | float = 1.25,
     per_particle: bool = False,
     scale_pos: float = 0.1,
     scale_pot: float = 96.485,
     species_mapping: SpeciesMapping = SpeciesMapping(),
+    equivariance_config: EquivarianceConfig = None,
     cueq_config: CuEquivarianceConfig = None,
     use_custom_batch_fn: bool = False,
+    comm: Any = None,
 ) -> Tuple[Any, Callable]:
     """MACE model for property prediction.
 
@@ -250,48 +312,75 @@ def mace_jax_neighborlist_from_torch(
         scale_pos: Scaling factor for positions, i.e., to convert units.
         scale_pot: Scaling factor for potentials, i.e., to convert units.
         species_mapping: Mapping for species to model-compatible indices.
-        cueq_config: Configuration for CuEquivariance optimizations.
+        equivariance_config: Backend-neutral equivariance configuration.
+        cueq_config: Deprecated alias for a CuEquivariance-only configuration.
         use_custom_batch_fn: Whether to use custom batch function.
             Required when cueq_config is enabled, optional otherwise.
+        comm: Optional deployment communication interface. It must provide a
+            ``gather`` method used between message-passing blocks.
 
     Returns:
         Returns a tuple of parameters and an apply function.
 
     """
 
-    jax_model, variables, template_data = mace_jax_from_torch.convert_model(
-        torch_model, config, cueq_config=cueq_config
+    equivariance_config = resolve_equivariance_config(
+        equivariance_config, cueq_config=cueq_config
     )
+    jax_model, state, template_data = mace_jax_from_torch.convert_model(
+        torch_model, config, equivariance_config=equivariance_config
+    )
+    uses_nnx_state = isinstance(state, nnx.State)
+    variables = _state_to_legacy_variables(state)
 
-    print(f"Called with cuex config: {cueq_config}")
-
-    cueq_enabled = False if cueq_config is None else cueq_config.enabled
+    cueq = (
+        None if equivariance_config is None else equivariance_config.cueq_config
+    )
+    cueq_enabled = False if cueq is None else cueq.enabled
 
     del template_data  # Unused
 
-    # We need a different __call__ method
-    jax_model.__class__ = JaxMACE
-
     r_cutoff = jnp.array(config["r_max"], dtype=jnp.float32) * scale_pos
-    edges_per_particle = float(config["avg_num_neighbors"]) * float(max_edge_multiplier)
+    edges_per_particle = (
+        float(config["avg_num_neighbors"]) * float(max_edge_multiplier)
+        if max_edge_multiplier is not None
+        else None
+    )
 
-    def _apply_fn(params, senders, receivers, edge_feats, node_feats):
+    default_comm = comm
+
+    def _apply_fn(
+        params, senders, receivers, edge_feats, node_feats, *, state=None, comm=None
+    ):
         (vectors,) = edge_feats
         species, mask = node_feats
 
-        return jax_model.apply(
-            params,
-            vectors,
-            senders,
-            receivers,
-            species,
-            mask,
-            num_species=config["num_elements"],
-        )
+        data = {
+            "edge_index": jnp.stack([senders, receivers], axis=0),
+            "node_attrs": jax.nn.one_hot(
+                species,
+                num_classes=config["num_elements"],
+                dtype=vectors.dtype,
+            ) * mask[:, None],
+            "node_attrs_index": species,
+            "positions": jnp.zeros((species.shape[0], 3)),  # Unused, but some models require it
+            "cell": jnp.eye(3)[None, :, :],  # Unused, but some models require it
+            "shifts": vectors, # Hack to extract vectors by us
+            "ptr": jnp.asarray((0, species.shape[0]), dtype=jnp.int32),  # Unused, but some models require it
+            "num_species": config["num_elements"],
+            "batch": jnp.zeros(species.shape, dtype=jnp.int32),  # Unused, but some models require it
+            "unit_shifts": jnp.zeros((vectors.shape[0], 3)),  # Unused, but some models require it
+        }
 
-    # Apply custom batch function if enabled via cueq or explicitly requested
-    if cueq_enabled or use_custom_batch_fn:
-        _apply_fn = utils.batch_apply_fn(_apply_fn)
+        if state is None:
+            out, _ = jax_model.apply(params)(
+                data, compute_force=False, compute_stress=False, comm=comm)
+        else:
+            out, _ = jax_model.apply(params, state)(
+                data, compute_force=False, compute_stress=False, comm=comm)
+        return out["node_energy"] * mask
+
+    use_batched_apply = cueq_enabled or use_custom_batch_fn
 
     def apply_fn(
         params: Any,
@@ -299,6 +388,7 @@ def mace_jax_neighborlist_from_torch(
         neighbor: partition.NeighborList,
         species: jax.Array = None,
         mask: jax.Array = None,
+        comm: Any = default_comm,
         **dynamic_kwargs,
     ):
         assert species is not None, "Species must be provided."
@@ -321,9 +411,32 @@ def mace_jax_neighborlist_from_torch(
 
         vectors /= scale_pos
 
-        per_atom_energies = _apply_fn(
-            params, senders, receivers, (vectors,), (species, mask)
-        )
+        if uses_nnx_state and isinstance(params, dict) and "params" in params:
+            # Keep Chemtrain's public variables["params"] contract, but pass
+            # params and non-param config separately to Flax's public
+            # GraphDef.apply(state, *states) merge path.
+            model_params = _legacy_params_to_nnx_params(params["params"])
+            model_state = {
+                key: value for key, value in params.items() if key != "params"
+            } or None
+        else:
+            model_params, model_state = params, None
+        model_args = (model_params, senders, receivers, (vectors,), (species, mask))
+        if use_batched_apply and comm is None:
+            # Construct the batching transform only for the ordinary model;
+            # ``comm`` is a static JIT property, so this branch is specialized
+            # independently from the communicating deployment variant.
+            batched_apply = utils.batch_apply_fn(
+                functools.partial(_apply_fn, state=model_state, comm=comm)
+            )
+            per_atom_energies = batched_apply(*model_args)
+        else:
+            # Deployment passes one already flattened graph, so feature
+            # communication does not need the custom batching transform. Its
+            # backward rule intentionally recomputes the model from its inputs;
+            # bypassing it lets JAX retain the communicated primal features and
+            # avoids a second forward halo exchange before the reverse one.
+            per_atom_energies = _apply_fn(*model_args, state=model_state, comm=comm)
         per_atom_energies *= scale_pot
 
         if per_particle:
@@ -331,7 +444,9 @@ def mace_jax_neighborlist_from_torch(
         else:
             return jnp.sum(per_atom_energies)
 
-    return jax.tree.map(jnp.asarray, variables), jax.jit(apply_fn)
+    return variables, jax.jit(
+        apply_fn, static_argnames=("comm",)
+    )
 
 
 def mace_jax_neighborlist(
@@ -346,6 +461,7 @@ def mace_jax_neighborlist(
     avg_num_neighbors: float = None,
     mode: str = "energy",
     per_particle: bool = False,
+    equivariance_config: EquivarianceConfig = None,
     cueq_config: CuEquivarianceConfig = None,
     use_custom_batch_fn: bool = False,
     mace_config: Dict[str, Any] = None,
@@ -377,6 +493,9 @@ def mace_jax_neighborlist(
         Returns a tuple of parameters and an apply function.
 
     """
+    equivariance_config = resolve_equivariance_config(
+        equivariance_config, cueq_config=cueq_config
+    )
     species_mapping = AtomicNumberMapping(n_species)
 
     # Keys based on MACE JAX
@@ -405,23 +524,14 @@ def mace_jax_neighborlist(
         default_mace_config | mace_config
     )  # Overwrite defaults with any values present in mace_config
 
-    print("-" * 50)
-    for key, value in config.items():
-        print(f"Using MACE config: {key}: {value}")
-    if cueq_config is not None:
-        print("-" * 50)
-        for key, value in cueq_config.items():
-            print(f"Using CuEquivariance config: {key}: {value}")
-    print("-" * 50)
-
     try:
         jax_model = _build_jax_model(
             config,
-            cueq_config=cueq_config,
+            equivariance_config=equivariance_config,
             init_normalize2mom_consts=False,
         )
     except TypeError as exc:
-        if "cueq_config" in str(exc):
+        if "equivariance_config" in str(exc):
             jax_model = _build_jax_model(
                 config,
                 init_normalize2mom_consts=False,
@@ -434,7 +544,10 @@ def mace_jax_neighborlist(
     template_vars = jax_model.init(jax.random.PRNGKey(0), template_data)
     del template_data  # Unused
 
-    cueq_enabled = False if cueq_config is None else cueq_config.enabled
+    cueq = (
+        None if equivariance_config is None else equivariance_config.cueq_config
+    )
+    cueq_enabled = False if cueq is None else cueq.enabled
 
     # We need a different __call__ method
     jax_model.__class__ = JaxMACE

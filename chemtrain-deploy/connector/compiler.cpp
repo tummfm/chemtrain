@@ -23,22 +23,19 @@ limitations under the License.
 #include "connector/utils.h"
 #include "connector/xla_call_module_loader.h"
 
-#include "xla/client/xla_computation.h"
-#include "xla/service/hlo_parser.h"
-#include "xla/translate/hlo_to_mhlo/hlo_to_mlir_hlo.h"
-#include "xla/mlir_hlo/mhlo/IR/register.h"
-#include "xla/mlir_hlo/mhlo/transforms/passes.h"
+#include "xla/xla_data.pb.h"
 #include "xla/mlir/utils/error_util.h"
-#include "xla/mlir_hlo/stablehlo_ext/transforms/passes.h"
+#include "xla/hlo/translate/stablehlo.h"
+#include "xla/mlir/framework/ir/xla_framework.h"
+#include "xla/mlir_hlo/mhlo/IR/register.h"
 
 #include "absl/types/span.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Func/Extensions/AllExtensions.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/MLProgram/IR/MLProgram.h"
+#include "mlir/Dialect/Quant/IR/Quant.h"  // from @llvm-project
+#include "mlir/Dialect/Shape/IR/Shape.h"  // from @llvm-project
+#include "mlir/Dialect/Tensor/IR/Tensor.h"  // from @llvm-project
 #include "mlir/IR/MLIRContext.h"
 
 #include "shardy/dialect/sdy/ir/register.h"
@@ -47,7 +44,8 @@ limitations under the License.
 
 namespace jcn {
 
-    Compiler::Compiler(const std::string& mlir_module) : mlir_module(mlir_module) {
+    Compiler::Compiler(const std::string& mlir_module)
+        : mlir_module(mlir_module) {
 
         // We add some dialects to interpret the MLIR module from JAX
 
@@ -106,12 +104,13 @@ namespace jcn {
         std::vector<std::string> platforms = {"cuda"};
 
         std::unique_ptr<XlaCallModuleLoader> module_loader = XlaCallModuleLoader::Create(
-            &context, 9, mlir_module, disabled_checks, platforms, input_args, false).value();
+            &context, 10, mlir_module, disabled_checks, platforms, input_args,
+            false, false).value();
 
         // We now follow the steps as in the XLACallModuleLoader from tensorflow
         absl::Status status;
 
-        status = module_loader->ValidateDialect();
+        status = module_loader->ValidateXlaCallModuleInvariants();
         if (!status.ok()) {
             throw std::runtime_error(
                 "Failed to validate dialect: " + std::string(status.message())
@@ -132,10 +131,17 @@ namespace jcn {
             );
         }
 
-        status = module_loader->LowerModuleToMhlo();
+        status = module_loader->ValidateStaticShapes();
         if (!status.ok()) {
             throw std::runtime_error(
-                "Failed to refine dynamic shapes: " + std::string(status.message())
+                "Failed to validate static shapes: " + std::string(status.message())
+            );
+        }
+
+        status = module_loader->PrepareStablehloForLowering();
+        if (!status.ok()) {
+            throw std::runtime_error(
+                "Failed to lower to XLA: " + std::string(status.message())
             );
         }
 
@@ -148,7 +154,8 @@ namespace jcn {
 
         xla::XlaComputation computation = std::move(res).value();
 
-        absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> status_or_ref = xla::ConvertHloToMlirHlo(export_context, computation.mutable_proto(), false, false);
+        absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> status_or_ref = 
+            xla::ConvertHloToStablehlo(export_context, &computation.proto());
         if (!status_or_ref.ok()) {
             throw std::runtime_error(
                 "Failed to convert the computation to MLIR: " + std::string(status.message())

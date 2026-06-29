@@ -23,12 +23,18 @@ limitations under the License.
 #include <bitset>
 #include <iostream>
 #include <algorithm>
+#include <cstdlib>
+#include <limits>
 
 #include "connector/graph_builder.h"
 #include "connector/buffer.h"
 #include "connector/utils.h"
 
 namespace jcn {
+
+    namespace {
+        constexpr int kLammpsNeighborMask = 0x3FFFFFFF;
+    }
 
     GraphBuilder::GraphBuilder(
         std::vector<std::string> statistics
@@ -41,7 +47,7 @@ namespace jcn {
     }
 
     NeighborListShapes SimpleSparseNeighborList::get_neighbor_list_shapes(
-        int max_atoms, int inum, int* numneigh, bool check_buffers) {
+        int max_atoms, int inum, int* ilist, int* numneigh, bool check_buffers) {
         // We pass the neighbor list of LAMMPS
 
         Logger logger = Logger::getlogger();
@@ -56,7 +62,8 @@ namespace jcn {
 
         // Count the number of edges
         int current_edges = 0;
-        for (int i = 0; i < inum; i++) {
+        for (int ii = 0; ii < inum; ii++) {
+            const int i = ilist[ii];
             if (std::numeric_limits<int>::max() - current_edges < numneigh[i]) {
                 throw std::runtime_error("Exceeded maximum number of edges");
             }
@@ -148,7 +155,8 @@ namespace jcn {
 
             // Fill in the sender and receiver values
             int edge_counter = 0;
-            for (int i = 0; i < inum; i++) {
+            for (int ii = 0; ii < inum; ii++) {
+                const int i = ilist[ii];
                 int num_neighbors = numneigh[i];
                 int* firstneigh_ptr = firstneigh[i];
 
@@ -159,11 +167,17 @@ namespace jcn {
                     throw std::runtime_error("Exceeded maximum number of receivers");
                 }
 
-                // Copy ilist[i] to senders_data
-                std::fill(senders_data + edge_counter, senders_data + edge_counter + num_neighbors, ilist[i]);
+                // LAMMPS stores a neighbor list as central atom i followed by
+                // its neighbors j. MACE uses edge_index[0] as the message
+                // source and edge_index[1] as the receiving central atom, so
+                // the deployed edge must be j -> i (not i -> j).
+                std::fill(receivers_data + edge_counter,
+                          receivers_data + edge_counter + num_neighbors, i);
 
-                // Copy firstneigh[i] to receivers_data
-                std::memcpy(receivers_data + edge_counter, firstneigh_ptr, num_neighbors * sizeof(int));
+                for (int jj = 0; jj < num_neighbors; jj++) {
+                    senders_data[edge_counter + jj] =
+                        firstneigh_ptr[jj] & kLammpsNeighborMask;
+                }
 
                 edge_counter += num_neighbors;
             }
@@ -171,6 +185,21 @@ namespace jcn {
             // Fill in the invalid values
             std::fill(senders_data + edge_counter, senders_data + edge_buffer_size, fill_value);
             std::fill(receivers_data + edge_counter, receivers_data + edge_buffer_size, fill_value);
+
+            if (std::getenv("JCN_COMM_DEBUG") != nullptr && edge_counter > 0) {
+                int ghost_sources = 0;
+                int ghost_receivers = 0;
+                for (int edge = 0; edge < edge_counter; ++edge) {
+                    ghost_sources += senders_data[edge] >= inum;
+                    ghost_receivers += receivers_data[edge] >= inum;
+                }
+                std::cerr << "[COMM GRAPH] edges=" << edge_counter
+                          << " first=" << senders_data[0] << "->"
+                          << receivers_data[0]
+                          << " ghost_sources=" << ghost_sources
+                          << " ghost_receivers=" << ghost_receivers
+                          << std::endl;
+            }
 
             auto end = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double> duration = end - start;
@@ -263,7 +292,7 @@ namespace jcn {
 
 
     NeighborListShapes SimpleDenseNeighborList::get_neighbor_list_shapes(
-        int max_atoms, int inum, int* numneigh, bool check_buffers) {
+        int max_atoms, int inum, int* ilist, int* numneigh, bool check_buffers) {
         // We pass the neighbor list of LAMMPS
 
         Logger logger = Logger::getlogger();
@@ -281,7 +310,11 @@ namespace jcn {
         }
 
         // Determine the maximum number of neighbors
-        int max_neighbors = *std::max_element(numneigh, numneigh + inum);
+        int max_neighbors = 0;
+        for (int ii = 0; ii < inum; ii++) {
+            const int i = ilist[ii];
+            max_neighbors = std::max(max_neighbors, numneigh[i]);
+        }
 
         // Check whether buffer overflowed (always recompile) or whether
         // buffer is close to beeing full when asked to check buffers
@@ -358,15 +391,16 @@ namespace jcn {
             int* neighbor_data = neighbor_literal->data<int>().data();
 
             // Fill in the sender and receiver values
-            for (int i = 0; i < inum; i++) {
+            for (int ii = 0; ii < inum; ii++) {
+                const int i = ilist[ii];
                 int num_neighbors = numneigh[i];
                 int* firstneigh_ptr = firstneigh[i];
 
                 // Copy row by row
-                std::memcpy(
-                    neighbor_data + i * neighbor_buffer_size_,
-                    firstneigh_ptr, num_neighbors * sizeof(int)
-                );
+                for (int jj = 0; jj < num_neighbors; jj++) {
+                    neighbor_data[i * neighbor_buffer_size_ + jj] =
+                        firstneigh_ptr[jj] & kLammpsNeighborMask;
+                }
 
                 // Fill in the remainder
                 std::fill(
@@ -490,7 +524,7 @@ namespace jcn {
 
 
     NeighborListShapes DeviceSparseNeighborList::get_neighbor_list_shapes(
-         int max_atoms, int inum, int* numneigh, bool check_buffers) {
+         int max_atoms, int inum, int* ilist, int* numneigh, bool check_buffers) {
          // We pass the neighbor list of LAMMPS
          throw std::runtime_error("Not yet implemented.");
 

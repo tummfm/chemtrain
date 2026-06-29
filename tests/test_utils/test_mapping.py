@@ -86,4 +86,3 @@ class TestMappingAla2:
         assert jnp.allclose(mapped_R, data['CG_R'], rtol=1e-3, atol=1e-3), \
             "Mapped positions not close to expected CG positions"
             
-    

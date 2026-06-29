@@ -20,15 +20,17 @@ import pickle
 import time
 import warnings
 from os import PathLike
-from typing import Any, Mapping, Dict, Callable
+from typing import Any, Mapping, Dict, Callable, Optional
 
 import jax.tree_util
 import numpy as onp
 from jax import numpy as jnp, tree_util, jit, random
+from jax.typing import ArrayLike
 from jax_sgmc.data import numpy_loader
 from jax_md_mod import custom_quantity
 
 from chemtrain import (util)
+from chemtrain import config as chemtrain_config
 from chemtrain.learn import (
     force_matching, max_likelihood, difftre, property_prediction
 )
@@ -38,10 +40,8 @@ from chemtrain.ensemble import sampling, reweighting
 from chemtrain.data import data_loaders
 
 
-try:
-    from jax.typing import ArrayLike
-except:
-    ArrayLike = Any
+
+
 from optax import GradientTransformationExtraArgs
 from jax_md.partition import NeighborFn, NeighborList
 from chemtrain.typing import EnergyFnTemplate, TrajFn
@@ -49,7 +49,7 @@ from chemtrain.typing import EnergyFnTemplate, TrajFn
 class PropertyPrediction(tt.DataParallelTrainer):
     """Trainer for direct prediction of molecular properties."""
     def __init__(self, error_fn, prediction_model, init_params, optimizer,
-                 graph_dataset, targets, batch_per_device=1, batch_cache=10,
+                 graph_dataset, targets, batch=1, batch_per_device=None, batch_cache=10,
                  train_ratio=0.7, val_ratio=0.1, test_error_fn=None,
                  shuffle=False, convergence_criterion="window_median",
                  checkpoint_folder="Checkpoints"):
@@ -62,7 +62,7 @@ class PropertyPrediction(tt.DataParallelTrainer):
 
         super().__init__(
             loss_fn, model, init_params, optimizer, checkpoint_path,
-            batch_per_device, batch_cache,
+            batch=batch, batch_cache=batch_cache, batch_per_device=batch_per_device,
             convergence_criterion=convergence_criterion
         )
 
@@ -127,8 +127,8 @@ class ForceMatching(tt.DataParallelTrainer):
         energy_fn_has_aux: Energy function has an auxiliary output. The
             energy function will be called with argument ``mode="with_aux"``
             and should return a tuple ``(pot, aux)``.
-        batch_per_device: Number of samples to process vectorized on every
-            device.
+        batch: Global batch size across MPI ranks and local devices.
+        batch_per_device: Legacy local batch size per device (per rank).
         batch_cache: Number of batches to load into the device memories.
         full_checkpoint: Save the whole trainer instead of only some statistics.
         disable_shmap: Use ``pmap`` instead of ``shmap`` for parallelization.
@@ -165,7 +165,8 @@ class ForceMatching(tt.DataParallelTrainer):
                  additional_targets: Dict[str, Dict] = None,
                  feature_extract_fns: Dict[str, Callable] = None,
                  energy_fn_has_aux: bool = False,
-                 batch_per_device: int = 1,
+                 batch: Optional[int] = None,
+                 batch_per_device: Optional[int] = None,
                  batch_cache: int = 10,
                  full_checkpoint: bool = False,
                  disable_shmap: bool = False,
@@ -205,7 +206,8 @@ class ForceMatching(tt.DataParallelTrainer):
             error_fns=error_fns, gammas=gammas, weights_keys=weights_keys)
 
         super().__init__(loss_fn, model, init_params, optimizer,
-                         checkpoint_path, batch_per_device, batch_cache,
+                         checkpoint_path, batch=batch, batch_cache=batch_cache,
+                         batch_per_device=batch_per_device,
                          disable_shmap=disable_shmap, penalty_fn=penalty_fn,
                          convergence_criterion=convergence_criterion,
                          full_checkpoint=full_checkpoint,
@@ -256,14 +258,8 @@ class DifftreParallel(tt.MLETrainerTemplate):
             another dict providing 'gamma' and 'target' for each observable.
         observables: Optional dictionary providing the observable functions
             for the targets.
-        initial_trajstates: Initial trajectory states of the statepoints.
-            It is usually simpler to let the trainer generate the initial
-            trajectory states by providing `reference_states`.
         reference_states: Initial simulator states from which DiffTRe can
             compute the initial trajectory states.
-        num_runs_init: Number of runs to perform for the initial trajectory
-            states. This number can be increased to ensure a better
-            equilibration when starting from less favourable initial states.
         reweight_ratio: Ratio of reference samples required for n_eff to
             surpass to allow re-use of previous reference trajectory state.
             If trajectories should not be re-used, a value > 1 can be
@@ -306,93 +302,132 @@ class DifftreParallel(tt.MLETrainerTemplate):
 
     """
 
-    def __init__(self,
-                 key: jax.Array,
-                 init_params: Any,
-                 optimizer: GradientTransformationExtraArgs,
-                 energy_fn_template: EnergyFnTemplate,
-                 simulator_template: Callable,
-                 neighbor_fn: NeighborFn,
-                 timings: sampling.TimingClass,
-                 state_kwargs: Dict[str, ArrayLike],
-                 quantities: Dict[str, Dict],
-                 targets: Dict[str, Any],
-                 observables: Dict[str, TrajFn],
-                 initial_trajstates = None,
-                 reference_states = None,
-                 num_runs_init: int = 1,
-                 reweight_ratio: ArrayLike = 0.9,
-                 allowed_reduction: ArrayLike = 0.95,
-                 step_size_scale: float = 1e-4,
-                 interior_points: int = 100,
-                 sim_batch_size: int = 1,
-                 full_checkpoint: bool = False,
-                 target_loss_fns: Dict[str, Callable] = None,
-                 loss_fn=None,
-                 vmap_batch: int = 10,
-                 bucket_recompute: bool = True,
-                 resample_simstates: bool = False,
-                 convergence_criterion: str = "window_median",
-                 checkpoint_path: os.PathLike = "Checkpoints",
-                 log_dir: os.PathLike = None):
-        init_state = util.TrainerState(params=init_params,
-                                       opt_state=optimizer.init(init_params))
+    def __init__(
+            self,
+            key: jax.Array,
+            init_params: Any,
+            optimizer: GradientTransformationExtraArgs,
+            energy_fn_template: EnergyFnTemplate,
+            simulator_template: Callable,
+            neighbor_fn: NeighborFn,
+            timings: sampling.TimingClass,
+            state_kwargs: Dict[str, ArrayLike],
+            quantities: Dict[str, Dict],
+            targets: Dict[str, Any],
+            observables: Dict[str, TrajFn],
+            reference_states=None,
+            reweight_ratio: float = 0.9,
+            allowed_reduction: float = 0.95,
+            step_size_scale: float = 1e-4,
+            interior_points: int = 100,
+            sim_batch_size: int = 1,
+            traj_states_on_host: bool = False,
+            full_checkpoint: bool = False,
+            target_loss_fns: Dict[str, Callable] = None,
+            loss_fn=None,
+            vmap_batch: int = 10,
+            bucket_recompute: bool = True,
+            resample_simstates: bool = False,
+            convergence_criterion: str = "window_median",
+            checkpoint_path: os.PathLike = "Checkpoints",
+            log_dir: os.PathLike = None,
+    ):
+        init_state = util.TrainerState(
+            params=init_params,
+            opt_state=optimizer.init(init_params)
+        )
+
+        ## Core configuration/state ############################################
+        self.key = key
+        self.batch_size = sim_batch_size
+        self.statepoints = state_kwargs
+        self.targets = targets
+        self._reference_states = reference_states
+        self.reweight_ratio = reweight_ratio
+
+        self._bucket_recompute = bucket_recompute
+        self._traj_states_on_host = traj_states_on_host
+
+        # May be initialized later via initialize_trajstates() or load_trajstates().
+        self.traj_states = None
 
         # Optional: Initialized by calling trainer.init_step_size_adaption
         # after all statepoints to be considered have been set up.
         self._recompute = False
 
+        ## Build reweighting / propagation / gradient functions ################
         gen_init_traj, *reweight_fns = reweighting.init_pot_reweight_propagation_fns(
-            energy_fn_template, simulator_template, neighbor_fn, timings,
-            state_kwargs, reweight_ratio, False,
-            vmap_batch, safe_propagation=False,
+            energy_fn_template,
+            simulator_template,
+            neighbor_fn,
+            timings,
+            state_kwargs,
+            reweight_ratio,
+            False,
+            vmap_batch,
+            safe_propagation=False,
             entropy_approximation=False,
-            resample_simstates=resample_simstates
+            resample_simstates=resample_simstates,
         )
 
-        self._bucket_recompute = bucket_recompute
-
-        # TODO: Parallelize over multiple devices
         if target_loss_fns is None:
             target_loss_fns = {}
-
         if loss_fn is None:
             loss_fn = difftre.init_default_loss_fn(observables, target_loss_fns)
 
-        batched_model, batched_propagation, batched_weights = difftre.init_difftre_gradient_and_propagation(
-            reweight_fns, loss_fn, quantities, energy_fn_template,
-            wrapped=False, batched=True
+        batched_model, batched_propagation, batched_weights = (
+            difftre.init_difftre_gradient_and_propagation(
+                reweight_fns,
+                loss_fn,
+                quantities,
+                energy_fn_template,  # type: ignore
+                wrapped=False,
+                batched=True,
+            )
         )
 
-        self.reweight_ratio = reweight_ratio
-
-        self.key = key
-        self.batch_size = sim_batch_size
-        self.statepoints = state_kwargs
-
-        self.model = jax.jit(jax.value_and_grad(batched_model, argnums=0, has_aux=True))
+        self.model = jax.jit(
+            jax.value_and_grad(batched_model, argnums=0, has_aux=True)
+        )
         self.propagate = jax.jit(batched_propagation)
         self.weights = jax.jit(batched_weights)
+        self._gen_init_traj = jax.jit(gen_init_traj)
 
-        self.targets = targets
+        def _collect_leading_dims(pytree) -> set[int]:
+            dims: set[int] = set()
+            if pytree is None:
+                return dims
+            for leaf in tree_util.tree_leaves(pytree):
+                shape = getattr(leaf, "shape", None)
+                if shape is None or len(shape) < 1:
+                    continue
+                dims.add(int(shape[0]))
+            return dims
 
-        if initial_trajstates is not None:
-            self.traj_states = initial_trajstates
-        else:
-            n_statepoints = targets[list(targets.keys())[0]]["target"].shape[0]
+        def _reference_leading_dim(ref_states) -> Optional[int]:
+            if ref_states is None:
+                return None
+            if isinstance(ref_states, tuple):
+                sim_state = ref_states[0]
+            else:
+                sim_state = ref_states.sim_state
+            return int(sim_state.position.shape[0])
 
-            self.key, split = random.split(key)
-            self.traj_states = util.batch_map(
-                lambda ops: gen_init_traj(
-                    ops[0][0], init_params, ops[0][1],
-                    num_runs=num_runs_init, **ops[1]
-                ),
-                (
-                    (random.split(split, n_statepoints), reference_states),
-                    state_kwargs
-                ), batch_size=sim_batch_size
+        # Validate that all batched inputs agree on their leading dimension.
+        statepoint_dims = _collect_leading_dims(self.statepoints)
+        target_dims = _collect_leading_dims(self.targets)
+        ref_dim = _reference_leading_dim(self._reference_states)
+        all_dims = set(statepoint_dims) | set(target_dims)
+        if ref_dim is not None:
+            all_dims.add(ref_dim)
+
+        if len(all_dims) > 1:
+            raise ValueError(
+                "Inconsistent leading dimensions passed to DifftreParallel.__init__. "
+                f"state_kwargs dims={sorted(statepoint_dims)}, "
+                f"targets dims={sorted(target_dims)}, "
+                f"reference_states dim={(ref_dim if ref_dim is not None else 'None')}."
             )
-
 
         if allowed_reduction is not None:
             self._adaptive_step_size = difftre.init_step_size_adaption(
@@ -416,14 +451,165 @@ class DifftreParallel(tt.MLETrainerTemplate):
         self.epoch_losses = self.checkpoint("epoch_losses", [])
         self.step_size_history = self.checkpoint("step_size_history", [])
         self.gradient_norm_history = self.checkpoint("gradient_norm_history", [])
-        self.predictions = self.checkpoint("predictions", {})
+        self.predictions: Dict[int, Dict[str, Any]] = self.checkpoint("predictions", {}) # type: ignore
 
-        # Initial trajstates should be set by now
-        for key in range(self.n_statepoints):
-            self.predictions[key] = {}
+        for idx in range(self.n_statepoints):
+            if idx not in self.predictions.keys():
+                self.predictions[idx] = {}
 
         self.early_stop = tt.EarlyStopping(
             self.params, convergence_criterion)
+
+    def initialize_trajstates(self, params: Any = None, *, num_runs: int = 1):
+        """Initializes the trajectory states for all statepoints.
+
+        Args:
+            params: Energy parameters to use for the initial trajectories.
+                If None, the current trainer parameters are used.
+
+        """
+        reference_states = self._reference_states
+        if reference_states is None:
+            raise ValueError(
+                "Cannot initialize trajstates without reference_states. "
+                "Passing initial_trajstates is not supported."
+            )
+
+        # Backwards compatibility: allow tuple (sim_state, nbrs).
+        if isinstance(reference_states, tuple):
+            reference_states = sampling.SimulatorState(
+                sim_state=reference_states[0], nbrs=reference_states[1]
+            )
+
+        num_runs = int(num_runs)
+        if num_runs < 1:
+            raise ValueError(f"num_runs must be >= 1, got {num_runs}.")
+
+        if params is None:
+            params = self.params
+
+        if util.use_mpi():
+            self.key = util.mpi_tree_bcast(self.key, root=0)
+
+        n_statepoints = self.n_statepoints
+        batch_size = self.batch_size
+        if batch_size is None or batch_size < 1:
+            batch_size = n_statepoints
+
+        traj_gen_fn = jax.jit(
+            jax.vmap(
+                lambda k, p, r, s: self._gen_init_traj(k, p, r, num_runs=num_runs, **s),
+                in_axes=(0, None, 0, 0),
+            )
+        )
+
+        # Shape inference on a single statepoint to avoid huge abstract inputs.
+        if n_statepoints < 1:
+            raise ValueError("Cannot initialize trajstates for 0 statepoints.")
+
+        shape_idx = onp.arange(1)
+        shape_keys = random.split(self.key, 1)
+        shape_reference = util.tree_take(reference_states, shape_idx, on_cpu=False)
+        shape_statepoints = util.tree_take(self.statepoints, shape_idx, on_cpu=False)
+
+        single_traj_shape = jax.eval_shape(
+            traj_gen_fn, shape_keys, params, shape_reference, shape_statepoints
+        )
+
+        if self._traj_states_on_host:
+            self.traj_states = util.tree_map(
+                lambda x: onp.zeros((n_statepoints, *x.shape[1:]), dtype=x.dtype),
+                single_traj_shape,
+            )
+        else:
+            self.traj_states = util.tree_map(
+                lambda x: jnp.zeros((n_statepoints, *x.shape[1:]), dtype=x.dtype),
+                single_traj_shape,
+            )
+
+        for idx in range(n_statepoints // batch_size + (n_statepoints % batch_size > 0)):
+            self.key, split = random.split(self.key)
+
+            # Compute the number of remaining statepoints. Then, split a 
+            # full or partial batch from the reference states. When MPI
+            # should be used, the batch is further split across the ranks
+            num_states = min([n_statepoints - idx * batch_size, batch_size])
+
+            reference_state_split = util.tree_take(
+                reference_states, onp.arange(0, num_states) + idx * batch_size,
+                on_cpu=False
+            )
+            statepoint_split = util.tree_take(
+                self.statepoints, onp.arange(0, num_states) + idx * batch_size,
+                on_cpu=False
+            )
+            splits = random.split(split, num_states)
+
+            if util.use_mpi():
+                reference_state_split, dim = util.mpi_tree_slice(reference_state_split)
+                statepoint_split, _ = util.mpi_tree_slice(statepoint_split, dim)
+                splits, _ = util.mpi_tree_slice(splits, dim)
+            else:
+                dim = None
+
+            # On each rank, computes the initial trajectories for the batch of
+            # statepoints. 
+            traj_states_split = traj_gen_fn(
+                splits, params, reference_state_split, statepoint_split
+            )
+
+            # Gather the computations from all ranks and add the computed
+            # values to the respective place in the full traj_states.
+            if util.use_mpi():
+                traj_states_split = util.mpi_tree_gather(traj_states_split, dim)
+            
+            if self._traj_states_on_host:
+                traj_states_split_host = jax.device_get(traj_states_split)
+                self.traj_states = util.tree_put(
+                    self.traj_states, onp.arange(0, num_states) + idx * batch_size,
+                    traj_states_split_host, on_cpu=True
+                )
+            else:
+                self.traj_states = util.tree_put(
+                    self.traj_states, onp.arange(0, num_states) + idx * batch_size,
+                    traj_states_split, on_cpu=False
+                )
+
+    def load_trajstates(self, traj_states: PathLike | sampling.TrajectoryState):
+        """Load precomputed trajstates.
+        
+        Args:
+            traj_states: Either a path to a pickled TrajectoryState or a
+                TrajectoryState instance. The pickled TrajectoryState should
+                be generated by saving the trainer's traj_states attribute.
+        
+        """
+        if not isinstance(traj_states, sampling.TrajectoryState):
+            with open(traj_states, "rb") as f:
+                loaded_traj_states = pickle.load(f)
+        else:
+            loaded_traj_states = traj_states
+
+        if self._traj_states_on_host:
+            self.traj_states = jax.device_get(loaded_traj_states)
+        else:
+            self.traj_states = jax.device_put(loaded_traj_states)
+
+        self._reference_states = self.traj_states.sim_state
+
+    def save_trajstates(self, path: PathLike):
+        """Save trajstates to a pickle file.
+
+        Args:
+            path: Path to the pickle file to save trajstates to.
+        """
+        if self._traj_states_on_host:
+            traj_states = jax.device_get(self.traj_states)
+        else:
+            traj_states = self.traj_states
+
+        with open(path, "wb") as f:
+            pickle.dump(traj_states, f)
 
     @property
     def params(self):
@@ -437,12 +623,38 @@ class DifftreParallel(tt.MLETrainerTemplate):
 
     @property
     def n_statepoints(self):
-        return self.traj_states.trajectory.position.shape[0]
+        """Number of statepoints.
+
+        If reference states were not provided at init time, they are treated as
+        being contained in loaded `traj_states`.
+        """
+        reference_states = self._reference_states
+        if reference_states is not None:
+            if isinstance(reference_states, tuple):
+                sim_state = reference_states[0]
+            else:
+                sim_state = reference_states.sim_state
+            return int(sim_state.position.shape[0])
+
+        if self.traj_states is not None:
+            return int(self.traj_states.sim_state.sim_state.position.shape[0])
+
+        raise ValueError(
+            "Cannot infer number of statepoints. Pass reference_states or "
+            "load/initialize traj_states first."
+        )
+
 
     def _get_batch(self):
         """Returns the next batch of statepoints to be processed."""
+        if self.traj_states is None:
+            raise ValueError(
+                "Trajectory states not initialized. Call initialize_trajstates" \
+                "first or load them with load_trajstates."
+            )
+        
         self.key, key = random.split(self.key)
-        num_statepoints = self.traj_states.trajectory.position.shape[0]
+        num_statepoints = self.n_statepoints
         mask = jnp.ones(num_statepoints)
 
         for i in range(num_statepoints // self.batch_size):
@@ -463,13 +675,29 @@ class DifftreParallel(tt.MLETrainerTemplate):
                     replace=False, p=mask
                 )
 
-                trajstates = util.tree_take(self.traj_states, candidates,
-                                            on_cpu=False)
+                if self._traj_states_on_host:
+                    candidates_np = onp.asarray(candidates)
+                    trajstates_host = util.tree_take(
+                        self.traj_states, candidates_np, on_cpu=True
+                    )
+                    trajstates = jax.device_put(trajstates_host)
+                else:
+                    trajstates = util.tree_take(
+                        self.traj_states, candidates, on_cpu=False
+                    )
+
+                if util.use_mpi():
+                    trajstates, dim = util.mpi_tree_slice(trajstates)
+                else:
+                    dim = None
 
                 # Compute the effective sample sizes
                 _, n_eff = self.weights(self.params, trajstates)
                 min_n_eff = self.traj_states.trajectory.position.shape[
                                 1] * self.reweight_ratio
+
+                if util.use_mpi():
+                    n_eff = util.mpi_tree_gather(n_eff, dim)
 
                 recompute = n_eff < min_n_eff
 
@@ -499,14 +727,32 @@ class DifftreParallel(tt.MLETrainerTemplate):
         respective state points. Additionally saves predictions and loss
         for postprocessing."""
 
-        # Select the relevant trajstates and targets
+        if self.traj_states is None:
+            raise ValueError(
+                "Trajectory states not initialized. Call initialize_trajstates" \
+                "first or load them with load_trajstates."
+            )
 
-        trajstates = util.tree_take(self.traj_states, batch, on_cpu=False)
+        # Select the relevant trajstates and targets
+        if self._traj_states_on_host:
+            batch_np = onp.asarray(batch)
+            trajstates_host = util.tree_take(self.traj_states, batch_np, on_cpu=True)
+            trajstates = jax.device_put(trajstates_host)
+        else:
+            trajstates = util.tree_take(self.traj_states, batch, on_cpu=False)
         targets = util.tree_take(self.targets, batch, on_cpu=False)
         statepoints = util.tree_take(self.statepoints, batch, on_cpu=False)
 
         # Compute the effective sample sizes and print
-        _, n_eff = self.weights(self.params, trajstates)
+        sliced_trajstates, dim = util.mpi_tree_slice(trajstates)
+        sliced_targets = util.mpi_tree_slice(targets)
+        sliced_statepoints = util.mpi_tree_slice(statepoints)
+
+
+        _, n_eff_sliced = self.weights(self.params, sliced_trajstates)
+        n_eff = util.mpi_tree_gather(n_eff_sliced, dim)
+
+
         min_n_eff = self.traj_states.trajectory.position.shape[1] * self.reweight_ratio
 
         ## Determine if recompute is necessary #################################
@@ -520,19 +766,37 @@ class DifftreParallel(tt.MLETrainerTemplate):
         if onp.any(n_eff < min_n_eff):
             print(f"[DifftreParallel] Recomputing trajectories...")
             start = time.time()
-            trajstates = self.propagate(self.params, trajstates, statepoints)
+            
+            sliced_trajstates = self.propagate(self.params, sliced_trajstates, sliced_statepoints)
+
             print(f"[DifftreParallel] Recomputed trajectories in {(time.time() - start) / 60.:.2f} min")
 
             # Save the recomputed trajectories
-            self.traj_states = util.tree_put(self.traj_states, batch, trajstates, on_cpu=False)
+            trajstates = util.mpi_tree_gather(sliced_trajstates, dim)
+            if self._traj_states_on_host:
+                trajstates_host = jax.device_get(trajstates)
+                self.traj_states = util.tree_put(
+                    self.traj_states, onp.asarray(batch), trajstates_host, on_cpu=True
+                )
+            else:
+                self.traj_states = util.tree_put(
+                    self.traj_states, batch, trajstates, on_cpu=False
+                )
 
         ## Compute the loss ####################################################
 
         print(f"[DifftreParallel] Computing loss...")
         start = time.time()
-        (loss, state_point_predictions), grad = self.model(
-            self.params, trajstates, statepoints, targets
+        (sliced_loss, sliced_state_point_predictions), sliced_grad = self.model(
+            self.params, sliced_trajstates, sliced_statepoints, sliced_targets
         )
+
+        loss = util.mpi_tree_mean(sliced_loss, dim)
+        grad = util.mpi_tree_mean(sliced_grad, dim)
+        state_point_predictions = util.mpi_tree_gather(
+            sliced_state_point_predictions, dim
+        )
+
         batch_norm = util.tree_norm(grad)
         self.batch_gradient_norms.append(onp.asarray(batch_norm))
         print(f"[DifftreParallel] Computed loss {loss} in {(time.time() - start) / 60.:.2f} min")
@@ -542,7 +806,13 @@ class DifftreParallel(tt.MLETrainerTemplate):
         proposal = self._optimizer_step(grad)
         # Perform stepsize optimization
         start = time.time()
-        alpha, residual = self._adaptive_step_size(self.params, grad, proposal, trajstates)
+
+        # We need to take the smallest step size across all MPI processes
+        sliced_alpha, sliced_residual = self._adaptive_step_size(self.params, grad, proposal, sliced_trajstates)
+        alpha_idx = jnp.argmin(util.mpi_tree_gather(sliced_alpha, dim))
+        alpha = util.mpi_tree_gather(sliced_alpha, dim)[alpha_idx]
+        residual = util.mpi_tree_gather(sliced_residual, dim)[alpha_idx]
+
         print(
             f"[Step Size] Found optimal step size for {alpha} with residual "
             f"{residual} in {(time.time() - start):.1f} s", flush=True)
@@ -576,7 +846,12 @@ class DifftreParallel(tt.MLETrainerTemplate):
 
         # Select the relevant trajstates and targets
 
-        trajstates = util.tree_take(self.traj_states, batch, on_cpu=False)
+        if self._traj_states_on_host:
+            batch_np = onp.asarray(batch)
+            trajstates_host = util.tree_take(self.traj_states, batch_np, on_cpu=True)
+            trajstates = jax.device_put(trajstates_host)
+        else:
+            trajstates = util.tree_take(self.traj_states, batch, on_cpu=False)
         targets = util.tree_take(self.targets, batch, on_cpu=False)
         statepoints = util.tree_take(self.statepoints, batch, on_cpu=False)
 
@@ -603,8 +878,15 @@ class DifftreParallel(tt.MLETrainerTemplate):
                 f"[DifftreParallel] Recomputed trajectories in {(time.time() - start) / 60.:.2f} min")
 
             # Save the recomputed trajectories
-            self.traj_states = util.tree_put(self.traj_states, batch,
-                                             trajstates, on_cpu=False)
+            if self._traj_states_on_host:
+                trajstates_host = jax.device_get(trajstates)
+                self.traj_states = util.tree_put(
+                    self.traj_states, onp.asarray(batch), trajstates_host, on_cpu=True
+                )
+            else:
+                self.traj_states = util.tree_put(
+                    self.traj_states, batch, trajstates, on_cpu=False
+                )
 
         ## Compute the loss ####################################################
 
@@ -651,6 +933,8 @@ class DifftreParallel(tt.MLETrainerTemplate):
         """Transforms the trainer states to JAX arrays."""
         super().move_to_device()
         self.early_stop.move_to_device()
+        if self._traj_states_on_host:
+            self.traj_states = jax.device_get(self.traj_states)
 
 
 class Difftre(tt.PropagationBase):
@@ -1152,7 +1436,8 @@ class RelativeEntropy(tt.PropagationBase):
             R=reference_data, copy=False)
         init_ref_batch, get_ref_batch, _ = data_loaders.init_batch_functions(
             data_loader=reference_loader, mb_size=reference_batch_size,
-            cache_size=batch_cache
+            cache_size=batch_cache,
+            prefetch=chemtrain_config.read("async_dataloading", True),
         )
         init_reference_batch_state = init_ref_batch(shuffle=True)
         self.data_states[key] = init_reference_batch_state

@@ -23,6 +23,50 @@ import pytest
 
 class TestPruning:
 
+    def test_prune_keeps_ghost_sources_of_local_receivers(self):
+        neighbor_list = graphs.SimpleSparseNeighborList(
+            senders=jnp.asarray([2, 3]),
+            receivers=jnp.asarray([0, 3]),
+            max_edges=2,
+        )
+        local = jnp.asarray([True, False, False, False])
+
+        pruned, n_valid = graphs.prune_neighbor_list(
+            neighbor_list,
+            local,
+            max_edges=neighbor_list.max_edges,
+            nbr_order=1,
+            half_list=False,
+        )
+
+        assert n_valid == 1
+        assert onp.any(
+            (onp.asarray(pruned.senders) == 2)
+            & (onp.asarray(pruned.receivers) == 0)
+        )
+
+    def test_prune_keeps_ghost_receivers_of_local_senders(self):
+        neighbor_list = graphs.SimpleSparseNeighborList(
+            senders=jnp.asarray([0, 3]),
+            receivers=jnp.asarray([2, 3]),
+            max_edges=2,
+        )
+        local = jnp.asarray([True, False, False, False])
+
+        pruned, n_valid = graphs.prune_neighbor_list(
+            neighbor_list,
+            local,
+            max_edges=neighbor_list.max_edges,
+            nbr_order=1,
+            half_list=False,
+        )
+
+        assert n_valid == 1
+        assert onp.any(
+            (onp.asarray(pruned.senders) == 0)
+            & (onp.asarray(pruned.receivers) == 2)
+        )
+
     @pytest.mark.parametrize(
         "list, local, order, pruned", [
             (
@@ -77,4 +121,3 @@ class TestPruning:
         assert onp.all(pruned_list.senders == pruned.senders)
         assert onp.all(pruned_list.receivers == pruned.receivers)
         assert max_edges == pruned.max_edges
-

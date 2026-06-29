@@ -70,9 +70,15 @@ the plugin with the following commands:
 
 ```bash
 mkdir build && cd build
-cmake -D LAMMPS_HEADER_DIR=<path/to/lammps/src> ../lammps_plugin
+cmake -D CMAKE_BUILD_TYPE=Release \
+      -D CHEMTRAIN_DEPLOY_NATIVE_ARCH=ON \
+      -D LAMMPS_HEADER_DIR=<path/to/lammps/src> ../lammps_plugin
 cmake --build .
 ```
+
+Release mode enables `-O3`; native-architecture optimization is enabled by
+default and can be disabled for portable plugin binaries with
+`-D CHEMTRAIN_DEPLOY_NATIVE_ARCH=OFF`.
 
 **Note:** When the plugin is changed, it must be recompiled via
 

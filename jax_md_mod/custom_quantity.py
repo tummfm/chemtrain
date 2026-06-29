@@ -1052,15 +1052,10 @@ def init_local_structure_index(displacement_fn,
 
 
 
-def init_rmsd(reference_positions,
-              displacement_fn,
-              reference_box,
-              idx=None,
-              weights=None):
-    """Initializes the root mean squared distance from a reference structure.
+def rigid_body_alignment(positions, reference_positions, weights=None, eps=1e-5):
+    """Computes the optimal rigid body motion aligning the positions to
+    a reference structure.
 
-    The RMSD is a common measure in the analysis of
-    macrostructures [#sargsyan2017]_.
     The weighted RMSD between a current positions $p$ and reference positions
     $q$ is defined as
 
@@ -1070,6 +1065,84 @@ def init_rmsd(reference_positions,
 
     where $R$ and $t$ define a rigid body motion that minimizes the
     RMSD [#hornung2017]_.
+    
+    Args:
+        positions: Positions to be aligned
+
+    Returns:
+        Aligned positions
+
+    References:
+        .. [#hornung2017] O. Sorkine-Hornung und M. Rabinovich,
+           „Least-Squares Rigid Motion Using SVD“.
+           https://igl.ethz.ch/projects/ARAP/svd_rot.pdf
+
+    """
+    if weights is None:
+        weights = jnp.ones((positions.shape[0],), dtype=positions.dtype)
+    weights /= jnp.sum(weights)
+
+    # Shift the positions to their weighted center of mass
+    pbar = jnp.sum(weights[:, None] * positions, axis=0)
+    X = positions - pbar
+
+    qbar = jnp.sum(weights[:, jnp.newaxis] * reference_positions, axis=0)
+    Y = reference_positions - qbar
+
+    # Weighted covariance: X^T W Y
+    cov = jnp.einsum('ni,n,nj->ij', X, weights, Y)
+
+    U, _, Vh = jnp.linalg.svd(cov, full_matrices=False, compute_uv=True)
+    V = Vh.T
+
+    # Proper rotation (avoid reflection)
+    d = jnp.linalg.det(V @ U.T)
+    sig = jnp.concatenate([
+        jnp.ones((positions.shape[1] - 1,), dtype=positions.dtype),
+        jnp.array([d], dtype=positions.dtype)
+    ])
+
+    # Compute the optional rigid body rotation
+    R = V @ jnp.diag(sig) @ U.T
+    t = qbar - R @ pbar
+
+    # Apply the rigid body motion. Rotate around the center of mass and then
+    # translate to the reference center of mass.
+    p_opt = jnp.einsum('ij,nj->ni', R, X)
+    p_opt += qbar[jnp.newaxis, :]
+
+    # Compute the mean squared deviation after alignment
+    msd = jnp.sum(weights[:, jnp.newaxis] * jnp.square(p_opt - reference_positions))
+
+    # Compute the com distance and the rotation angle
+
+    d2 = jnp.sum((pbar - qbar) ** 2)
+    d2 = jnp.where(d2 > eps, d2, eps)
+    # Save sqrt operation for gradient stability
+    d = jnp.sqrt(d2)
+
+    # Convert to rotation angle.
+    cos_theta = (jnp.trace(R) - 1) / 2
+    sin_theta = jnp.sum((R - R.T) ** 2)
+    sin_theta = jnp.where(sin_theta > eps, sin_theta, eps)
+    sin_theta = jnp.sqrt(sin_theta) / (2 * jnp.sqrt(2))
+
+    theta = jnp.arctan2(sin_theta, cos_theta)
+
+    return (R, t), p_opt, (msd, d, theta)
+
+
+
+def init_rmsd(reference_positions,
+              displacement_fn,
+              reference_box,
+              idx=None,
+              weights=None):
+    """Initializes the root mean squared distance from a reference structure.
+
+    The RMSD is a common measure in the analysis of
+    macrostructures [#sargsyan2017]_.
+
 
 
     Args:
@@ -1085,57 +1158,27 @@ def init_rmsd(reference_positions,
            „How Molecular Size Impacts RMSD Applications in Molecular Dynamics
            Simulations“, J. Chem. Theory Comput., Bd. 13, Nr. 4, S. 1518–1524,
            Apr. 2017, doi: 10.1021/acs.jctc.7b00028.
-        .. [#hornung2017] O. Sorkine-Hornung und M. Rabinovich,
-           „Least-Squares Rigid Motion Using SVD“.
-           https://igl.ethz.ch/projects/ARAP/svd_rot.pdf
+
 
     """
     if idx is None:
         idx = onp.arange(reference_positions.shape[0])
-
-    if weights is None:
-        weights = jnp.ones_like(idx)
-    weights /= jnp.sum(weights)
-
-    # The center of the positions does not matter as the structure is
-    # fit later by a rigid body motion
-    ref_q = reference_positions[idx[0]]
-    q = vmap(partial(displacement_fn, box=reference_box),
-             in_axes=(None, 0))(ref_q, reference_positions)
-    qbar = jnp.sum(weights[:, jnp.newaxis] * q, axis=0)
-    Y = q - qbar
 
     def rmsd_fn(state, **kwargs):
         box, _ = _dyn_box(reference_box, state, **kwargs)
         dyn_displacement = partial(displacement_fn, box=box)
 
         ref_p = state.position[idx[0]]
+        ref_q = reference_positions[idx[0]]
+        
         # Compute the displacements with respect to the first atoms to deal with
         # different kinds of boundary conditions
-        p = vmap(dyn_displacement, in_axes=(None, 0))(ref_p, state.position)
-        pbar = jnp.sum(weights[:, jnp.newaxis] * p, axis=0)
-        X = p - pbar
 
-        # Compute the [d, d] covariance matrix for p.shape = (N, d) and perform
-        # a singular value decomposition to obtain the optimal rotation and
-        # translation that minimizes the weighted squared distance
-        cov = jnp.einsum('ji,j,jk->ik', X, weights, Y)
+        p = vmap(dyn_displacement, in_axes=(None, 0))(ref_p, state.position[idx])
+        q = vmap(partial(displacement_fn, box=reference_box),
+                in_axes=(None, 0))(ref_q, reference_positions[idx])
 
-        print(f"Covariance has shape {cov.shape}")
-
-        U, _, Vh = jnp.linalg.svd(cov, full_matrices=True, compute_uv=True)
-
-        print(f"Shapes are V: {Vh.shape}, U: {U.shape}")
-
-        det = jnp.linalg.det(jnp.dot(U, Vh.T).T)
-        sig = jnp.append(jnp.ones(p.shape[1] - 1), det)
-        rotation = jnp.einsum('ji,j,kj->ik', Vh, sig, U)
-        translation = qbar - jnp.dot(rotation, pbar)
-
-        # With the rigid body motion we can now compute the rmsd
-        p_opt = jnp.einsum('ij,nj->ni', rotation, p)
-        p_opt += translation[jnp.newaxis, :]
-        msd = jnp.sum(weights[:, jnp.newaxis] * jnp.square(p_opt -q))
+        *_, (msd, *_) = rigid_body_alignment(p, q, weights=weights)
         rmsd = jnp.sqrt(msd)
 
         return rmsd
@@ -1143,7 +1186,7 @@ def init_rmsd(reference_positions,
     return rmsd_fn
 
 
-def init_rigid_body_alignment(displacement_fn, reference_position, weights=None, **kwargs):
+def init_rigid_body_alignment(displacement_fn, shift_fn, reference_positions, weights=None):
     """Initializes a function that aligns a structure to a reference structure.
 
     The aligned structure minimizes the (weighted) root mean squared distance
@@ -1154,48 +1197,32 @@ def init_rigid_body_alignment(displacement_fn, reference_position, weights=None,
         displacement_fn: Displacement function
         reference_position: Reference positions including all atoms.
         weights: Weight the rmsd, e.g., with masses of the particles.
-        **kwargs: Additional arguments for the displacement function.
 
     Returns:
         Returns a function to compute optimally aligned positions.
 
     """
-
-    ref_displacement_fn = partial(displacement_fn, **kwargs)
-    n_particles, dim = reference_position.shape
-
     if weights is None:
-        weights = jnp.ones(n_particles)
+        weights = jnp.ones(reference_positions.shape[0], dtype=reference_positions.dtype)
 
-    def align_fn(position, **kwargs):
+    def align_fn(positions, **kwargs):
+        ref_p = positions[0]
+        ref_q = reference_positions[0]
+        
+        # Compute the displacements with respect to the first atoms to deal with
+        # different kinds of boundary conditions
 
-        # Compute the centers of both point sets
-        q = vmap(ref_displacement_fn, in_axes=(0, None))(
-            reference_position, reference_position[0, :])
-        q_bar = jnp.mean(weights[:, jnp.newaxis] * q, axis=0) / jnp.mean(weights)
-        p = vmap(displacement_fn, in_axes=(0, None))(
-            position, position[0, :])
-        p_bar = jnp.mean(weights[:, jnp.newaxis] * p, axis=0) / jnp.mean(weights)
+        p = vmap(
+            partial(displacement_fn, **kwargs), in_axes=(None, 0)
+        )(ref_p, positions)
+        q = vmap(
+            partial(displacement_fn, **kwargs), in_axes=(None, 0)
+        )(ref_q, reference_positions)
 
-        # Recenter the points
-        p -= p_bar[jnp.newaxis, :]
-        q -= q_bar[jnp.newaxis, :]
-
-        # Compute the [d, d] covariance matrix for p.shape = (N, d) and perform
-        # a singular value decomposition to obtain the optimal rotation and
-        # translation that minimizes the weighted squared distance
-        cov = jnp.einsum('ji,j,jk->ik', p, weights, q)
-
-        U, _, Vh = jnp.linalg.svd(cov, full_matrices=True, compute_uv=True)
-
-        det = jnp.linalg.det(jnp.dot(Vh.T, U.T))
-        sig = jnp.append(jnp.ones(p.shape[1] - 1), det)
-        rotation = jnp.einsum('ji,j,kj->ik', Vh, sig, U)
-        translation = q_bar - jnp.dot(rotation, p_bar)
-
-        # With the rigid body motion we can now compute the rmsd
-        p_opt = jnp.einsum('ij,nj->ni', rotation, p)
-        p_opt += translation[jnp.newaxis, :]
+        _, p_opt, _ = rigid_body_alignment(p, q, weights=weights)
+        p_opt = vmap(
+            partial(shift_fn, **kwargs), in_axes=(None, 0)
+        )(ref_p, p_opt)
 
         return p_opt
     return align_fn

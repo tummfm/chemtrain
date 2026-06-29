@@ -14,3 +14,6 @@
 
 # Applies patches
 import jax_md_mod
+
+# Minimal global config
+from . import config  # noqa: F401

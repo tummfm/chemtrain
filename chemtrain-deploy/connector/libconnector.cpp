@@ -21,6 +21,7 @@ limitations under the License.
 #include <string>
 #include <vector>
 #include <memory>  // For std::unique_ptr
+#include <mutex>
 #include <dlfcn.h>
 
 #include "xla/literal.h"
@@ -39,11 +40,27 @@ limitations under the License.
 #include "tsl/platform/env.h"
 #include "tsl/platform/path.h"
 #include "tsl/platform/protobuf.h"
+#include "tsl/profiler/lib/nvtx_utils.h"
 
 
 namespace jcn {
 
+    bool PushCommunicationProfileRange(const char* name) {
+        auto domain = tsl::profiler::DefaultProfilerDomain();
+        if (domain == nullptr || name == nullptr) return false;
+        tsl::profiler::RangePush(domain, name);
+        return true;
+    }
+
+    void PopCommunicationProfileRange() {
+        auto domain = tsl::profiler::DefaultProfilerDomain();
+        if (domain != nullptr) tsl::profiler::RangePop(domain);
+    }
+
     bool Connector::initialized = false;
+    namespace {
+        std::mutex connector_initialization_mutex;
+    }
 
     Connector::~Connector() = default;
 
@@ -69,9 +86,13 @@ namespace jcn {
     Connector::Connector(ConnectorConfig config) {
         std::cout << "Connector constructor" << std::endl;
 
-        impl_ = std::make_unique<Impl>(config, !initialized);
+        std::lock_guard<std::mutex> lock(connector_initialization_mutex);
+        const bool should_initialize =
+            config.backend != "cpu" && !initialized;
 
-        if (!initialized) {
+        impl_ = std::make_unique<Impl>(config, should_initialize);
+
+        if (should_initialize) {
             initialized = true;
         }
 

@@ -16,7 +16,7 @@ import itertools
 import jax
 from jax import numpy as jnp, Array
 
-from chemtrain.deploy import graphs, exporter
+from chemtrain.deploy import comm, graphs, exporter
 
 from jax_md_mod import custom_partition
 from jax_md import space, partition, util as md_util
@@ -114,6 +114,23 @@ class TestExport:
         model.export()
         model.save(tmp_path / "exported_no_max_edges.ptb")
 
+    def test_export_custom_call_allowlist(self, setup_export):
+        model = setup_export(max_edges=None)
+        model.export(custom_calls=exporter.OPENEQUIVARIANCE_CUSTOM_CALLS)
+        assert [variant.name for variant in model._proto.variants] == [
+            "default"
+        ]
+
+    def test_export_resets_quantity_metadata(self, setup_export):
+        model = setup_export(max_edges=None)
+        model._export_quantities = ["stale_quantity"]
+
+        model.export()
+
+        assert set(model._export_quantities) == {"U", "F"}
+        assert "stale_quantity" not in model._export_quantities
+        assert list(model._proto.quantities) == model._export_quantities
+
     def test_symbolic_max_edges(self, tmp_path, setup_export):
         class ExportedModelSymbolic(setup_export):
 
@@ -141,3 +158,38 @@ class TestExport:
 
         with pytest.raises(AssertionError, match="has not been exported yet"):
             model.save(tmp_path / "exported_no_max_edges.ptb")
+
+    def test_communication_export_records_variants_and_widths(self, setup_export):
+        class CommunicatingModel(setup_export):
+            def energy_fn(self, pos, species, graph, comm=None):
+                energy = super().energy_fn(pos, species, graph)
+                if comm is not None:
+                    energy = comm.gather(comm.gather(energy))
+                return energy
+
+        model = CommunicatingModel(max_edges=None)
+        model.export(communication=True)
+
+        assert [variant.name for variant in model._proto.variants] == [
+            "default", "comm"
+        ]
+        default, communicating = model._proto.variants
+        assert list(default.neighbor_list.nbr_order) == [1, 1]
+        assert list(communicating.neighbor_list.nbr_order) == [1, 1]
+        assert communicating.uses_communication
+        assert communicating.communication_forward_sites == 2
+        assert list(communicating.communication_widths) == [1, 1]
+        assert communicating.communication_buffer_width == 1
+        assert not model._proto.uses_communication
+
+        # A second export retraces the model. Site metadata must be replaced,
+        # not appended to state left by the first trace.
+        model.export(communication=True)
+        communicating = model._proto.variants[1]
+        assert communicating.communication_forward_sites == 2
+        assert list(communicating.communication_widths) == [1, 1]
+
+    def test_three_argument_model_rejects_communication(self, setup_export):
+        model = setup_export(max_edges=None)
+        with pytest.raises(TypeError, match="comm=None"):
+            model.export(communication=True)
