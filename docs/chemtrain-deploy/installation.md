@@ -6,28 +6,49 @@
 The connector interfaces XLA and PJRT with MD applications such as LAMMPS,
 which might use a different building system and MPI.
 
-In general, compiling the connector requires clang with C++14 support as
-well as the NVCC cuda compiler.
+Compiling the connector requires clang with C++14 support as well as the
+NVCC CUDA compiler.
 
-The connector can be built using the following command:
+The typical GPU build command is:
 
 ```bash
-python build.py
+python build.py --enable_cuda --cuda_version 12.6.0 \
+    --cuda_compute_capabilities sm_80,sm_86
 ```
 
-Additionally, the PjRt plugin for CUDA enabled GPUs can be built using
+`--cuda_compute_capabilities` controls which GPU microarchitectures the
+connector is compiled for.
+Each value maps to a specific NVIDIA architecture:
+
+| Capability | Architecture | Example GPUs |
+|---|---|---|
+| `sm_80` | Ampere | A100 |
+| `sm_86` | Ampere | RTX 30xx, A40 |
+| `sm_89` | Ada Lovelace | RTX 40xx |
+| `sm_90` | Hopper | H100 |
+
+Compiling for multiple capabilities increases binary size but allows the
+same build to run on different GPU generations.
+If you target a single machine, passing only its capability produces a
+smaller and slightly faster binary.
+
+The PjRt plugin for CUDA-enabled GPUs can be built alongside the connector:
 
 ```bash
-python build.py --build_gpu_pjrt_plugin --enable_cuda --cuda_version 12.6.0
+python build.py --enable_cuda --cuda_version 12.6.0 \
+    --cuda_compute_capabilities sm_80,sm_86 \
+    --build_gpu_pjrt_plugin
 ```
 
 Alternatively, a prebuilt PjRt plugin can be fetched from JAX.
-Therefore, a JAX version compatible to the installed CUDA version and 
+Therefore, a JAX version compatible to the installed CUDA version and
 compatible to the XLA library must be installed.
 Then, the plugin can be fetched via
 
 ```bash
-python build.py --load_gpu_pjrt_plugin
+python build.py --enable_cuda --cuda_version 12.6.0 \
+    --cuda_compute_capabilities sm_80,sm_86 \
+    --load_gpu_pjrt_plugin
 ```
 
 ## Building LAMMPS Plugin
@@ -78,21 +99,19 @@ to discover the LAMMPS executable, the plugin, and the PJRT library.
 **Note**: Using chemtrain-deploy within a docker container requires the 
 [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
 
-Before compiling the connector, we have to determine the compute capabilities
-of the GPUs. Therefore, we can run the following command
+Before compiling the connector, determine the compute capabilities of the
+GPUs:
 
 ```bash
 nvidia-smi --query-gpu=compute_cap --format=csv,noheader
 ```
 
-We then set the compute capabilities as environment variable and build the
-docker container.
+This prints one line per GPU, e.g. `8.0` for an A100 (`sm_80`).
+Pass the result as `sm_<major><minor>` values to the build argument:
 
 ```bash
-CUDA_COMPUTE_CAPABILITIES="8.6,8.0"
-
 docker build -t chemtrain-deploy \
-    --build-arg CUDA_COMPUTE_CAPABILITIES=${CUDA_COMPUTE_CAPABILITIES} \
+    --build-arg CUDA_COMPUTE_CAPABILITIES=sm_80,sm_86 \
     -f Dockerfile .
 ```
 
