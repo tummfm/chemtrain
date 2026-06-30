@@ -21,10 +21,31 @@ limitations under the License.
 #include <memory>
 #include <string>
 #include <exception>
+#include <cstdint>
 
 #define EXPORT __attribute__((visibility("default")))
 
 namespace jcn {
+
+    /**
+     * Add an optional host range to the profiler domain already used by XLA.
+     * These functions are a small bridge for consumers such as the LAMMPS
+     * plugin, which should not depend directly on XLA or NVTX headers.
+     */
+    EXPORT bool PushCommunicationProfileRange(const char* name);
+    EXPORT void PopCommunicationProfileRange();
+
+    enum class CommunicationScalarType {
+        F32,
+        F64,
+    };
+
+    struct CommunicationCallbacks {
+        void* context = nullptr;
+        int (*exchange)(void* context, void* data, std::int64_t rows,
+                        std::int64_t cols, CommunicationScalarType type,
+                        bool reverse, const char** error) = nullptr;
+    };
 
     /**
      * Exception to indicate that the model must be recompiled du to a change
@@ -89,6 +110,12 @@ namespace jcn {
          */
         bool newton;
 
+        /** Select the exported distributed-communication model variant. */
+        bool use_communication = false;
+
+        /** Optional host communication implementation for embedded gathers. */
+        CommunicationCallbacks communication;
+
     };
 
     /**
@@ -103,6 +130,9 @@ namespace jcn {
         /** Minimum distance to local atoms for which ghost atoms must be
         communicated. */
         double comm_dist = 0.0;
+
+        /** Maximum number of packed scalars communicated for each atom. */
+        int communication_buffer_width = 0;
 
         /** The unit style of the model. */
         const char* unit_style;
@@ -124,8 +154,17 @@ namespace jcn {
         /** The estimated number of floating point operations. */
         double flops;
 
-        /** Whether recompilation was necessary **/
-        bool recompiled;
+        /** Number of executable compilations during this evaluation. */
+        int compilations;
+
+        /** Compilations performed before the first successful evaluation. */
+        int initial_compilations;
+
+        /** Runtime compilations caused by atom-buffer growth. */
+        int atom_recompilations;
+
+        /** Runtime compilations caused by neighbor-buffer growth. */
+        int edge_recompilations;
 
     };
 
@@ -137,6 +176,9 @@ namespace jcn {
 
         /** The potential energy of the system. */
         double potential;
+
+        /** Potential-energy contribution of each local atom. */
+        std::vector<double> per_atom_potential;
 
         /** The statistics of the computation. */
         Statistics stats;

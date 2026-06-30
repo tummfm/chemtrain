@@ -16,6 +16,7 @@ limitations under the License.
 
 #include <chrono>
 #include <cmath>
+#include <numeric>
 
 #include "connector/domain.h"
 #include "connector/buffer.h"
@@ -30,8 +31,8 @@ limitations under the License.
 
 namespace jcn {
 
-    AtomBuilder::AtomBuilder(float atom_multiplier, bool newton)
-        : max_atoms(0), atom_multiplier(atom_multiplier) {
+    AtomBuilder::AtomBuilder(float atom_multiplier, bool newton, const std::vector<std::string>& quantities)
+        : max_atoms(0), atom_multiplier(atom_multiplier), quantities(quantities) {
             newton_literal = std::make_unique<xla::Literal>(
                 xla::LiteralUtil::CreateR0<bool>(newton)
             );
@@ -138,20 +139,39 @@ namespace jcn {
 
     }
 
-    double AtomBuilder::evaluate_domain(bool success, int inum, int gnum, double **f, std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>& results) {
+    double AtomBuilder::evaluate_domain(bool success, int inum, int gnum, double **f,
+        std::vector<std::vector<std::unique_ptr<xla::PjRtBuffer>>>& results,
+        std::vector<double>& per_atom_potential) {
 
-        double potential;
+        double potential = 0.0;
+        per_atom_potential.clear();
 
         Logger logger = Logger::getlogger();
 
         if (success) {
             auto start = std::chrono::high_resolution_clock::now();
 
-            absl::StatusOr<std::shared_ptr<xla::Literal>> force_literal = results[0][0]->ToLiteralSync();
-            absl::StatusOr<std::shared_ptr<xla::Literal>> energy_literal = results[0][1]->ToLiteralSync();
+            // Try to map returned buffers to quantities using stored proto keys.
+            int energy_idx = -1;
+            int force_idx = -1;
+            for (int i = 0; i < static_cast<int>(quantities.size()); ++i) {
+                if (quantities[i] == "U") energy_idx = i;
+                if (quantities[i] == "F") force_idx = i;
+            }
+
+            // Require explicit mapping from the exported model proto quantities.
+            // The `quantities` vector must contain entries 'F' and 'U' and the
+            // connector will strictly map those keys to the returned result
+            // buffers.
+            if (force_idx < 0 || energy_idx < 0) {
+                throw std::runtime_error("Model proto does not list required quantities 'F' and 'U'.");
+            }
+
+            absl::StatusOr<std::shared_ptr<xla::Literal>> force_literal = results[0][force_idx]->ToLiteralSync();
+            absl::StatusOr<std::shared_ptr<xla::Literal>> energy_literal = results[0][energy_idx]->ToLiteralSync();
 
             if (!force_literal.ok() || !energy_literal.ok()) {
-                throw std::runtime_error("Failed to convert buffer to literal");
+                throw std::runtime_error("Failed to convert buffer to literal for F/U using proto indices");
             }
 
             float *force_data = force_literal.value()->data<float>().data();
@@ -177,9 +197,19 @@ namespace jcn {
             auto end = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double> duration = end - start;
 
-            logger.log(LogLevel::DEBUG, "Time taken for force backtransfer: " + std::to_string(duration.count()) + " seconds");
+            logger.log(
+                LogLevel::DEBUG, "Time taken for force backtransfer: " 
+                + std::to_string(duration.count()) + " seconds"
+            );
 
-            potential = static_cast<double>(potential_data[0]);
+            // The exported energy buffer already contains one contribution per
+            // atom. Preserve the local entries for LAMMPS compute pe/atom and
+            // sum the same values for the domain's global-energy contribution.
+            per_atom_potential.assign(potential_data, potential_data + inum);
+            potential = std::accumulate(
+                per_atom_potential.begin(), per_atom_potential.end(), 0.0,
+                [](double sum, float v){ return sum + static_cast<double>(v); }
+            );
 
             // Remove the buffers after computation
             buffers.clear();

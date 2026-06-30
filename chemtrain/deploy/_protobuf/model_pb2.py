@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0bmodel.proto\x12\x03jcn\"\x83\x03\n\x05Model\x12\x13\n\x0bmlir_module\x18\x01 \x01(\t\x12.\n\rneighbor_list\x18\x04 \x01(\x0b\x32\x17.jcn.Model.NeighborList\x12\x17\n\nunit_style\x18\x05 \x01(\tH\x00\x88\x01\x01\x12\x12\n\nquantities\x18\x06 \x03(\t\x1a\x9b\x01\n\x0cNeighborList\x12)\n\x04type\x18\x01 \x01(\x0e\x32\x1b.jcn.Model.NeighborListType\x12\x0e\n\x06\x63utoff\x18\x02 \x01(\x02\x12\x11\n\tnbr_order\x18\x03 \x03(\x05\x12\x16\n\thalf_list\x18\x04 \x01(\x08H\x00\x88\x01\x01\x12\x17\n\x0fstatistics_keys\x18\x05 \x03(\tB\x0c\n\n_half_list\"[\n\x10NeighborListType\x12\x0f\n\x0bUNSPECIFIED\x10\x00\x12\x11\n\rDEVICE_SPARSE\x10\x01\x12\x10\n\x0cSIMPLE_DENSE\x10\x02\x12\x11\n\rSIMPLE_SPARSE\x10\x03\x42\r\n\x0b_unit_styleb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0bmodel.proto\x12\x03jcn\"\xdb\x05\n\x05Model\x12\x13\n\x0bmlir_module\x18\x01 \x01(\t\x12.\n\rneighbor_list\x18\x04 \x01(\x0b\x32\x17.jcn.Model.NeighborList\x12\x17\n\nunit_style\x18\x05 \x01(\tH\x00\x88\x01\x01\x12\x12\n\nquantities\x18\x06 \x03(\t\x12\x1a\n\x12uses_communication\x18\x07 \x01(\x08\x12\"\n\x1a\x63ommunication_buffer_width\x18\x08 \x01(\x05\x12)\n\x08variants\x18\t \x03(\x0b\x32\x17.jcn.Model.ModelVariant\x1a\x9b\x01\n\x0cNeighborList\x12)\n\x04type\x18\x01 \x01(\x0e\x32\x1b.jcn.Model.NeighborListType\x12\x0e\n\x06\x63utoff\x18\x02 \x01(\x02\x12\x11\n\tnbr_order\x18\x03 \x03(\x05\x12\x16\n\thalf_list\x18\x04 \x01(\x08H\x00\x88\x01\x01\x12\x17\n\x0fstatistics_keys\x18\x05 \x03(\tB\x0c\n\n_half_list\x1a\xea\x01\n\x0cModelVariant\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x13\n\x0bmlir_module\x18\x02 \x01(\t\x12.\n\rneighbor_list\x18\x03 \x01(\x0b\x32\x17.jcn.Model.NeighborList\x12\x1a\n\x12uses_communication\x18\x04 \x01(\x08\x12\"\n\x1a\x63ommunication_buffer_width\x18\x05 \x01(\x05\x12#\n\x1b\x63ommunication_forward_sites\x18\x06 \x01(\x05\x12\x1c\n\x14\x63ommunication_widths\x18\x07 \x03(\x05J\x04\x08\x08\x10\t\"[\n\x10NeighborListType\x12\x0f\n\x0bUNSPECIFIED\x10\x00\x12\x11\n\rDEVICE_SPARSE\x10\x01\x12\x10\n\x0cSIMPLE_DENSE\x10\x02\x12\x11\n\rSIMPLE_SPARSE\x10\x03\x42\r\n\x0b_unit_styleb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -32,9 +32,11 @@ _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'model_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
   _globals['_MODEL']._serialized_start=21
-  _globals['_MODEL']._serialized_end=408
-  _globals['_MODEL_NEIGHBORLIST']._serialized_start=145
-  _globals['_MODEL_NEIGHBORLIST']._serialized_end=300
-  _globals['_MODEL_NEIGHBORLISTTYPE']._serialized_start=302
-  _globals['_MODEL_NEIGHBORLISTTYPE']._serialized_end=393
+  _globals['_MODEL']._serialized_end=752
+  _globals['_MODEL_NEIGHBORLIST']._serialized_start=252
+  _globals['_MODEL_NEIGHBORLIST']._serialized_end=407
+  _globals['_MODEL_MODELVARIANT']._serialized_start=410
+  _globals['_MODEL_MODELVARIANT']._serialized_end=644
+  _globals['_MODEL_NEIGHBORLISTTYPE']._serialized_start=646
+  _globals['_MODEL_NEIGHBORLISTTYPE']._serialized_end=737
 # @@protoc_insertion_point(module_scope)

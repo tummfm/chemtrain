@@ -39,12 +39,16 @@ create_atoms 1 random 4170 341341 simulation_box
 # 3) Simulation settings
 mass 1 18
 
-# Loads the previously exported model. Numbers after the backend ("cpu") are
-# multipliers to adjust the buffers. The first number corresponds to the extra
-# capacity for ghost atoms and the second number corresponds to the extra
-# capacity for edges in the neighbor list
-pair_style chemtrain_deploy cpu 0.95 # <pjrt_device or cpu> <memory_fraction>
+# Loads the previously exported model. ``comm off`` selects its ordinary
+# ``default`` variant and is also the default when the option is omitted.
+pair_style chemtrain_deploy cpu 0.95 comm off # <backend> <memory_fraction>
 pair_coeff * * model.ptb 1.1 1.1 # <path_to_model> <buffer_multiplier> <buffer_multiplier>
+
+# A model exported with ``export(communication=True)`` also contains a
+# distributed ``comm`` variant. Select it on a GPU with Newton pair forces on:
+# newton on
+# pair_style chemtrain_deploy cuda 0.95 comm on
+# Requesting ``comm on`` without that variant, or with Newton off, is an error.
 
 # 4) Visualization
 thermo 10

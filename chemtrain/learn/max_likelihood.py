@@ -25,9 +25,15 @@ from jax.sharding import (
     Mesh, PartitionSpec, NamedSharding, SingleDeviceSharding
 )
 from jax_sgmc import data
+import mpi4py
 import optax
 
 from chemtrain import util
+
+try:
+    import mpi4jax
+except ImportError:
+        mpi4jax = None
 
 try:
     from jax import shard_map
@@ -146,15 +152,20 @@ def shmap_update_fn(batched_model, loss_fn, optimizer, penalty_fn=None):
     param_loss_fn = _get_param_loss_fn(loss_fn, batched_model, penalty_fn)
 
     if mesh.size > 1:
+        assert not util.use_mpi(), (
+            "MPI is not supported with sharding."
+        )
+
         @jax.jit
         @partial(jax.shard_map, mesh=mesh, in_specs=(
             PartitionSpec('batch',),
             PartitionSpec(),
             PartitionSpec()
         ), out_specs=PartitionSpec())
-        def _inner(batch, params, opt_state):
+        def _inner_sharded(batch, params, opt_state):
             (loss, per_target_loss), grad = value_and_grad(
                 param_loss_fn, has_aux=True)(params, batch)
+            # step optimizer within pmap to minimize communication overhead
             grad = lax.pmean(grad, axis_name='batch')
             loss = lax.pmean(loss, axis_name='batch')
             per_target_loss = lax.pmean(per_target_loss, axis_name='batch')
@@ -170,9 +181,15 @@ def shmap_update_fn(batched_model, loss_fn, optimizer, penalty_fn=None):
             (loss, per_target_loss), grad = value_and_grad(
                 param_loss_fn, has_aux=True)(params, batch)
 
+            if util.use_mpi():
+                loss = util.mpi_tree_mean(loss)
+                per_target_loss = util.mpi_tree_mean(per_target_loss)
+                grad = util.mpi_tree_mean(grad)
+
             new_params, new_opt_state = step_optimizer(
                 params, opt_state, grad, optimizer)
 
+            return new_params, new_opt_state, loss, grad, per_target_loss
             return new_params, new_opt_state, loss, grad, per_target_loss
 
     def update_fn(params, opt_state, batch, per_target=False):
@@ -219,13 +236,19 @@ def shmap_loss_fn(batched_model, loss_fn, penalty_fn=None):
     param_loss_fn = _get_param_loss_fn(loss_fn, batched_model, penalty_fn)
 
     if mesh.size > 1:
+        assert not util.use_mpi(), (
+            "MPI is not supported with sharding."
+        )
+
         @jax.jit
-        @partial(jax.shard_map, mesh=mesh, in_specs=(
-            PartitionSpec('batch'),
-            PartitionSpec(),
-        ), out_specs=PartitionSpec())
-        def _inner(batch, params):
-            loss, per_target_loss = param_loss_fn(params, *batch)
+        def batch_update(params, data):
+            if mesh.size > 1:
+                @partial(jax.shard_map, mesh=mesh, in_specs=(
+                    PartitionSpec('batch'),
+                    PartitionSpec(),
+                ), out_specs=PartitionSpec())
+                def _inner(batch, params):
+                    loss, per_target_loss = param_loss_fn(params, *batch)
 
             loss = lax.pmean(loss, axis_name='batch')
             per_target_loss = lax.pmean(per_target_loss, axis_name='batch')
@@ -236,6 +259,11 @@ def shmap_loss_fn(batched_model, loss_fn, penalty_fn=None):
         @jax.jit
         def _inner(batch, params):
             loss, per_target_loss = param_loss_fn(params, *batch)
+            
+            if util.use_mpi():
+                loss = util.mpi_tree_mean(loss)
+                per_target_loss = util.mpi_tree_mean(per_target_loss)
+
             return loss, per_target_loss
 
     def shmapped_loss_fn(params, batch, mask=None, per_target=False):
@@ -277,13 +305,25 @@ def shmap_model(batched_model):
     split = NamedSharding(mesh, PartitionSpec('batch'))
 
     if mesh.size > 1:
+        if util.use_mpi():
+            raise ValueError(
+                "MPI is not supported with sharding. Please use pmap-based functions instead."
+            )
+
         _model = jax.jit(jax.shard_map(
             batched_model, mesh=mesh,
             in_specs=(PartitionSpec(), PartitionSpec('batch',)),
             out_specs=PartitionSpec('batch',)
         ))
     else:
-        _model = jax.jit(batched_model)
+        @jax.jit
+        def _model(params, batch):
+            predictions = jax.jit(batched_model)(params, batch)
+            
+            if util.use_mpi():
+                predictions = util.mpi_tree_gather(predictions)
+            
+            return predictions
 
     def model(params, batch):
         if mesh.size > 1:

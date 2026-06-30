@@ -14,7 +14,7 @@
 
 """Utility functions helpful in designing new trainers."""
 from functools import partial
-from typing import Any
+from typing import Any, cast
 
 import chex
 import cloudpickle as pickle
@@ -26,6 +26,176 @@ from jax.tree_util import tree_map
 import jax_md_mod
 from jax_md import simulate, partition
 import numpy as onp
+
+try:
+    import mpi4py.MPI as MPI
+except Exception:
+    MPI = None
+
+try:
+    import mpi4jax
+except Exception:
+    mpi4jax = None
+
+
+def use_mpi():
+    """Whether MPI is available."""
+    if MPI is None:
+        return False
+    try:
+        if hasattr(MPI, "Is_initialized") and not MPI.Is_initialized():
+            return False
+        return MPI.COMM_WORLD.Get_size() > 1
+    except Exception as e:
+        print(f"Initializing MPI failed with error: {e}")
+        return False
+
+
+def is_root():
+    """Whether the current MPI process is the root process."""
+    if not use_mpi():
+        return True
+    assert MPI is not None
+    return MPI.COMM_WORLD.Get_rank() == 0
+
+
+def get_mpi():
+    """Returns the MPI communicator."""
+    if not use_mpi():
+        return None
+    assert MPI is not None
+    return MPI
+
+
+def get_communicator():
+    """Returns the MPI communicator."""
+    if not use_mpi():
+        return None
+    assert MPI is not None
+    return MPI.COMM_WORLD
+
+
+def mpi_tree_slice(tree, dim=None):
+    """Slices a pytree with disjoint subsets across MPI processes."""
+    if not use_mpi():
+        return tree, None
+
+    leaves = tree_util.tree_leaves(tree)
+    if dim is None:
+        dim = leaves[0].shape[0]
+
+    assert all(
+        leaf.shape[0] == leaves[0].shape[0] for leaf in leaves
+    ), 'Tree first dimension size is not equal.'
+
+    comm = get_communicator()
+    assert comm is not None
+    rank = comm.Get_rank()
+    size = comm.Get_size()
+    return tree_util.tree_map(lambda x: x[rank::size], tree), dim
+
+
+def mpi_tree_broadcast(tree, root: int = 0):
+    """Broadcast a pytree from `root` to all MPI processes using mpi4jax."""
+    if not use_mpi():
+        return tree
+
+    if mpi4jax is None:
+        raise RuntimeError(
+            "MPI is available (mpi4py), but mpi4jax is not installed. "
+            "Install mpi4jax to use mpi_tree_broadcast."
+        )
+
+    MPI_mod = cast(Any, MPI)
+    mpi4jax_mod = cast(Any, mpi4jax)
+
+    comm = get_communicator()
+    assert comm is not None
+    rank = comm.Get_rank()
+
+    def _bcast_leaf(x):
+        x = jnp.asarray(x)
+        if rank != root:
+            x = jnp.zeros_like(x)
+        res = mpi4jax_mod.allreduce(
+            x, MPI_mod.LOR if x.dtype == jnp.bool_ else MPI_mod.SUM, comm=comm
+        )
+        return res[0] if isinstance(res, tuple) else res
+
+    return tree_util.tree_map(_bcast_leaf, tree)
+
+
+def mpi_tree_bcast(tree, root: int = 0):
+    return mpi_tree_broadcast(tree, root=root)
+
+
+def mpi_tree_gather(tree, dim=None):
+    """Gathers a pytree from all MPI processes."""
+    if not use_mpi():
+        return tree
+
+    if mpi4jax is None:
+        raise RuntimeError(
+            "MPI is available (mpi4py), but mpi4jax is not installed. "
+            "Install mpi4jax to use mpi_tree_gather/mpi_tree_mean inside jitted code."
+        )
+    MPI_mod = cast(Any, MPI)
+    mpi4jax_mod = cast(Any, mpi4jax)
+    
+    comm = get_communicator()
+    assert comm is not None
+    rank = comm.Get_rank()
+    size = comm.Get_size()
+
+    gathered_tree = tree_util.tree_map(
+        lambda x: jnp.zeros(
+            (size * x.shape[0] if dim is None else dim, *x.shape[1:]), dtype=x.dtype
+        ).at[rank::size].set(x), tree
+    )
+    tree = tree_util.tree_map(
+        lambda x: mpi4jax_mod.allreduce(
+            x, MPI_mod.LOR if x.dtype == jnp.bool_ else MPI_mod.SUM, comm=comm
+        ), gathered_tree
+    )
+
+    tree = tree_util.tree_map(lambda x: x[0] if isinstance(x, tuple) else x, tree)
+
+    return tree
+
+
+def mpi_tree_mean(tree, dim=None):
+    """Mean of a pytree from all MPI processes."""
+    if not use_mpi():
+        return tree
+
+    if mpi4jax is None:
+        raise RuntimeError(
+            "MPI is available (mpi4py), but mpi4jax is not installed. "
+            "Install mpi4jax to use mpi_tree_gather/mpi_tree_mean inside jitted code."
+        )
+    MPI_mod = cast(Any, MPI)
+    mpi4jax_mod = cast(Any, mpi4jax)
+    
+    comm = get_communicator()
+    assert comm is not None
+    rank = comm.Get_rank()
+    size = comm.Get_size()
+
+    if dim is None:
+        slice_size = 1
+        dim = size
+    else:
+        slice_size = onp.arange(dim)[rank::size].size
+
+    tree = tree_util.tree_map(
+        lambda x: mpi4jax_mod.allreduce(
+            x * (slice_size / dim), MPI_mod.SUM, comm=comm
+        ), tree
+    )
+
+    tree = tree_util.tree_map(lambda x: x[0] if isinstance(x, tuple) else x, tree)
+
+    return tree
 
 
 # freezing seems to give slight performance improvement

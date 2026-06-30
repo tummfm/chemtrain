@@ -113,11 +113,12 @@ class TestForceMatching:
         # ## Setup Optimizer
 
         batch_per_device = 10
+        batch = batch_per_device * jax.device_count()
         epochs = 25
         initial_lr = 0.1
         lr_decay = 0.1
 
-        lrd = int(position_dataset.shape[0] / batch_per_device * epochs)
+        lrd = int(position_dataset.shape[0] / batch * epochs)
         lr_schedule = optax.exponential_decay(initial_lr, lrd, lr_decay)
         optimizer = optax.chain(
             optax.scale_by_adam(),

@@ -144,6 +144,7 @@ API Documentation
 
    chemtrain-deploy/installation
    chemtrain-deploy/getting_started
+   chemtrain-deploy/mace_foundation_models
    chemtrain-deploy/connector
    chemtrain-deploy/implementation
 

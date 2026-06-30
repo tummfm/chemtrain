@@ -52,4 +52,32 @@ message Model {
 
   repeated string quantities = 6;
 
+  // The exported module contains ordered feature-communication FFI calls.
+  bool uses_communication = 7;
+
+  // Maximum number of scalar features packed by a communication call.
+  int32 communication_buffer_width = 8;
+
+  // One executable form of the same physical model. Keeping variants in one
+  // file lets LAMMPS select the distributed graph without changing model paths.
+  message ModelVariant {
+    // Runtime selector used by pair_style's comm on/off option. "default" and
+    // "comm" are reserved names and may each occur at most once.
+    string name = 1;
+    // Complete StableHLO module; LAMMPS never retraces or rewrites variants.
+    string mlir_module = 2;
+    NeighborList neighbor_list = 3;
+    bool uses_communication = 4;
+    // Maximum width sizes LAMMPS buffers once during pair initialization.
+    int32 communication_buffer_width = 5;
+    // Forward sites are stored in execution order. The runtime always checks
+    // their count and the corresponding ordered widths.
+    int32 communication_forward_sites = 6;
+    repeated int32 communication_widths = 7;
+    reserved 8;
+  }
+
+  // Empty for legacy files. New exporters write at least a "default" variant.
+  repeated ModelVariant variants = 9;
+
 }

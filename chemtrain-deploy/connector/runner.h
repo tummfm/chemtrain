@@ -18,6 +18,7 @@ limitations under the License.
 #include "connector/graph_builder.h"
 #include "connector/libconnector.h"
 #include "connector/domain.h"
+#include "connector/communication.h"
 #include "connector/model.pb.h"
 
 #include "xla/literal.h"
@@ -37,6 +38,8 @@ limitations under the License.
 #include "tsl/platform/path.h"
 #include "tsl/platform/protobuf.h"
 
+#include <vector>
+
 #ifndef RUNNER_H
 #define RUNNER_H
 
@@ -47,7 +50,7 @@ namespace jcn {
 
     class Runner {
     public:
-        Runner(ConnectorConfig config, bool initialize);
+        Runner(ConnectorConfig connector_config, bool initialize);
         ~Runner() = default;
 
         ModelProperties load_model(ModelConfig config);
@@ -77,15 +80,29 @@ namespace jcn {
 
         ConnectorConfig config;
 
+        // Index into client->addressable_devices() used for buffer allocation.
+        int pjrt_device_index_ = 0;
+
         /*
          * Saves the recompilation request until the exectuable is actually
          * recompiled.
          */
         bool recompilation_required = false;
+        bool has_successful_execution_ = false;
+
+        // Shape discovery can request a collective retry before compilation is
+        // allowed. Preserve its causes until the retry actually compiles them.
+        bool atom_recompilation_required_ = false;
+        bool edge_recompilation_required_ = false;
 
         float flops_;
 
         bool newton;
+
+        CommunicationCallbacks communication_callbacks;
+        CommunicationWorkspace communication_workspace_;
+        int communication_forward_sites_ = 0;
+        std::vector<int> communication_widths_;
 
     };
 

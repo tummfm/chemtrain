@@ -20,7 +20,7 @@ import pickle
 import time
 import warnings
 from os import PathLike
-from typing import Any, Mapping, Dict, Callable
+from typing import Any, Mapping, Dict, Callable, Optional
 
 import jax.tree_util
 import numpy as onp
@@ -29,6 +29,7 @@ from jax_sgmc.data import numpy_loader
 from jax_md_mod import custom_quantity
 
 from chemtrain import (util)
+from chemtrain import config as chemtrain_config
 from chemtrain.learn import (
     force_matching, max_likelihood, difftre, property_prediction
 )
@@ -49,7 +50,7 @@ from chemtrain.typing import EnergyFnTemplate, TrajFn
 class PropertyPrediction(tt.DataParallelTrainer):
     """Trainer for direct prediction of molecular properties."""
     def __init__(self, error_fn, prediction_model, init_params, optimizer,
-                 graph_dataset, targets, batch_per_device=1, batch_cache=10,
+                 graph_dataset, targets, batch=1, batch_per_device=None, batch_cache=10,
                  train_ratio=0.7, val_ratio=0.1, test_error_fn=None,
                  shuffle=False, convergence_criterion="window_median",
                  checkpoint_folder="Checkpoints"):
@@ -62,7 +63,7 @@ class PropertyPrediction(tt.DataParallelTrainer):
 
         super().__init__(
             loss_fn, model, init_params, optimizer, checkpoint_path,
-            batch_per_device, batch_cache,
+            batch=batch, batch_cache=batch_cache, batch_per_device=batch_per_device,
             convergence_criterion=convergence_criterion
         )
 
@@ -127,8 +128,8 @@ class ForceMatching(tt.DataParallelTrainer):
         energy_fn_has_aux: Energy function has an auxiliary output. The
             energy function will be called with argument ``mode="with_aux"``
             and should return a tuple ``(pot, aux)``.
-        batch_per_device: Number of samples to process vectorized on every
-            device.
+        batch: Global batch size across MPI ranks and local devices.
+        batch_per_device: Legacy local batch size per device (per rank).
         batch_cache: Number of batches to load into the device memories.
         full_checkpoint: Save the whole trainer instead of only some statistics.
         disable_shmap: Use ``pmap`` instead of ``shmap`` for parallelization.
@@ -165,7 +166,8 @@ class ForceMatching(tt.DataParallelTrainer):
                  additional_targets: Dict[str, Dict] = None,
                  feature_extract_fns: Dict[str, Callable] = None,
                  energy_fn_has_aux: bool = False,
-                 batch_per_device: int = 1,
+                 batch: Optional[int] = None,
+                 batch_per_device: Optional[int] = None,
                  batch_cache: int = 10,
                  full_checkpoint: bool = False,
                  disable_shmap: bool = False,
@@ -205,7 +207,8 @@ class ForceMatching(tt.DataParallelTrainer):
             error_fns=error_fns, gammas=gammas, weights_keys=weights_keys)
 
         super().__init__(loss_fn, model, init_params, optimizer,
-                         checkpoint_path, batch_per_device, batch_cache,
+                         checkpoint_path, batch=batch, batch_cache=batch_cache,
+                         batch_per_device=batch_per_device,
                          disable_shmap=disable_shmap, penalty_fn=penalty_fn,
                          convergence_criterion=convergence_criterion,
                          full_checkpoint=full_checkpoint,
@@ -1152,7 +1155,8 @@ class RelativeEntropy(tt.PropagationBase):
             R=reference_data, copy=False)
         init_ref_batch, get_ref_batch, _ = data_loaders.init_batch_functions(
             data_loader=reference_loader, mb_size=reference_batch_size,
-            cache_size=batch_cache
+            cache_size=batch_cache,
+            prefetch=chemtrain_config.read("async_dataloading", True),
         )
         init_reference_batch_state = init_ref_batch(shuffle=True)
         self.data_states[key] = init_reference_batch_state

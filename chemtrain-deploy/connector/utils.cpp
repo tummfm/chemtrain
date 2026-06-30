@@ -34,7 +34,17 @@ namespace jcn {
             return;
         };
 
-        loglevel = std::stoi(loglevel_env);
+        try {
+            std::string val(loglevel_env);
+            loglevel = std::stoi(val);
+
+            return;
+        } catch (const std::exception& e) {
+            std::cerr << "[JCN] Invalid JCN_LOGLEVEL value: '" << loglevel_env 
+                      << "'. Expected an integer. Error: " << e.what() << std::endl;
+        }
+
+        throw std::runtime_error("Invalid JCN_LOGLEVEL environment variable");
 
     }
 

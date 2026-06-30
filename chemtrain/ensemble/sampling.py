@@ -15,8 +15,9 @@
 """Utility functions to sample from ensembles. """
 import functools
 from functools import partial
-from typing import Any, Dict, Callable, Mapping, Tuple, Union, Protocol
+from typing import Any, Dict, Callable, Mapping, Tuple, Union, Protocol, Optional
 
+import jax
 import numpy as onp
 
 import chex
@@ -232,6 +233,233 @@ def initialize_simulator_template(init_simulator_fn,
         return init_state
 
     return init_reference_state, simulator_template
+
+
+def reduced_energy_wrapper(reduced_energy_fn):
+
+    @functools.wraps(reduced_energy_fn)
+    def wrapped(*args, exchange_kwargs, **kwargs):
+        return lax.map(lambda k: reduced_energy_fn(*args, **{**kwargs, **k}), exchange_kwargs)
+
+    return wrapped
+
+
+def nvt_reduced_energy_wrapper(energy_fn_template):
+    """Reduced energy function for NVT ensemble."""
+
+    @reduced_energy_wrapper
+    def reduced_energy(state, neighbor=None, kT=None, energy_params=None, **kwargs):
+        energy_fn = energy_fn_template(energy_params)
+
+        if kT is None:
+            raise ValueError('kT needs to be provided for NVT ensemble.')
+
+        return energy_fn(state.position, neighbor=neighbor, **kwargs) / kT
+    
+    return reduced_energy
+
+
+def initialize_replica_exchange(energy_fn_template,
+                                simulator_template,
+                                timings: TimingClass,
+                                exchange_every: int,
+                                quantities=None,
+                                vmap_batch=10,
+                                reduced_energy_wrapper: Callable = nvt_reduced_energy_wrapper,
+                                comm=None):
+    """Initializes the replica exchange simulator template and reference state.
+
+    Args:
+        simulator_template: Simulator template initialized via
+            ``initialize_simulator_template``.
+        energy_fn_template: Energy function template to initialize the energy
+            function for the simulator template.
+        init_with_PRNGKey: Whether simulator init function takes an PRNGKey,
+            should be set to False e.g. for the Gradient Descend energy
+            minimization routine.
+        reduced_energy_wrapper: Function to wrap the energy function to compute
+            the reduced energy for replica exchange. By default, the reduced
+            energy for the NVT ensemble (U/kT) is computed.
+
+            
+    Returns: Returns a function to initialize the replica exchange simulator state and
+        the corresponding replica exchange simulator template.
+
+    """
+    if quantities is None:
+        quantities = {}
+
+    def constant_fn(_, c):
+        return c
+
+    # Required for replica exchange decision
+    quantities["reduced_energy"] = reduced_energy_wrapper(energy_fn_template)
+
+    def candidate_pairs(key, n_replicas):
+        """Generates candidate pairs for replica exchange."""
+        # Generate random pairs of adjacent replicas
+        n_pairs = n_replicas // 2
+
+        even_candidates = jnp.stack([
+            2 * jnp.arange(n_pairs),
+            2 * jnp.arange(n_pairs) + 1,
+        ])
+        odd_candidates = even_candidates + 1
+
+        candidates = jnp.where(
+            random.bernoulli(key), even_candidates, odd_candidates
+        )
+
+        invalid = jnp.logical_or(
+            candidates[0] >= n_replicas,candidates[1] >= n_replicas
+        )
+
+        return candidates, invalid
+
+
+    def simulate_to_exchange(state, ipt, *, params, apply_kwargs, exchange_kwargs):
+        key, sim_states = state
+        dynamic_kwargs, times = ipt
+        
+        energy_fn = energy_fn_template(params)
+        _, apply_fn = simulator_template(energy_fn)
+
+        # Run simulation to the next exchange point and compute the trajectory
+
+        @vmap
+        def wrapped_run_to_next_printout_fn(sim_state, kwargs):
+            _kwargs = {
+                **apply_kwargs,
+                **{k: partial(constant_fn, c=v) for k, v in kwargs.items()},
+            }
+
+            sim_state, trajectory = lax.scan(
+                run_to_next_printout_neighbors(apply_fn, timings, _kwargs),
+                sim_state, xs=times.t_production_start
+            )
+
+            overflow = sim_state.nbrs.did_buffer_overflow
+
+            traj_state = TrajectoryState(
+                sim_state=sim_state, trajectory=trajectory,
+                overflow=overflow, dynamic_kwargs=dynamic_kwargs,
+                static_kwargs=kwargs, energy_params=params
+            )
+
+            aux_trajectory = quantity_traj(
+                traj_state, quantities, params, vmap_batch)
+            
+            return traj_state.replace(aux=aux_trajectory)
+
+        if util.use_mpi():
+            # Communicate the sim_states to the correct devices for the next
+            # exchange step
+            ipt, dim = util.mpi_tree_slice((sim_states, exchange_kwargs))
+        else:
+            dim = 1
+            ipt = (sim_states, exchange_kwargs)
+
+        res = wrapped_run_to_next_printout_fn(*ipt)
+
+        if util.use_mpi():
+            trajectories = util.mpi_tree_gather(res, dim=dim)
+        else:
+            trajectories = res
+
+        n_replicas = sim_states.sim_state.position.shape[0]
+        # Compute the reduced energy for the exchange decision
+        key, split1, split2 = random.split(key, 3)
+        (ca, cb), invalid = candidate_pairs(split1, n_replicas)
+
+        # Always sanitize indices before any gather/scatter.
+        ca_safe = jnp.where(invalid, n_replicas, ca)
+        cb_safe = jnp.where(invalid, n_replicas, cb)
+
+        splits = random.split(split2, n_replicas // 2)
+        accept, diff = exchange_step(splits, ca_safe, cb_safe, trajectories)
+        accept = jnp.where(invalid, False, accept)
+
+        perm = jnp.arange(n_replicas)
+        perm = perm.at[ca_safe].set(jnp.where(accept, cb_safe, ca_safe))
+        perm = perm.at[cb_safe].set(jnp.where(accept, ca_safe, cb_safe))
+
+        new_sim_states = util.tree_map(
+            lambda x: x[perm], trajectories.sim_state
+        )
+
+        new_state = (key, new_sim_states)
+        out = (trajectories.replace(sim_state=new_sim_states), diff, accept)
+        return new_state, out
+
+
+    @functools.partial(jax.vmap, in_axes=(0, 0, 0, None))
+    def exchange_step(key, idx_a, idx_b, trajs):
+        """Compute propability (or acceptance) of exchange"""
+
+        # Exchange the kwargs for the trajs
+        # `reduced_energy` has shape (n_replicas, n_snapshots, n_states).
+        # Use the last snapshot as the exchange configuration.
+        u_aa = trajs.aux["reduced_energy"][idx_a, -1, idx_a]
+        u_bb = trajs.aux["reduced_energy"][idx_b, -1, idx_b]
+        u_ab = trajs.aux["reduced_energy"][idx_a, -1, idx_b]
+        u_ba = trajs.aux["reduced_energy"][idx_b, -1, idx_a]
+
+        diff = u_aa + u_bb - u_ab - u_ba
+
+        u = jnp.log(random.uniform(key, shape=()))
+        accept = diff > u
+
+        return accept, diff
+
+        
+    @jax.jit
+    def run_replica_exchange(key, params, sim_states, **kwargs):
+        # Improve backwards-compatibility
+        if isinstance(sim_states, tuple):
+            sim_states = SimulatorState(
+                sim_state=sim_states[0], nbrs=sim_states[1])
+
+        multiple_trajs = sim_states.sim_state.position.ndim > 2
+        assert multiple_trajs, (
+            'Replica exchange requires multiple replicas, but only a single '
+            'reference state was provided.'
+        )
+
+        n_replicas = sim_states.sim_state.position.shape[0]
+        apply_kwargs, static_kwargs, dynamic_kwargs = canonicalize_state_kwargs(
+            kwargs, timings.t_production_end, n_replicas)
+        
+        assert jax.tree.reduce(
+            lambda x, y: x & (y.shape[0] == n_replicas), static_kwargs, initializer=True
+        ), (
+            'All static kwargs need to have the same leading dimension as the number of replicas.'
+        )
+
+        # TODO: Run equilibration
+
+        # Split time axis into exchange windows so scan iterates over windows.
+        dynamic_kwargs = util.tree_vmap_split(dynamic_kwargs, exchange_every)
+        timings = timings.replace(
+            t_production_start=jnp.reshape(timings.t_production_start, (-1, exchange_every)),
+            t_production_end=jnp.reshape(timings.t_production_end, (-1, exchange_every))
+        )
+                
+        scan_fn = partial(
+            simulate_to_exchange,
+            params=params,
+            apply_kwargs=apply_kwargs,
+            exchange_kwargs=static_kwargs,
+        )
+        _, (trajectories, diffs, accepts) = lax.scan(
+            scan_fn, (key, sim_states), xs=(dynamic_kwargs, timings)
+        )
+
+        trajectories = util.tree_combine(trajectories)
+
+        return trajectories, diffs, accepts
+
+    return run_replica_exchange
+
 
 
 def run_to_next_printout_neighbors(apply_fn,
