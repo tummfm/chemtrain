@@ -331,15 +331,8 @@ def tree_take(tree, indicies, axis=0, on_cpu=True):
 def tree_put(tree, indicies, values, axis=0, on_cpu=True):
     """Tree-wise application of numpy.put_along_axis."""
     if on_cpu:
-        assert axis == 0, 'Only axis=0 is supported for numpy.'
-        indicies = onp.asarray(indicies)
-
-        def _put(x, y):
-            x = onp.array(x, copy=True)
-            x[indicies, ...] = y
-            return x
-
-        return tree_map(_put, tree, values)
+        return tree_map(
+            lambda x, y: onp.put_along_axis(x, indicies, y, axis), values)
     else:
         assert axis == 0, 'Only axis=0 is supported for jax.'
         return tree_map(
