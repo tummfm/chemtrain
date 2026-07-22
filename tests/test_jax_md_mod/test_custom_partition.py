@@ -13,6 +13,7 @@
 # limitations under the License.
 import itertools
 
+import jax
 from jax import numpy as jnp, Array
 
 from jax_md_mod import custom_partition
@@ -203,3 +204,25 @@ class TestTriplets:
                     print(f"Missing {path}")
 
                 assert found
+
+
+class TestClusters:
+
+    def test_find_sparse_clusters_with_isolated_particle_jit(self):
+        neighbor_idx = jnp.asarray([
+            [0, 1],
+            [1, 0],
+        ], dtype=jnp.int32)
+        reference_position = jnp.zeros((3, 2))
+        mask = jnp.ones(3, dtype=bool)
+
+        @jax.jit
+        def find_cluster_count(idx, position, particle_mask):
+            neighbor = NeighborIdx(
+                idx=idx,
+                format=partition.NeighborListFormat.Sparse,
+                reference_position=position,
+            )
+            return custom_partition.find_clusters(neighbor, particle_mask)[1]
+
+        assert find_cluster_count(neighbor_idx, reference_position, mask) == 2
