@@ -543,8 +543,9 @@ def find_clusters(neighbor: partition.NeighborList, mask=None):
             senders, receivers = neighbor.idx
 
             # Propagate cluster state from senders to receivers
-            clusters = jax.ops.segment_min(
+            propagated_clusters = jax.ops.segment_min(
                 jnp.int_(clusters[senders]), receivers, clusters.size)
+            clusters = jnp.minimum(propagated_clusters, clusters)
         else:
             raise NotImplementedError(
                 f"Neighbor list format {neighbor.format} not yet supported."
