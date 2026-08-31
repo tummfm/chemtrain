@@ -208,8 +208,8 @@ def dimenetpp_neighborlist(displacement: space.DisplacementFn,
                            mode: Union[str, Tuple[int]] = "energy",
                            per_particle: bool = False,
                            **dimenetpp_kwargs
-                           ) -> Tuple[nn.InitFn, Callable[[Any, util.Array],
-                                                          Tuple[util.Array]]]:
+                           ) -> Tuple[Callable, Callable[[Any, util.Array],
+                                                        Tuple[util.Array]]]:
     """DimeNet++ energy function for Jax, M.D.
 
     This function provides an interface for the :class:`DimeNetPP` haiku model
@@ -350,8 +350,8 @@ def dimenetpp_property_prediction(
         n_targets: int = 1,
         n_species: int = 100,
         n_per_atom: int = None,
-        **model_kwargs) -> Tuple[nn.InitFn, Callable[[Any, jnp.ndarray],
-                                                     jnp.ndarray]]:
+        **model_kwargs) -> Tuple[Callable, Callable[[Any, jnp.ndarray],
+                                                   jnp.ndarray]]:
     """Initializes DimeNet++ to predict molecular properties.
 
     This function provides an interface to the :class:`DimeNetPP` haiku model.

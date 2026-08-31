@@ -13,66 +13,150 @@
 # limitations under the License.
 
 """Utility functions helpful in designing new trainers."""
-from functools import partial
-from typing import Any, cast
+from contextlib import contextmanager
+from functools import cache, partial
+import importlib
+from typing import Any
 
 import chex
 import cloudpickle as pickle
-# import h5py
+
 import jax
 from jax import tree_util, device_count, numpy as jnp, lax
 from jax.tree_util import tree_map
 
-import jax_md_mod
-from jax_md import simulate, partition
+from jax_md import simulate
 import numpy as onp
 
-try:
-    import mpi4py.MPI as MPI
-except Exception:
-    MPI = None
+_MPI4JAX_COMM = None
 
-try:
-    import mpi4jax
-except Exception:
-    mpi4jax = None
+
+@cache
+def _import_optional(module):
+    """Import an optional package once and preserve nested import errors."""
+    try:
+        return importlib.import_module(module)
+    except ModuleNotFoundError as error:
+        if error.name != module.partition(".")[0]:
+            raise
+        return None
+
+
+def has_mpi4py():
+    """Whether the optional mpi4py dependency is available."""
+    return _import_optional("mpi4py.MPI") is not None
 
 
 def use_mpi():
-    """Whether MPI is available."""
-    if MPI is None:
-        return False
-    try:
-        if hasattr(MPI, "Is_initialized") and not MPI.Is_initialized():
-            return False
-        return MPI.COMM_WORLD.Get_size() > 1
-    except Exception as e:
-        print(f"Initializing MPI failed with error: {e}")
-        return False
-
-
-def is_root():
-    """Whether the current MPI process is the root process."""
-    if not use_mpi():
-        return True
-    assert MPI is not None
-    return MPI.COMM_WORLD.Get_rank() == 0
+    """Whether this process belongs to an initialized multi-rank MPI run."""
+    return get_mpi() is not None
 
 
 def get_mpi():
-    """Returns the MPI communicator."""
+    """Return mpi4py for an active multi-rank run."""
+    mpi = _import_optional("mpi4py.MPI")
+    if mpi is None or not mpi.Is_initialized():
+        return None
+    if mpi.COMM_WORLD.Get_size() <= 1:
+        return None
+    return mpi
+
+
+def get_mpi4jax():
+    """Return mpi4jax when compiled MPI collectives can be used."""
     if not use_mpi():
         return None
-    assert MPI is not None
-    return MPI
+    return _import_optional("mpi4jax")
+
+
+def has_mpi4jax():
+    """Whether compiled MPI collectives are available."""
+    return get_mpi4jax() is not None
+
+
+def is_root():
+    """Whether this is the process responsible for user-visible side effects."""
+    if jax.process_count() > 1:
+        return jax.process_index() == 0
+    if not use_mpi():
+        return True
+    mpi = get_mpi()
+    assert mpi is not None
+    return mpi.COMM_WORLD.Get_rank() == 0
 
 
 def get_communicator():
     """Returns the MPI communicator."""
-    if not use_mpi():
+    mpi = get_mpi()
+    if mpi is None:
         return None
-    assert MPI is not None
-    return MPI.COMM_WORLD
+    return mpi.COMM_WORLD
+
+
+@contextmanager
+def mpi_guard():
+    """Let all MPI processes continue only after every process succeeds.
+
+    Every process must enter guarded sections in the same order. If one or
+    more processes fail, all processes raise the same rank-ordered error.
+    """
+    local_exception = None
+    local_error = None
+    try:
+        yield
+    except Exception as exception:  # Synchronize before leaving this process.
+        local_exception = exception
+        local_error = f"{type(exception).__name__}: {exception}"
+
+    if use_mpi():
+        comm = get_communicator()
+        assert comm is not None
+        errors = comm.allgather(local_error)
+    else:
+        errors = [local_error]
+
+    failures = [
+        f"rank {rank}: {message}"
+        for rank, message in enumerate(errors)
+        if message is not None
+    ]
+    if failures:
+        error = RuntimeError(
+            "Parallel operation failed; " + "; ".join(failures)
+        )
+        if local_exception is not None:
+            raise error from local_exception
+        raise error
+
+
+def _get_mpi4jax_communicator():
+    """Return a communicator reserved for compiled mpi4jax collectives."""
+    global _MPI4JAX_COMM
+    mpi = get_mpi()
+    if mpi is None:
+        return None
+    if _MPI4JAX_COMM is None:
+        _MPI4JAX_COMM = mpi.COMM_WORLD.Dup()
+    return _MPI4JAX_COMM
+
+
+def mpi_any(x):
+    """Elementwise logical OR of a boolean array across all MPI processes."""
+    x = jnp.asarray(x, dtype=bool)
+
+    if not use_mpi():
+        return x
+
+    comm = get_communicator()
+    mpi = get_mpi()
+    assert comm is not None and mpi is not None
+
+    x_host = onp.asarray(x)
+    out = onp.empty_like(x_host, dtype=bool)
+
+    comm.Allreduce(x_host, out, op=mpi.LOR)
+
+    return jnp.asarray(out)
 
 
 def mpi_tree_slice(tree, dim=None):
@@ -100,33 +184,28 @@ def mpi_tree_broadcast(tree, root: int = 0):
     if not use_mpi():
         return tree
 
+    mpi4jax = get_mpi4jax()
     if mpi4jax is None:
         raise RuntimeError(
             "MPI is available (mpi4py), but mpi4jax is not installed. "
             "Install mpi4jax to use mpi_tree_broadcast."
         )
 
-    MPI_mod = cast(Any, MPI)
-    mpi4jax_mod = cast(Any, mpi4jax)
-
-    comm = get_communicator()
-    assert comm is not None
-    rank = comm.Get_rank()
+    world = get_communicator()
+    mpi = get_mpi()
+    comm = _get_mpi4jax_communicator()
+    assert world is not None and mpi is not None and comm is not None
+    rank = world.Get_rank()
 
     def _bcast_leaf(x):
         x = jnp.asarray(x)
         if rank != root:
             x = jnp.zeros_like(x)
-        res = mpi4jax_mod.allreduce(
-            x, MPI_mod.LOR if x.dtype == jnp.bool_ else MPI_mod.SUM, comm=comm
+        return mpi4jax.allreduce(
+            x, mpi.LOR if x.dtype == jnp.bool_ else mpi.SUM, comm=comm
         )
-        return res[0] if isinstance(res, tuple) else res
 
     return tree_util.tree_map(_bcast_leaf, tree)
-
-
-def mpi_tree_bcast(tree, root: int = 0):
-    return mpi_tree_broadcast(tree, root=root)
 
 
 def mpi_tree_gather(tree, dim=None):
@@ -134,31 +213,31 @@ def mpi_tree_gather(tree, dim=None):
     if not use_mpi():
         return tree
 
+    mpi4jax = get_mpi4jax()
     if mpi4jax is None:
         raise RuntimeError(
             "MPI is available (mpi4py), but mpi4jax is not installed. "
             "Install mpi4jax to use mpi_tree_gather/mpi_tree_mean inside jitted code."
         )
-    MPI_mod = cast(Any, MPI)
-    mpi4jax_mod = cast(Any, mpi4jax)
-    
-    comm = get_communicator()
-    assert comm is not None
-    rank = comm.Get_rank()
-    size = comm.Get_size()
+    world = get_communicator()
+    mpi = get_mpi()
+    comm = _get_mpi4jax_communicator()
+    assert world is not None and mpi is not None and comm is not None
+    rank = world.Get_rank()
+    size = world.Get_size()
 
     gathered_tree = tree_util.tree_map(
         lambda x: jnp.zeros(
             (size * x.shape[0] if dim is None else dim, *x.shape[1:]), dtype=x.dtype
         ).at[rank::size].set(x), tree
     )
-    tree = tree_util.tree_map(
-        lambda x: mpi4jax_mod.allreduce(
-            x, MPI_mod.LOR if x.dtype == jnp.bool_ else MPI_mod.SUM, comm=comm
-        ), gathered_tree
-    )
+    def gather_leaf(x):
+        """Reduce one gathered array."""
+        return mpi4jax.allreduce(
+            x, mpi.LOR if x.dtype == jnp.bool_ else mpi.SUM, comm=comm
+        )
 
-    tree = tree_util.tree_map(lambda x: x[0] if isinstance(x, tuple) else x, tree)
+    tree = tree_util.tree_map(gather_leaf, gathered_tree)
 
     return tree
 
@@ -168,18 +247,18 @@ def mpi_tree_mean(tree, dim=None):
     if not use_mpi():
         return tree
 
+    mpi4jax = get_mpi4jax()
     if mpi4jax is None:
         raise RuntimeError(
             "MPI is available (mpi4py), but mpi4jax is not installed. "
             "Install mpi4jax to use mpi_tree_gather/mpi_tree_mean inside jitted code."
         )
-    MPI_mod = cast(Any, MPI)
-    mpi4jax_mod = cast(Any, mpi4jax)
-    
-    comm = get_communicator()
-    assert comm is not None
-    rank = comm.Get_rank()
-    size = comm.Get_size()
+    world = get_communicator()
+    mpi = get_mpi()
+    comm = _get_mpi4jax_communicator()
+    assert world is not None and mpi is not None and comm is not None
+    rank = world.Get_rank()
+    size = world.Get_size()
 
     if dim is None:
         slice_size = 1
@@ -187,15 +266,180 @@ def mpi_tree_mean(tree, dim=None):
     else:
         slice_size = onp.arange(dim)[rank::size].size
 
-    tree = tree_util.tree_map(
-        lambda x: mpi4jax_mod.allreduce(
-            x * (slice_size / dim), MPI_mod.SUM, comm=comm
-        ), tree
-    )
+    def mean_leaf(x):
+        """Average one array."""
+        return mpi4jax.allreduce(
+            x * (slice_size / dim), mpi.SUM, comm=comm
+        )
 
-    tree = tree_util.tree_map(lambda x: x[0] if isinstance(x, tuple) else x, tree)
+    tree = tree_util.tree_map(mean_leaf, tree)
 
     return tree
+
+
+def mpi_tree_first_masked(tree, mask):
+    """Return the globally first tree entry for which mask is nonzero.
+
+    Assumes tree and mask are distributed using the same rank::size
+    convention as `mpi_tree_slice`.
+
+    Args:
+        tree: Pytree with leaves of shape (N_local, ...).
+        mask: Array of shape (N_local,).
+
+    Returns:
+        selected: Pytree containing the globally first matching entry.
+            If no entry matches, returns zeros with the corresponding
+            leaf shapes.
+        found: Scalar boolean indicating whether a matching entry exists.
+    """
+    mask = jnp.asarray(mask, dtype=bool)
+
+    # Non-MPI case.
+    if not use_mpi():
+        found = jnp.any(mask)
+
+        if mask.shape[0] == 0:
+            selected = tree_map(
+                lambda x: jnp.zeros(x.shape[1:], dtype=x.dtype),
+                tree,
+            )
+            return selected, found
+
+        idx = jnp.argmax(mask)
+
+        selected = tree_map(
+            lambda x: jnp.where(
+                found,
+                x[idx],
+                jnp.zeros_like(x[idx]),
+            ),
+            tree,
+        )
+        return selected, found
+
+    mpi4jax = get_mpi4jax()
+    if mpi4jax is None:
+        raise RuntimeError("MPI is active but mpi4jax is unavailable.")
+
+    mpi = get_mpi()
+    comm = _get_mpi4jax_communicator()
+    assert mpi is not None and comm is not None
+    rank = comm.Get_rank()
+    size = comm.Get_size()
+
+    sentinel = jnp.asarray(jnp.iinfo(jnp.int32).max, dtype=jnp.int32)
+
+    # Find the first matching entry on this rank.
+    if mask.shape[0] == 0:
+        local_found = jnp.asarray(False)
+        local_idx = jnp.asarray(0, dtype=jnp.int32)
+        local_global_idx = sentinel
+    else:
+        local_found = jnp.any(mask)
+        local_idx = jnp.argmax(mask).astype(jnp.int32)
+
+        # mpi_tree_slice uses x[rank::size], so:
+        #
+        # local index i -> global index rank + size * i
+        local_global_idx = jnp.where(
+            local_found,
+            rank + size * local_idx,
+            sentinel,
+        ).astype(jnp.int32)
+
+    # Find the globally first matching index.
+    first_global_idx = mpi4jax.allreduce(
+        local_global_idx,
+        op=mpi.MIN,
+        comm=comm,
+    )
+
+    found = first_global_idx != sentinel
+
+    # Only the rank owning first_global_idx contributes a nonzero value.
+    local_is_selected = (
+        local_found
+        & (local_global_idx == first_global_idx)
+    )
+
+    leaves, treedef = tree_util.tree_flatten(tree)
+    selected_leaves = []
+
+    for x in leaves:
+        x = jnp.asarray(x)
+
+        if x.shape[0] == 0:
+            candidate = jnp.zeros(x.shape[1:], dtype=x.dtype)
+        else:
+            candidate = x[local_idx]
+
+        contribution = jnp.where(
+            local_is_selected,
+            candidate,
+            jnp.zeros_like(candidate),
+        )
+
+        # Exactly one rank contributes, so SUM reproduces that rank's value.
+        # For booleans use logical OR.
+        op = mpi.LOR if jnp.issubdtype(x.dtype, jnp.bool_) else mpi.SUM
+
+        selected = mpi4jax.allreduce(
+            contribution,
+            op=op,
+            comm=comm,
+        )
+
+        selected_leaves.append(selected)
+
+    return tree_util.tree_unflatten(treedef, selected_leaves), found
+
+
+def mpi_tree_mean_packed(tree):
+    """Average a tree with one MPI call for each dtype.
+
+    Floating-point arrays with the same communication dtype are joined and
+    restored to their original shapes afterwards. Half-precision arrays are
+    sent as float32 because MPI does not support their JAX dtypes. Empty arrays
+    are kept without communication. Non-array tree structure is preserved. The
+    input is returned unchanged when MPI is inactive. Non-floating leaves raise
+    ``ValueError`` because averaging them would not preserve their meaning.
+    """
+    if not use_mpi():
+        return tree
+
+    leaves, tree_def = tree_util.tree_flatten(tree)
+    if not leaves:
+        return tree
+
+    dtype_groups = {}
+    for index, leaf in enumerate(leaves):
+        array = jnp.asarray(leaf)
+        if not jnp.issubdtype(array.dtype, jnp.inexact):
+            raise ValueError("Packed MPI means require floating-point arrays.")
+        if array.size == 0:
+            continue
+        communication_dtype = array.dtype
+        if jnp.issubdtype(array.dtype, jnp.floating) and array.dtype.itemsize < 4:
+            communication_dtype = jnp.dtype("float32")
+        dtype_groups.setdefault(communication_dtype, []).append((index, array))
+
+    reduced_leaves = list(leaves)
+    for communication_dtype, group in dtype_groups.items():
+        packed = jnp.concatenate([
+            array.astype(communication_dtype).reshape(-1)
+            for _, array in group
+        ])
+        packed = mpi_tree_mean(packed)
+        offset = 0
+        for index, array in group:
+            size = array.size
+            reduced_leaves[index] = packed[offset:offset + size].reshape(
+                array.shape
+            ).astype(array.dtype)
+            offset += size
+
+    return tree_util.tree_unflatten(tree_def, reduced_leaves)
 
 
 # freezing seems to give slight performance improvement
@@ -331,8 +575,15 @@ def tree_take(tree, indicies, axis=0, on_cpu=True):
 def tree_put(tree, indicies, values, axis=0, on_cpu=True):
     """Tree-wise application of numpy.put_along_axis."""
     if on_cpu:
-        return tree_map(
-            lambda x, y: onp.put_along_axis(x, indicies, y, axis), values)
+        assert axis == 0, 'Only axis=0 is supported for numpy.'
+        indicies = onp.asarray(indicies)
+
+        def _put(x, y):
+            x = onp.array(x, copy=True)
+            x[indicies, ...] = y
+            return x
+
+        return tree_map(_put, tree, values)
     else:
         assert axis == 0, 'Only axis=0 is supported for jax.'
         return tree_map(
@@ -352,9 +603,15 @@ def tree_append(orig_tree, tree_to_append, axis=None, on_cpu=True):
     return tree_map(partial(numpy.append, axis=axis), orig_tree, tree_to_append)
 
 
-def tree_replicate(tree):
-    """Replicates a pytree along the first axis for pmap."""
-    return tree_map(lambda x: jnp.array([x] * device_count()), tree)
+def tree_replicate(tree, replicas: int = None):
+    """Replicates a pytree along the first axis."""
+    if replicas is None:
+        replicas = device_count()
+
+    return tree_map(
+        lambda x: jnp.tile(jnp.expand_dims(x, 0), (replicas,) + (1,) * x.ndim),
+        tree
+    )
 
 
 def tree_axis_swap(tree, axis1=0, axis2=1):

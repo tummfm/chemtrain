@@ -79,7 +79,7 @@ remove_from_toctrees = [
 templates_path = ["_templates"]
 
 autodoc_mock_imports = [
-    'e3nn_jax', 'mace_jax'
+    'cuequivariance', 'cuequivariance_jax', 'e3nn_jax', 'mace_jax'
 ]
 
 

@@ -17,7 +17,7 @@ For easiest integration into chemtain, functions should be compatible with
 traj_util.quantity_traj. Functions provided to quantity_traj need to take the
 state and additional kwargs.
 """
-from functools import partial
+from functools import partial, wraps
 
 import jax
 import numpy as onp
@@ -31,6 +31,8 @@ from jax_md_mod.model import sparse_graph
 from jax_md_mod import custom_partition
 
 Array = util.Array
+
+from typing import Union
 
 
 def energy_wrapper(energy_fn_template, fixed_energy_params=None):
@@ -154,7 +156,8 @@ def total_energy_wrapper(energy_fn_template):
     def energy(state, neighbor, energy_params, **kwargs):
         energy_fn = energy_fn_template(energy_params)
         pot_energy = energy_fn(state.position, neighbor=neighbor, **kwargs)
-        kinetic_energy = quantity.kinetic_energy(state.velocity, state.mass)
+        kinetic_energy = quantity.kinetic_energy(
+            velocity=state.velocity, mass=state.mass)
         return pot_energy + kinetic_energy
     return energy
 
@@ -918,7 +921,7 @@ def _nearest_tetrahedral_nbrs(displacement_fn, position, nbrs):
     # R_ij = R_i - R_j; i = central atom
     displacements = neighbor_displacement(position, r_neigh)
     distances = space.distance(displacements)
-    jnp.where(neighbor_mask, distances, 1.e7)  # mask non-existing neighbors
+    distances = jnp.where(neighbor_mask, distances, 1.e7)
     _, nearest_idxs = lax.top_k(-1 * distances, 4)  # 4 nearest neighbor indices
     nearest_displ = jnp.take_along_axis(
         displacements, jnp.expand_dims(nearest_idxs, -1), axis=1)
@@ -1676,3 +1679,36 @@ def init_stiffness_tensor_stress_fluctuation(energy_fn_template, reference_box):
         return born_stiffness_contribution / volume
 
     return born_term_fn
+
+
+def with_neighbor(key: str):
+    """Selects a non-default neighbor list for a quantity."""
+
+    def decorate(quantity_fn):
+
+        @wraps(quantity_fn)
+        def wrapped(*args, neighbor: custom_partition.NeighborListMap, **kwargs):
+            return quantity_fn(*args, neighbor=neighbor[key], **kwargs)
+
+        return wrapped
+
+    return decorate
+
+
+def neighbor_buffer_overflow(
+        state,
+        neighbor: Union[partition.NeighborList, custom_partition.NeighborListMap],
+        **kwargs
+    ):
+    """Reports whether the neighbor list buffer overflowed."""
+    del state, kwargs
+
+    # Return the overflow status for each neighbor list
+    if isinstance(neighbor, custom_partition.NeighborListMap):
+        return {
+            key: neigh.did_buffer_overflow
+            for key, neigh in neighbor.items()
+        }
+
+    return neighbor.did_buffer_overflow
+    

@@ -24,7 +24,9 @@ import pytest
 
 import optax
 
-from chemtrain import quantity, trainers, ensemble
+from chemtrain import ensemble, quantity, trainers
+from chemtrain.learn import difftre as difftre_learn
+from chemtrain.parallel import DataParallelContext
 
 from jax_md import energy, space, simulate, partition
 
@@ -198,7 +200,7 @@ class TestDifftre:
 
     @pytest.mark.parametrize("bucket", (True, False))
     @pytest.mark.parametrize("statepoints", (5, 10, 21, 25))
-    def test_bucketing(self, mocker, bucket, statepoints):
+    def test_bucketing(self, bucket, statepoints):
         batch_size = 5
 
         key = random.PRNGKey(11)
@@ -208,8 +210,20 @@ class TestDifftre:
         difftre_trainer = trainers.DifftreParallel.__new__(trainers.DifftreParallel)
         difftre_trainer.reweight_ratio = 0.5
         difftre_trainer.batch_size = batch_size
+        difftre_trainer._n_statepoints = statepoints
         difftre_trainer.key = key
         difftre_trainer._bucket_recompute = bucket
+        difftre_trainer._traj_states_on_host = False
+        difftre_trainer.parallel_context = DataParallelContext(
+            "single", rank=0, size=1
+        )
+        difftre_trainer._reference_states = namedtuple(
+            "ReferenceStates", ["sim_state"]
+        )(
+            namedtuple("SimulationState", ["position"])(
+                onp.arange(statepoints).reshape((-1, 1))
+            )
+        )
         difftre_trainer.traj_states = namedtuple(
             "TrajectoryStates", ["trajectory"]
         )(
@@ -234,3 +248,190 @@ class TestDifftre:
         # Assert that no traj states are selected in duplication
         samples = onp.concatenate(samples, axis=0)
         assert onp.unique(samples).size == samples.size
+
+    def test_parallel_update_receives_sliced_target_pytrees(self):
+        """DifftreParallel passes sliced target and statepoint pytrees to its model."""
+        trajectory = namedtuple("Trajectory", ["position"])(
+            jnp.arange(6, dtype=jnp.float32).reshape(3, 2)
+        )
+        traj_states = namedtuple("TrajectoryStates", ["trajectory"])(trajectory)
+        state = namedtuple("State", ["params"])(
+            {"weight": jnp.asarray(1.0)}
+        )
+
+        trainer = trainers.DifftreParallel.__new__(trainers.DifftreParallel)
+        trainer.state = state
+        trainer.parallel_context = DataParallelContext("single", rank=0, size=1)
+        trainer.traj_states = traj_states
+        trainer.targets = {"observable": {"target": jnp.arange(3.0)}}
+        trainer.statepoints = {"value": jnp.arange(3.0)}
+        trainer._traj_states_on_host = False
+        trainer.reweight_ratio = 0.5
+        trainer._epoch = 0
+        trainer.predictions = {0: {}, 1: {}, 2: {}}
+        trainer.batch_gradient_norms = []
+        trainer.batch_losses = []
+        trainer.batch_statepoint_counts = []
+        trainer.step_size_history = []
+
+        def weights(_, selected_trajstates):
+            return None, jnp.full(
+                selected_trajstates.trajectory.position.shape[0], 2.0
+            )
+
+        def model(_, selected_trajstates, statepoints, targets):
+            assert isinstance(selected_trajstates, type(traj_states))
+            assert isinstance(statepoints, dict)
+            assert isinstance(targets, dict)
+            predictions = {
+                "observable": statepoints["value"]
+                + targets["observable"]["target"]
+            }
+            return (jnp.asarray(2.0), predictions), {"weight": jnp.asarray(1.0)}
+
+        applied_steps = []
+        trainer.weights = weights
+        trainer.model = model
+        trainer.propagate = lambda *_: pytest.fail("unexpected recomputation")
+        trainer._optimizer_step = lambda grad: {"weight": grad["weight"]}
+        trainer._adaptive_step_size = lambda *_: (
+            jnp.asarray(0.5), jnp.asarray(0.0)
+        )
+        trainer._step_optimizer = lambda grad, alpha: applied_steps.append(alpha)
+
+        trainer._update(jnp.asarray([0, 1]))
+
+        assert applied_steps == [jnp.asarray(0.5)]
+        assert trainer.predictions[0][0]["observable"] == 0.0
+        assert trainer.predictions[1][0]["observable"] == 2.0
+
+    def test_parallel_batches_include_final_partial_batch(self):
+        """DifftreParallel processes every statepoint when batches do not divide it."""
+        trainer = trainers.DifftreParallel.__new__(trainers.DifftreParallel)
+        trainer.batch_size = 2
+        trainer._n_statepoints = 3
+        trainer.key = random.PRNGKey(4)
+        trainer._bucket_recompute = False
+        trainer.traj_states = namedtuple(
+            "TrajectoryStates", ["trajectory"]
+        )(
+            namedtuple("Trajectory", ["position"])(jnp.zeros((3, 2)))
+        )
+
+        batches = list(trainer._get_batch())
+
+        assert [len(batch) for batch in batches] == [3]
+        selected = onp.concatenate([onp.asarray(batch) for batch in batches])
+        assert onp.array_equal(onp.sort(selected), onp.arange(3))
+
+    def test_parallel_reallocates_overflowing_neighbor_list(
+        self, monkeypatch, tmp_path
+    ):
+        """DifftreParallel reallocates an overflowing batched neighbor list."""
+        allocations = []
+
+        class SimulationState(namedtuple("SimulationStateBase", "position")):
+            def set(self, **kwargs):
+                return self._replace(**kwargs)
+
+        class NeighborList(namedtuple(
+            "NeighborListBase",
+            "max_occupancy reference_position did_buffer_overflow",
+        )):
+            def update(self, position, **kwargs):
+                del kwargs
+                return self._replace(
+                    reference_position=position,
+                    did_buffer_overflow=False,
+                )
+
+        class NeighborFunction:
+            def allocate(self, position, extra_capacity, **kwargs):
+                del kwargs
+                allocations.append((position, extra_capacity))
+                return NeighborList(
+                    max_occupancy=12,
+                    reference_position=position,
+                    did_buffer_overflow=False,
+                )
+
+        def batched_model(params, *args):
+            del args
+            return params["weight"], {}
+
+        def batched_propagation(params, trajectory, statepoint, recompute=False):
+            del params, statepoint
+            return trajectory.replace(overflow=jnp.logical_not(recompute))
+
+        def batched_weights(*args):
+            del args
+            return None, jnp.ones(1)
+
+        monkeypatch.setattr(
+            difftre_learn,
+            "init_difftre_gradient_and_propagation",
+            lambda *args, **kwargs: (
+                batched_model,
+                batched_propagation,
+                batched_weights,
+            ),
+        )
+
+        reference_position = jnp.ones((1, 2, 3))
+        neighbor = NeighborList(
+            max_occupancy=8,
+            reference_position=reference_position,
+            did_buffer_overflow=True,
+        )
+        reference_states = ensemble.sampling.SimulatorState(
+            sim_state=SimulationState(jnp.zeros((1, 2, 3))),
+            nbrs=neighbor,
+        )
+        timings = ensemble.sampling.TimingClass(
+            t_equilib_start=jnp.empty(0),
+            t_production_start=jnp.empty(0),
+            t_production_end=jnp.empty(0),
+            timesteps_per_printout=1,
+            time_step=1.0,
+        )
+        neighbor_fn = NeighborFunction()
+        trainer = trainers.DifftreParallel(
+            key=random.PRNGKey(0),
+            init_params={"weight": jnp.asarray(1.0)},
+            optimizer=optax.sgd(0.1),
+            energy_fn_template=lambda params: params,
+            simulator_template=lambda energy_fn: (energy_fn, energy_fn),
+            neighbor_fn=neighbor_fn,
+            timings=timings,
+            state_kwargs={"kT": jnp.ones(1)},
+            quantities={},
+            targets={"observable": {"target": jnp.zeros(1)}},
+            observables={},
+            reference_states=reference_states,
+            sim_batch_size=1,
+            allowed_reduction=None,
+            max_neighbor_retries=7,
+            overflow_capacity_multiplier=1.5,
+            checkpoint_path=tmp_path / "checkpoints",
+            parallelism="single",
+        )
+
+        overflowing = ensemble.sampling.TrajectoryState(
+            sim_state=ensemble.sampling.SimulatorState(
+                sim_state=SimulationState(jnp.full((1, 2, 3), 9.0)),
+                nbrs=neighbor,
+            ),
+            trajectory=SimulationState(jnp.zeros((1, 2, 3))),
+            overflow=jnp.asarray([True]),
+        )
+        recovered = trainer.propagate(
+            trainer.params,
+            overflowing,
+            {"kT": jnp.ones(1)},
+        )
+
+        assert not onp.any(recovered.overflow)
+        assert len(allocations) == 1
+        allocated_position, extra_capacity = allocations[0]
+        onp.testing.assert_allclose(allocated_position, reference_position[0])
+        assert extra_capacity == 4

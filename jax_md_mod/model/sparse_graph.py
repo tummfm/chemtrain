@@ -55,10 +55,12 @@ class SparseDirectionalGraph:
             edge exists. By default, all edges are considered.
          triplet_mask: A (N_triplets,) boolean array storing for each triplet
             whether the triplet exists. By default, all triplets are considered.
-         n_edges: Number of non-masked edges in the graph. None assumes all
-            edges are real.
-         n_triplets: Number of non-masked triplets in the graph. None assumes
-            all triplets are real.
+         n_edges: Number of edges before fixed-size truncation. This can exceed
+            the stored edge arrays when the graph overflows. None assumes all
+            stored edges are real.
+         n_triplets: Number of triplets before fixed-size truncation. This can
+            exceed the stored triplet arrays when the graph overflows. None
+            assumes all stored triplets are real.
          n_particles: Number of non-masked species in the graph.
     """
     species: jnp.ndarray
@@ -225,17 +227,6 @@ def angle_triplets(positions, displacement_fn, angle_idxs, angle_mask):
     return angles
 
 
-def _flatten_sort_and_capp(matrix, sorting_args, cap_size):
-    """Helper function that takes a 2D array, flattens it, sorts it using the
-    args (usually provided via argsort) and capps the end of the resulting
-    vector. Used to delete non-existing edges and returns the capped vector.
-    """
-    vect = jnp.ravel(matrix)
-    sorted_vect = vect[sorting_args]
-    capped_vect = sorted_vect[0:cap_size]
-    return capped_vect
-
-
 def sparse_graph_from_neighborlist(displacement_fn: Callable,
                                    positions: jnp.ndarray,
                                    neighbor: partition.NeighborList,
@@ -319,14 +310,18 @@ def sparse_graph_from_neighborlist(displacement_fn: Callable,
     # due to undirectedness, each edge is included twice
     n_edges = jnp.count_nonzero(pair_mask)
     pair_mask_flat = jnp.ravel(pair_mask)
-    # non-existing edges are sorted to the end for capping
-    sorting_idxs = jnp.argsort(~pair_mask_flat)
+    selected_edges = jnp.minimum(n_edges, max_edges)
+    edge_select = jnp.nonzero(
+        pair_mask_flat, size=max_edges, fill_value=0
+    )[0]
+    sparse_pair_mask = jnp.arange(max_edges) < selected_edges
     _, yy = jnp.meshgrid(jnp.arange(max_neighbors), jnp.arange(n_particles))  # pylint: disable=unbalanced-tuple-unpacking
-    idx_i = _flatten_sort_and_capp(yy, sorting_idxs, max_edges)
-    idx_j = _flatten_sort_and_capp(edge_idx_ji, sorting_idxs, max_edges)
-    d_ij = _flatten_sort_and_capp(pair_distances, sorting_idxs, max_edges)
-    sparse_pair_mask = _flatten_sort_and_capp(pair_mask_flat, sorting_idxs,
-                                              max_edges)
+    idx_i = jnp.ravel(yy)[edge_select]
+    idx_j = jnp.ravel(edge_idx_ji)[edge_select]
+    d_ij = jnp.ravel(pair_distances)[edge_select]
+    idx_i = jnp.where(sparse_pair_mask, idx_i, 0)
+    idx_j = jnp.where(sparse_pair_mask, idx_j, n_particles)
+    d_ij = jnp.where(sparse_pair_mask, d_ij, 0)
 
     # build sparse angle combinations from adjacency matrix:
     # angle defined for 3 particles with connections k->j and j->i
@@ -346,9 +341,14 @@ def sparse_graph_from_neighborlist(displacement_fn: Callable,
     mask_ij = jnp.repeat(sparse_pair_mask, max_neighbors)
     mask_k = idx3_k != n_particles
     angle_mask = mask_ij * mask_k * mask_i_eq_k  # union of masks
-    angle_mask, sorting_idx3 = lax.top_k(angle_mask, max_triplets)
-    angle_idxs = angle_idxs[sorting_idx3]
     n_triplets = jnp.count_nonzero(angle_mask)
+    selected_triplets = jnp.minimum(n_triplets, max_triplets)
+    triplet_select = jnp.nonzero(
+        angle_mask, size=max_triplets, fill_value=0
+    )[0]
+    angle_idxs = angle_idxs[triplet_select]
+    angle_mask = jnp.arange(max_triplets) < selected_triplets
+    angle_idxs = jnp.where(angle_mask[:, None], angle_idxs, 0)
     angles = angle_triplets(positions, displacement_fn, angle_idxs, angle_mask)
 
     # retrieving edge_id m_ji from nodes i and j:

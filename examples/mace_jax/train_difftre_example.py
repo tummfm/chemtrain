@@ -239,9 +239,11 @@ def main():
         timings=timings,
         vmap_batch=5,
         reweight_ratio=config.get("reweighting_ratio", 0.9),
-        allowed_reduction=None,
-        num_runs_init=1,
     )
+
+    # Initial trajectories are explicit so they can also be prepared or loaded
+    # independently of the optimization run.
+    trainer_difftre.initialize_trajstates(num_runs=1)
 
     # Train and save the results to a new folder
     trainer_difftre.train(config["optimizer"]["epochs"], checkpoint_freq=10)

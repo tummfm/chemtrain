@@ -15,7 +15,7 @@
 """Utility functions to sample from ensembles. """
 import functools
 from functools import partial
-from typing import Any, Dict, Callable, Mapping, Tuple, Union, Protocol, Optional
+from typing import Any, Dict, Callable, Mapping, Tuple, Union, Protocol
 
 import jax
 import numpy as onp
@@ -343,7 +343,7 @@ def initialize_replica_exchange(energy_fn_template,
             traj_state = TrajectoryState(
                 sim_state=sim_state, trajectory=trajectory,
                 overflow=overflow, dynamic_kwargs=dynamic_kwargs,
-                static_kwargs=kwargs, energy_params=params
+                static_kwargs=kwargs, energy_params=params,
             )
 
             aux_trajectory = quantity_traj(

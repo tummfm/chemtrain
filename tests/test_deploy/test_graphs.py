@@ -23,6 +23,30 @@ import pytest
 
 class TestPruning:
 
+    def test_prune_truncates_in_source_order(self):
+        """Boolean compaction retains the first valid edges on overflow."""
+        neighbor_list = graphs.SimpleSparseNeighborList(
+            senders=jnp.asarray([0, 0, 0]),
+            receivers=jnp.asarray([1, 2, 3]),
+            max_edges=3,
+        )
+        local = jnp.asarray([True, False, False, False])
+
+        pruned, n_valid = graphs.prune_neighbor_list(
+            neighbor_list,
+            local,
+            max_edges=2,
+            nbr_order=1,
+            half_list=False,
+        )
+
+        assert n_valid == 3
+        onp.testing.assert_array_equal(pruned.senders, jnp.asarray([0, 0]))
+        onp.testing.assert_array_equal(pruned.receivers, jnp.asarray([1, 2]))
+        onp.testing.assert_array_equal(
+            pruned.max_edges, jnp.asarray([True, True])
+        )
+
     def test_prune_keeps_ghost_sources_of_local_receivers(self):
         neighbor_list = graphs.SimpleSparseNeighborList(
             senders=jnp.asarray([2, 3]),

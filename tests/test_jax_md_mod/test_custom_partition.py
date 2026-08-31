@@ -13,6 +13,7 @@
 # limitations under the License.
 import itertools
 
+import jax
 from jax import numpy as jnp, Array
 
 from jax_md_mod import custom_partition
@@ -83,9 +84,73 @@ class NeighborIdx:
     idx: Array
     format: partition.NeighborListFormat
     reference_position: Array = None
+    max_occupancy: int = None
 
 
 class TestEdgeMasking:
+
+    @pytest.mark.parametrize(
+        "partitions, capacity, expected",
+        (
+            ([0, 0, 1, 1], 4, [[0, 2, 3, 4], [1, 3, 2, 4]]),
+            ([0, 0, 1, 1], 1, [[0], [1]]),
+            ([0, 1, 2, 3], 3, [[4, 4, 4], [4, 4, 4]]),
+        ),
+    )
+    def test_partition_compacts_and_pads_sparse_edges(
+        self, partitions, capacity, expected
+    ):
+        """Sparse partitioning keeps source order and pads after valid edges."""
+        neighbor = NeighborIdx(
+            idx=jnp.asarray([
+                [0, 0, 2, 0, 4, 3],
+                [1, 2, 3, 3, 4, 2],
+            ]),
+            format=partition.NeighborListFormat.Sparse,
+            reference_position=jnp.zeros((4, 3)),
+            max_occupancy=6,
+        )
+        apply_partition = jax.jit(
+            lambda groups: custom_partition.partition_neighbor_list(
+                neighbor, groups, max_capacity=capacity
+            ).idx
+        )
+
+        result = apply_partition(jnp.asarray(partitions))
+
+        onp.testing.assert_array_equal(result, jnp.asarray(expected))
+
+
+    def test_mask_neighbor_list_map_masks_every_list(self):
+        """Particle masks apply to every named neighbor list."""
+        position = jnp.zeros((3, 2))
+        default = NeighborIdx(
+            idx=jnp.asarray([[0, 1, 2, 3], [1, 0, 0, 3]]),
+            format=partition.NeighborListFormat.Sparse,
+            reference_position=position,
+        )
+        longer_range = NeighborIdx(
+            idx=jnp.asarray([[0, 2, 1, 3], [2, 0, 2, 3]]),
+            format=partition.NeighborListFormat.Sparse,
+            reference_position=position,
+        )
+        neighbors = custom_partition.NeighborListMap({
+            "default": default,
+            "longer_range": longer_range,
+        })
+
+        masked = custom_partition.mask_neighbor_list(
+            neighbors, jnp.asarray([True, False, True])
+        )
+
+        onp.testing.assert_array_equal(
+            masked["default"].idx,
+            jnp.asarray([[3, 3, 2, 3], [3, 3, 0, 3]]),
+        )
+        onp.testing.assert_array_equal(
+            masked["longer_range"].idx,
+            jnp.asarray([[0, 2, 3, 3], [2, 0, 3, 3]]),
+        )
 
     @pytest.mark.parametrize("graph", (star_graph_dense, fc_graph_dense))
     @pytest.mark.parametrize("exclude", (
@@ -173,6 +238,15 @@ class TestTriplets:
         ij, kj, mask = custom_partition.get_triplet_indices(neighbor)
         mask = onp.asarray(mask)
 
+        valid_count = int(onp.sum(mask))
+        invalid_idx = graph.shape[0]
+        onp.testing.assert_array_equal(
+            mask,
+            onp.arange(mask.size) < valid_count,
+        )
+        assert onp.all(onp.asarray(ij[valid_count:]) == invalid_idx)
+        assert onp.all(onp.asarray(kj[valid_count:]) == invalid_idx)
+
         # Remove all invalid edges
         ij = ij[mask, :]
         kj = kj[mask, :]
@@ -203,3 +277,25 @@ class TestTriplets:
                     print(f"Missing {path}")
 
                 assert found
+
+
+class TestClusters:
+
+    def test_find_sparse_clusters_with_isolated_particle_jit(self):
+        neighbor_idx = jnp.asarray([
+            [0, 1],
+            [1, 0],
+        ], dtype=jnp.int32)
+        reference_position = jnp.zeros((3, 2))
+        mask = jnp.ones(3, dtype=bool)
+
+        @jax.jit
+        def find_cluster_count(idx, position, particle_mask):
+            neighbor = NeighborIdx(
+                idx=idx,
+                format=partition.NeighborListFormat.Sparse,
+                reference_position=position,
+            )
+            return custom_partition.find_clusters(neighbor, particle_mask)[1]
+
+        assert find_cluster_count(neighbor_idx, reference_position, mask) == 2

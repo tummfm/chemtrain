@@ -15,7 +15,25 @@
 import os
 from pathlib import Path
 
+import jax
 import pytest
+
+
+def pytest_collection_modifyitems(items):
+    """Skip marked tests when the requested JAX devices are unavailable."""
+    available_devices = jax.device_count()
+    for item in items:
+        marker = item.get_closest_marker("jax_multidevice")
+        if marker is None:
+            continue
+        required_devices = marker.kwargs.get("devices", 2)
+        if available_devices < required_devices:
+            item.add_marker(pytest.mark.skip(
+                reason=(
+                    f"Test requires {required_devices} JAX devices; "
+                    f"only {available_devices} available."
+                )
+            ))
 
 
 @pytest.fixture(scope="module")

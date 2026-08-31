@@ -145,6 +145,7 @@ def init_difftre_gradient_and_propagation(
 
     weights_fn, propagate_fn, safe_propagate = reweight_fns
 
+    quantities = dict(quantities)
     quantities['energy'] = custom_quantity.energy_wrapper(
         energy_fn_template)
     reweighting.checkpoint_quantities(quantities)
@@ -191,13 +192,13 @@ def init_difftre_gradient_and_propagation(
 
         return jnp.mean(batched_loss), batched_predictions
 
-    def difftre_propagation(params, traj_state, state_dict):
+    def difftre_propagation(params, traj_state, state_dict, recompute=False):
         """The main DiffTRe function that recomputes trajectories
         when needed and computes gradients of the loss wrt. energy function
         parameters for a single state point.
         """
         partial_propagation = functools.partial(
-            propagate_fn, params, recompute=True)
+            propagate_fn, params, recompute=recompute)
 
         if not batched:
             return partial_propagation(traj_state, **state_dict)
@@ -219,12 +220,14 @@ def init_difftre_gradient_and_propagation(
 
     @safe_propagate
     @jit
-    def difftre_grad_and_propagation(params, traj_state, state_dict, targets):
+    def difftre_grad_and_propagation(params, traj_state, state_dict, targets,
+                                     recompute=False):
         """The main DiffTRe function that recomputes trajectories
         when needed and computes gradients of the loss wrt. energy function
         parameters for a single state point.
         """
-        traj_state = propagate_fn(params, traj_state, **state_dict)
+        traj_state = propagate_fn(
+            params, traj_state, recompute=recompute, **state_dict)
 
         (loss_val, predictions), loss_grad = loss_grad_fn(
             params, traj_state, state_dict, targets)
@@ -348,11 +351,12 @@ def init_rel_entropy_gradient_and_propagation(reference_dataloader,
 
     @safe_propagate
     @jax.jit
-    def safe_propagation_and_grad(params, traj_state, reference_batch):
+    def safe_propagation_and_grad(params, traj_state, reference_batch,
+                                  recompute=False):
         """Propagates the trajectory, if necessary, and computes the
         gradient via the relative entropy formalism.
         """
-        traj_state = propagate_fn(params, traj_state)
+        traj_state = propagate_fn(params, traj_state, recompute=recompute)
 
         loss, grad = value_and_grad(params, traj_state, reference_batch)
         return traj_state, loss, grad

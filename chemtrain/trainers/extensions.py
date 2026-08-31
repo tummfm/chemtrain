@@ -15,9 +15,10 @@
 """Simple extensions, e.g., to log trainer statistics to MLops frameworks."""
 import importlib
 
-from chemtrain.trainers import trainers, base
+from chemtrain.trainers import Difftre, base
 
-def wandb_log_difftre(run, trainer: trainers.Difftre, plot_fns=None):
+
+def wandb_log_difftre(run, trainer: Difftre, plot_fns=None):
     """Logs DiffTRe training statistics to Weights & Biases.
 
     Args:
@@ -50,11 +51,11 @@ def wandb_log_difftre(run, trainer: trainers.Difftre, plot_fns=None):
     if plot_fns is None:
         plot_fns = {}
 
-    def log_fn(trainer: trainers.Difftre, *args, **kwargs):
+    def log_fn(trainer: Difftre, *args, **kwargs):
         plots = {}
 
-        assert issubclass(type(trainer), trainers.Difftre), (
-            f"Supports only DiffTRe trainer."
+        assert isinstance(trainer, Difftre), (
+            "Supports only a DiffTRe trainer."
         )
 
         for statepoint_key, statepoint_fns in plot_fns.items():
