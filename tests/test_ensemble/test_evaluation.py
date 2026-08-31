@@ -27,7 +27,12 @@ class TestEvaluationBatching:
         compute_fn = lambda state, *args, **kwargs: state.position[0, 0]
 
         quantities = evaluation.quantity_map(
-            data, {"idx": compute_fn}, nbrs, batch_size=batch_size)
+            data,
+            {"idx": compute_fn},
+            nbrs,
+            constant_state_kwargs={"neighbor": nbrs},
+            batch_size=batch_size,
+        )
 
         print(quantities["idx"])
         print(position[..., 0, 0].flatten())

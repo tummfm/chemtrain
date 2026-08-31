@@ -25,22 +25,56 @@ from jax.sharding import (
     Mesh, PartitionSpec, NamedSharding, SingleDeviceSharding
 )
 from jax_sgmc import data
-import mpi4py
 import optax
 
 from chemtrain import util
 
-try:
-    import mpi4jax
-except ImportError:
-        mpi4jax = None
+from typing import NamedTuple, Any, Callable, Optional, Union
 
-try:
-    from jax import shard_map
-except ImportError:
-    # Backwards compatibility for older JAX versions
-    from jax.experimental import shard_map
-    jax.shard_map = shard_map.shard_map
+
+class UpdateOutput(NamedTuple):
+
+    params: Any
+    opt_state: Any
+    loss: jax.Array
+    grad: Any
+
+
+class UpdateOutputPerTarget(NamedTuple):
+
+    params: Any
+    opt_state: Any
+    loss: jax.Array
+    grad: Any
+    target_losses: Any
+    predictions: Any
+
+
+UpdateFn = Callable[
+    [Any, Any, Any, bool],
+    Union[UpdateOutput, UpdateOutputPerTarget]
+]
+
+
+class LossOutput(NamedTuple):
+
+    loss: jax.Array
+
+class LossOutputPerTarget(NamedTuple):
+
+    loss: jax.Array
+    target_losses: Any
+    predictions: Any
+
+
+LossFn = Callable[
+    [[Any, Any, jax.Array, bool]],
+    Union[LossOutput, LossOutputPerTarget]
+]
+
+class ModelOutput(NamedTuple):
+
+    predictions: Any
 
 
 def _get_param_loss_fn(loss_fn, batched_model, penalty_fn=None):
@@ -60,156 +94,177 @@ def _get_param_loss_fn(loss_fn, batched_model, penalty_fn=None):
             loss, per_target_loss = out
         else:
             loss = out
-            per_target_loss = None
+            per_target_loss = {}
 
         # Add a penalty if provided
         if penalty_fn is not None:
             loss += penalty_fn(params)
 
-        return loss, per_target_loss
+        return loss, (per_target_loss, predictions)
     return params_loss_fn
 
 
-def pmap_update_fn(batched_model, loss_fn, optimizer, penalty_fn=None):
-    """Initializes a pmapped function for updating parameters.
+def mpi_update_fn(
+        batched_model,
+        loss_fn,
+        optimizer,
+        penalty_fn=None
+    ) -> UpdateFn:
+    """Initialize an optimizer update for MPI training.
 
-    Usage:
-        .. code-block :: python
-
-            params, opt_state, loss, grad = update_fn(params, opt_state, batch)
-
-    Loss and grad are only a single instance, no n_device replica.
-    Params and opt_state need to be N_devices times duplicated along axis 0.
-    Batch is reshaped by this function.
+    Each MPI process computes one part of the global batch on one device. The
+    loss and gradient are averaged before every process applies the same update.
 
     Args:
-        batched_model: A model with signature model(params, batch), which
-            predicts a batch of outputs used in loss function.
-        loss_fn: Loss function(predictions, targets) returning the scalar loss
-            value for a batch.
-        optimizer: Optax optimizer
-        penalty_fn: A penalty function based on the model parameters.
+        batched_model: Model with signature ``model(params, batch)``.
+        loss_fn: Loss function applied to the predictions and reference batch.
+        optimizer: Optax optimizer.
+        penalty_fn: Optional penalty based on the model parameters.
 
     Returns:
-        A function that computes the gradient and updates the parameters via the
-        optimizer.
+        Function that computes one optimizer update.
     """
-    # loss as function of params and batch for optimization
     param_loss_fn = _get_param_loss_fn(loss_fn, batched_model, penalty_fn)
 
-    @partial(jax.pmap, in_axes=(None, None, 0), axis_name='batch')
-    def pmap_batch_update(params, opt_state, batch):
-        (loss, per_target_loss), grad = value_and_grad(
+    @jax.jit
+    def _inner(batch, params, opt_state):
+        (loss, (per_target_loss, predictions)), grad = value_and_grad(
             param_loss_fn, has_aux=True
         )(params, batch)
-
-        # step optimizer within pmap to minimize communication overhead
-        grad = lax.pmean(grad, 'batch')
-        loss = lax.pmean(loss, 'batch')
-        per_target_loss = lax.psum(per_target_loss, 'batch')
-
-        new_params, opt_state = step_optimizer(params, opt_state, grad,
-                                               optimizer)
-        return new_params, opt_state, loss, grad, per_target_loss
-
-    def batch_update(params, opt_state, batch, per_target_loss=False):
-        batch = util.tree_pmap_split(batch, len(jax.devices()))
-        out = pmap_batch_update(params, opt_state, batch)
-        new_params, opt_state, loss, grad = util.tree_get_single(out)
-
-        if per_target_loss:
-            return new_params, opt_state, loss, grad, per_target_loss
-        else:
-            return new_params, opt_state, loss, grad
-    return batch_update
-
-
-def shmap_update_fn(batched_model, loss_fn, optimizer, penalty_fn=None):
-    """Initializes a shmapped function for updating parameters.
-
-    Usage:
-        .. code-block :: python
-
-            params, opt_state, loss, grad = update_fn(params, opt_state, batch)
-
-    Args:
-        batched_model: A model with signature model(params, batch), which
-            predicts a batch of outputs used in loss function.
-        loss_fn: Loss function(predictions, targets) returning the scalar loss
-            value for a batch.
-        optimizer: Optax optimizer
-        penalty_fn: A penalty function based on the model parameters.
-
-    Returns:
-        A function that computes the gradient and updates the parameters via the
-        optimizer.
-    """
-    # loss as function of params and batch for optimization.
-    mesh = Mesh(jax.devices(), axis_names=('batch',))
-    replicate = NamedSharding(mesh, PartitionSpec())
-    split = NamedSharding(mesh, PartitionSpec('batch',))
-
-    param_loss_fn = _get_param_loss_fn(loss_fn, batched_model, penalty_fn)
-
-    if mesh.size > 1:
-        assert not util.use_mpi(), (
-            "MPI is not supported with sharding."
+        loss, per_target_loss, grad = util.mpi_tree_mean_packed(
+            (loss, per_target_loss, grad)
         )
+        opt_update = step_optimizer(
+            params, opt_state, grad, optimizer
+        )
+        return *opt_update, loss, grad, per_target_loss, predictions
 
-        @jax.jit
-        @partial(jax.shard_map, mesh=mesh, in_specs=(
-            PartitionSpec('batch',),
-            PartitionSpec(),
-            PartitionSpec()
-        ), out_specs=PartitionSpec())
-        def _inner_sharded(batch, params, opt_state):
-            (loss, per_target_loss), grad = value_and_grad(
-                param_loss_fn, has_aux=True)(params, batch)
-            # step optimizer within pmap to minimize communication overhead
-            grad = lax.pmean(grad, axis_name='batch')
-            loss = lax.pmean(loss, axis_name='batch')
-            per_target_loss = lax.pmean(per_target_loss, axis_name='batch')
-
-            new_params, new_opt_state = step_optimizer(
-                params, opt_state, grad, optimizer)
-
-            return new_params, new_opt_state, loss, grad, per_target_loss
-           
-    else:
-        @jax.jit
-        def _inner(batch, params, opt_state):
-            (loss, per_target_loss), grad = value_and_grad(
-                param_loss_fn, has_aux=True)(params, batch)
-
-            if util.use_mpi():
-                loss = util.mpi_tree_mean(loss)
-                per_target_loss = util.mpi_tree_mean(per_target_loss)
-                grad = util.mpi_tree_mean(grad)
-
-            new_params, new_opt_state = step_optimizer(
-                params, opt_state, grad, optimizer)
-
-            return new_params, new_opt_state, loss, grad, per_target_loss
-            return new_params, new_opt_state, loss, grad, per_target_loss
-
-    def update_fn(params, opt_state, batch, per_target=False):
-        if mesh.size > 1:
-            params = device_put(params, replicate)
-            opt_state = device_put(opt_state, replicate)
-            batch = device_put(batch, split)
-
-        *outs, per_target_loss = _inner(batch, params, opt_state)
-
+    def update_fn(params: Any, opt_state: Any, batch: Any, per_target=False):
+        *out, target_losses, predictions = _inner(
+            batch, params, opt_state
+        )
         if per_target:
-            return *outs, per_target_loss
-        else:
-            return outs
+            return UpdateOutputPerTarget(*out, target_losses, predictions)
+        return UpdateOutput(*out)
 
     return update_fn
 
 
-def shmap_loss_fn(batched_model, loss_fn, penalty_fn=None):
-    """Initializes a shmapped function for computing a loss.
+def shmap_update_fn(
+    batched_model, loss_fn, optimizer, penalty_fn=None, *, mesh=None
+) -> UpdateFn:
+    """Initialize an optimizer update over a JAX device mesh.
+
+    Usage:
+        .. code-block :: python
+
+            params, opt_state, loss, grad = update_fn(params, opt_state, batch)
+
+    Args:
+        batched_model: A model with signature model(params, batch), which
+            predicts a batch of outputs used in loss function.
+        loss_fn: Loss function(predictions, targets) returning the scalar loss
+            value for a batch.
+        optimizer: Optax optimizer
+        penalty_fn: A penalty function based on the model parameters.
+        mesh: One-dimensional JAX mesh named ``data``. By default, all JAX
+            devices form the mesh.
+
+    Returns:
+        A function that computes the gradient and updates the parameters via the
+        optimizer.
+    """
+    # Split the batch and keep a copy of the training state on every device.
+    if mesh is None:
+        mesh = Mesh(jax.devices(), axis_names=('data',))
+    replicate = NamedSharding(mesh, PartitionSpec())
+    split = NamedSharding(mesh, PartitionSpec('data',))
+
+    param_loss_fn = _get_param_loss_fn(loss_fn, batched_model, penalty_fn)
+
+    @jax.jit
+    @partial(jax.shard_map, mesh=mesh, in_specs=(
+            PartitionSpec('data'),  # batch
+            PartitionSpec(),        # params
+            PartitionSpec()         # opt_state
+        ),
+        out_specs=(
+            PartitionSpec(),        # new params
+            PartitionSpec(),        # new opt state
+            PartitionSpec(),        # loss
+            PartitionSpec(),        # grad
+            PartitionSpec(),        # target losses
+            PartitionSpec('data'),  # predictions
+        ),
+        check_vma=False,
+    )
+    def _inner(batch, params, opt_state):
+        # ``check_vma=False`` is required until cuEquivariance propagates
+        # manual-axis types through segmented polynomials. Mark parameters as
+        # varying before differentiation so their transpose remains local.
+        varying_params = jax.tree.map(
+            lambda value: lax.pcast(value, 'data', to='varying'), params
+        )
+        (loss, (per_target_loss, predictions)), grad = value_and_grad(
+            param_loss_fn, has_aux=True
+        )(varying_params, batch)
+
+        # Average the local results explicitly. The optimizer keeps the
+        # original replicated parameters and receives one replicated gradient.
+        loss, per_target_loss, grad = lax.pmean(
+            (loss, per_target_loss, grad), 'data'
+        )
+        new_params, new_opt_state = step_optimizer(
+            params, opt_state, grad, optimizer)
+
+        return (
+            new_params, new_opt_state, loss, grad, per_target_loss,
+            predictions,
+        )
+
+    def update_fn(params: Any, opt_state: Any, batch: Any, per_target=False):
+        params = device_put(params, replicate)
+        opt_state = device_put(opt_state, replicate)
+        batch = device_put(batch, split)
+
+        *out, target_losses, predictions = _inner(batch, params, opt_state)
+
+        if per_target:
+            return UpdateOutputPerTarget(*out, target_losses, predictions)
+        return UpdateOutput(*out)
+
+    return update_fn
+
+
+def mpi_loss_fn(batched_model, loss_fn, penalty_fn=None) -> LossFn:
+    """Initialize a loss function averaged over all MPI processes.
+
+    Args:
+        batched_model: Model with signature ``model(params, batch)``.
+        loss_fn: Loss function applied to predictions and reference data.
+        penalty_fn: Optional penalty based on the model parameters.
+
+    Returns:
+        Function that computes the global mean loss.
+    """
+    param_loss_fn = _get_param_loss_fn(loss_fn, batched_model, penalty_fn)
+
+    @jax.jit
+    def _inner(batch, mask, params):
+        loss, (per_target_loss, predictions) = param_loss_fn(params, batch, mask)
+        return *util.mpi_tree_mean_packed((loss, per_target_loss)), predictions
+
+    def mapped_loss_fn(params: Any, batch: Any, mask: jax.Array=None, per_target=False):
+        loss, target_losses, predictions = _inner(batch, mask, params)
+        if per_target:
+            return LossOutputPerTarget(loss, target_losses, predictions)
+        return LossOutput(loss)
+
+    return mapped_loss_fn
+
+
+def shmap_loss_fn(batched_model, loss_fn, penalty_fn=None, *, mesh=None):
+    """Initialize a loss function over a JAX device mesh.
 
     Usage:
         .. code-block :: python
@@ -223,67 +278,56 @@ def shmap_loss_fn(batched_model, loss_fn, penalty_fn=None):
         loss_fn: Loss function(predictions, targets) returning the scalar loss
             value for a batch.
         penalty_fn: A penalty function based on the model parameters.
+        mesh: One-dimensional JAX mesh named ``data``.
 
     Returns:
         A function that computes the total loss and per-target loss
         contributions.
     """
-    # loss as function of params and batch for optimization.
-    mesh = Mesh(jax.devices(), axis_names=('batch',))
+    # Split samples and masks in the same way and keep parameters copied.
+    if mesh is None:
+        mesh = Mesh(jax.devices(), axis_names=('data',))
     replicate = NamedSharding(mesh, PartitionSpec())
-    split = NamedSharding(mesh, PartitionSpec('batch', ))
+    split = NamedSharding(mesh, PartitionSpec('data', ))
 
     param_loss_fn = _get_param_loss_fn(loss_fn, batched_model, penalty_fn)
 
-    if mesh.size > 1:
-        assert not util.use_mpi(), (
-            "MPI is not supported with sharding."
-        )
+    @jax.jit
+    @partial(jax.shard_map, mesh=mesh, in_specs=(
+            PartitionSpec('data'),
+            PartitionSpec('data'),
+            PartitionSpec()
+        ),
+        out_specs=(
+            PartitionSpec(),
+            PartitionSpec(),
+            PartitionSpec('data'),
+        ),
+        check_vma=False,
+    )
+    def _inner(batch, mask, params):
+        loss, (per_target_loss, predictions) = param_loss_fn(params, batch, mask)
 
-        @jax.jit
-        def batch_update(params, data):
-            if mesh.size > 1:
-                @partial(jax.shard_map, mesh=mesh, in_specs=(
-                    PartitionSpec('batch'),
-                    PartitionSpec(),
-                ), out_specs=PartitionSpec())
-                def _inner(batch, params):
-                    loss, per_target_loss = param_loss_fn(params, *batch)
-
-            loss = lax.pmean(loss, axis_name='batch')
-            per_target_loss = lax.pmean(per_target_loss, axis_name='batch')
-
-            return loss, per_target_loss
-
-    else:
-        @jax.jit
-        def _inner(batch, params):
-            loss, per_target_loss = param_loss_fn(params, *batch)
-            
-            if util.use_mpi():
-                loss = util.mpi_tree_mean(loss)
-                per_target_loss = util.mpi_tree_mean(per_target_loss)
-
-            return loss, per_target_loss
+        return *lax.pmean((loss, per_target_loss), 'data'), predictions
 
     def shmapped_loss_fn(params, batch, mask=None, per_target=False):
-        bm = batch, mask
-        if mesh.size > 1:
-            params = device_put(params, replicate)
-            bm = device_put(bm, split)
+        params = device_put(params, replicate)
+        batch = device_put(batch, split)
+        if mask is None:
+            mask = jnp.ones(batch[next(iter(batch))].shape[0], dtype=jnp.bool_)
+        mask = device_put(mask, split)
 
-        *outs, per_target_loss = _inner(bm, params)
+        loss, target_losses, predictions = _inner(batch, mask, params)
 
         if per_target:
-            return *outs, per_target_loss
-        else:
-            return outs
+            return LossOutputPerTarget(loss, target_losses, predictions)
+        return LossOutput(loss)
 
     return shmapped_loss_fn
 
 
-def shmap_model(batched_model):
-    """Initializes a shmapped function for evaluating the model.
+def shmap_model(batched_model, *, mesh=None):
+    """Initialize model evaluation over a JAX device mesh.
 
     Usage:
         .. code-block :: python
@@ -294,43 +338,31 @@ def shmap_model(batched_model):
     Args:
         batched_model: A model with signature model(params, batch), which
             predicts a batch of outputs.
+        mesh: One-dimensional JAX mesh named ``data``.
 
     Returns:
         A function that computes multiple predictions in parallel.
 
     """
-    # loss as function of params and batch for optimization.
-    mesh = Mesh(jax.devices(), axis_names=('batch'))
+    # Split the input batch and keep parameters copied on all devices.
+    if mesh is None:
+        mesh = Mesh(jax.devices(), axis_names=('data',))
     replicate = NamedSharding(mesh, PartitionSpec())
-    split = NamedSharding(mesh, PartitionSpec('batch'))
+    split = NamedSharding(mesh, PartitionSpec('data'))
 
-    if mesh.size > 1:
-        if util.use_mpi():
-            raise ValueError(
-                "MPI is not supported with sharding. Please use pmap-based functions instead."
-            )
-
-        _model = jax.jit(jax.shard_map(
-            batched_model, mesh=mesh,
-            in_specs=(PartitionSpec(), PartitionSpec('batch',)),
-            out_specs=PartitionSpec('batch',)
-        ))
-    else:
-        @jax.jit
-        def _model(params, batch):
-            predictions = jax.jit(batched_model)(params, batch)
-            
-            if util.use_mpi():
-                predictions = util.mpi_tree_gather(predictions)
-            
-            return predictions
+    shmapped_model = jax.jit(jax.shard_map(
+        batched_model,
+        mesh=mesh,
+        in_specs=(PartitionSpec(), PartitionSpec('data')),
+        out_specs=PartitionSpec('data'),
+        check_vma=False,
+    ))
 
     def model(params, batch):
-        if mesh.size > 1:
-            params = device_put(params, replicate)
-            batch = device_put(batch, split)
+        params = device_put(params, replicate)
+        batch = device_put(batch, split)
 
-        return _model(params, batch)
+        return ModelOutput(shmapped_model(params, batch))
     
     return model
 

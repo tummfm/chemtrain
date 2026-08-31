@@ -300,6 +300,7 @@ print(f"Absolute error in b0 is {b0_err:.3f} nm and in kb is {kb_err:.1f} kJ/mol
 ### Examples
 
 - [Alanine Dipeptide in Implicit Water](../examples/CG_alanine_dipeptide.ipynb)
+- [Parallel force matching](../force_matching_parallelism.md)
 
 ### Publications
 

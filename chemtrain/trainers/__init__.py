@@ -12,17 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from . import (
-    base,
-)
+"""Public trainer classes."""
 
+from .force_matching import ForceMatching, SGMCForceMatching
+from .property_prediction import PropertyPrediction
+from .relative_entropy import RelativeEntropy
+from .difftre import Difftre, DifftreParallel
 from .trainers import (
-    PropertyPrediction,
-    ForceMatching,
-    Difftre,
-    DifftreParallel,
-    RelativeEntropy,
-    SGMCForceMatching,
     EnsembleOfModels,
     InterleaveTrainers
 )
+
+__all__ = [
+    "Difftre",
+    "DifftreParallel",
+    "EnsembleOfModels",
+    "ForceMatching",
+    "InterleaveTrainers",
+    "PropertyPrediction",
+    "RelativeEntropy",
+    "SGMCForceMatching",
+]

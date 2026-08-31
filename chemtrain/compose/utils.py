@@ -1,4 +1,3 @@
-
 # Copyright 2026 Multiscale Modeling of Fluid Materials, TU Munich
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,11 +14,10 @@
 
 """Utilities to connect models to chemtrain."""
 
-import numpy as onp
-
 import jax
 import jax.numpy as jnp
 from jax import lax
+from jax.custom_derivatives import SymbolicZero
 
 from typing import Protocol, Any, Tuple
 
@@ -36,190 +34,257 @@ class ApplyFn(Protocol):
     ) -> jnp.ndarray: ...
 
 
-
 def batch_apply_fn(_apply_fn: ApplyFn) -> ApplyFn:
-    """Write custom vmap rules for the apply function.
+    """Combine vmapped graphs into disconnected supergraphs.
 
-    Instead of batching over graphs, combines all graphs into a supergraph.
-    This step avoids vmapping operations in the neural network.
+    A mapped parameter leaf cannot be shared by one supergraph evaluation. In
+    that case the affected map level is evaluated sequentially, so a model
+    primitive is never asked to accept a parameter batch dimension.
 
-    Args:
-        apply_fn: Mapping from (params, vectors, senders, receivers, species, mask)
-            to per-particle energies.
-
-
-    Returns:
-        A wrapped apply function with custom vmap rules that avoids vmapping
-        in the neural network.
-
+    The returned function supports arbitrary nesting of ``vmap`` and
+    reverse-mode differentiation. JAX does not support forward-mode
+    differentiation of ``custom_vjp`` functions, so applying ``jax.jvp`` to
+    this wrapper raises ``TypeError``.
     """
 
-    def apply_fn(*args, **kwargs):
-        res = _apply_fn(*args, **kwargs)
-        return res
-
-
-    def wrapped(params, senders, receivers, edge_features, node_features):
-        # Check inputs. Node features are important to correctly rewrite invalid
-        # indices in the supergraph.
-        assert len(node_features) > 0, "At least one node feature array is required."
-        
-        return wrapped_apply_fn(
+    def apply_fn(params, senders, receivers, edge_features, node_features):
+        if not jax.tree.leaves(node_features):
+            raise ValueError("At least one node feature array is required")
+        return _apply_fn(
             params, senders, receivers, edge_features, node_features
         )
 
+    def make_batch_rule(wrapped):
+        def wrapped_batch(
+            axis_size,
+            in_batched,
+            params,
+            senders,
+            receivers,
+            edge_features,
+            node_features,
+        ):
+            in_batched = tuple(in_batched)
+            params_batched, *graph_batched = in_batched
+
+            if any(jax.tree.leaves(params_batched)):
+                mapped_args = jax.tree.map(
+                    lambda value, is_batched: value
+                    if is_batched
+                    else jnp.broadcast_to(
+                        value, (axis_size,) + value.shape
+                    ),
+                    (
+                        params,
+                        senders,
+                        receivers,
+                        edge_features,
+                        node_features,
+                    ),
+                    in_batched,
+                )
+                output = lax.map(lambda args: wrapped(*args), mapped_args)
+                return output, jax.tree.map(lambda _: True, output)
+
+            flat_graph = flatten_graph(
+                axis_size,
+                graph_batched,
+                senders,
+                receivers,
+                edge_features,
+                node_features,
+            )
+            output = wrapped(params, *flat_graph)
+            node_batched_leaves = jax.tree.leaves(graph_batched[-1])
+            node_feature_leaves = jax.tree.leaves(node_features)
+            if not node_feature_leaves:
+                raise ValueError("At least one node feature array is required")
+            nodes_batched = node_batched_leaves[0]
+            first_node_feature = node_feature_leaves[0]
+            num_nodes = (
+                first_node_feature.shape[1]
+                if nodes_batched
+                else first_node_feature.shape[0]
+            )
+            output = jax.tree.map(
+                lambda value: value.reshape(
+                    (axis_size, num_nodes) + value.shape[1:]
+                ),
+                output,
+            )
+            return output, jax.tree.map(lambda _: True, output)
+
+        return wrapped_batch
+
+    return _reverse_closed(apply_fn, make_batch_rule)
+
+
+def _sequential_vmap_rule(wrapped):
+    """Build a sequential custom-vmap rule for an arbitrary pytree call."""
+
+    def rule(axis_size, in_batched, *args):
+        in_batched = tuple(in_batched)
+        mapped_args = jax.tree.map(
+            lambda value, is_batched: value
+            if is_batched
+            else jnp.broadcast_to(value, (axis_size,) + value.shape),
+            args,
+            in_batched,
+        )
+        output = lax.map(lambda values: wrapped(*values), mapped_args)
+        return output, jax.tree.map(lambda _: True, output)
+
+    return rule
+
+
+def _reverse_closed(fun, make_vmap_rule):
+    """Close a function recursively under custom vmap and reverse-mode AD."""
 
     @jax.custom_vjp
     @jax.custom_batching.custom_vmap
-    def wrapped_apply_fn(params, senders, receivers, edge_features, node_features):
-        return apply_fn(params, senders, receivers, edge_features, node_features)
-        
-    def wrapped_fun_fwd(*args):
-        y = wrapped_apply_fn(*args)
-        return y, args
+    def wrapped(*args):
+        return fun(*args)
 
-    @jax.custom_batching.custom_vmap
-    def wrapped_fun_bwd(res, y_bar):        
-        _, vjp_fn = jax.vjp(apply_fn, *res)
+    wrapped.fun.def_vmap(make_vmap_rule(wrapped))
 
-        return vjp_fn(y_bar)
-    
-    @wrapped_fun_bwd.def_vmap
-    def wrapped_fun_bwd_batch(
-            axis_size, in_batched, res, y_bar):
-        
-        args_batched, y_bar_batched = in_batched
-        # bparams, *_, bedge_features, bnode_features = args_batched
- 
-        if not y_bar_batched:
-            y_bar = jnp.tile(y_bar[jnp.newaxis, :], (axis_size, 1))
+    def wrapped_fwd(*args):
+        activity = jax.tree.map(lambda value: value.perturbed, args)
+        values = jax.tree.map(lambda value: value.value, args)
+        return wrapped.fun(*values), (values, activity)
 
-        # The batched function figures out batching of parameters and graphs
-        _, vjp_fn = jax.vjp(
-            lambda *args: wrapped_fun_batch(
-                axis_size, args_batched, *args, compute_vjp=True
-            )[0], *res
+    def wrapped_bwd(residual, output_cotangent):
+        args, activity = residual
+        flat_args, args_tree = jax.tree.flatten(args)
+        flat_activity, activity_tree = jax.tree.flatten(activity)
+        if activity_tree != args_tree:
+            raise TypeError("Argument and activity pytrees must match")
+        active = tuple(
+            index for index, perturbed in enumerate(flat_activity) if perturbed
         )
 
-        grads = vjp_fn(y_bar)
-
-        return grads, args_batched
-
-    def wrapped_fun_batch(
-            axis_size, in_batched, params, senders, receivers, edge_features,
-            node_features, compute_vjp=False):
-
-        bparams, *inputs_batched = in_batched
-
-        # We must avoid the custom_vmap decorated function, as no vjp rule
-        # is defined for it.
-        if compute_vjp:
-            fn = apply_fn
-        else:
-            fn = wrapped_apply_fn
-
-        # Find out whether any of the parameters is batched
-        batched_params = jax.tree.reduce(
-            onp.logical_or, bparams, onp.bool(False)
+        cotangent_leaves = jax.tree.leaves(
+            output_cotangent,
+            is_leaf=lambda value: isinstance(value, SymbolicZero),
         )
- 
-        # If the parameters are batched, the super-graph strategy does not work.
-        # Thus, we fall back to a sequential evaluation via lax.map.
-
-        if batched_params:
-            # Ensure that all params are in the batched shape
-            args_tiled = jax.tree.map(
-                lambda l, b: jnp.tile(l, (axis_size,) + (1,) * (l.ndim - 1))
-                if not b else l,
-                (params, senders, receivers, edge_features, node_features),
-                (bparams, *inputs_batched),
+        if not active or all(
+            isinstance(value, SymbolicZero) for value in cotangent_leaves
+        ):
+            return jax.tree.unflatten(
+                args_tree,
+                tuple(
+                    SymbolicZero.from_primal_value(value)
+                    for value in flat_args
+                ),
             )
 
-            energies = lax.map(
-                lambda args: fn(*args), args_tiled
-            )
+        def materialize(value):
+            if isinstance(value, SymbolicZero):
+                return jnp.zeros(value.shape, value.dtype)
+            return value
 
-            return energies, True
-        else:
-            
-            flattened_graph = flatten_graph(
-                axis_size, inputs_batched, senders, receivers, edge_features,
-                node_features
-            )
+        output_cotangent = jax.tree.map(
+            materialize,
+            output_cotangent,
+            is_leaf=lambda value: isinstance(value, SymbolicZero),
+        )
 
-            energies_flat = fn(params, *flattened_graph)
+        def pullback(packed):
+            local_args, local_cotangent = packed
+            local_flat_args = jax.tree.leaves(local_args)
 
-            # Unflatten the results
-            return energies_flat.reshape((axis_size, -1)), True
+            def active_fun(*active_values):
+                values = list(local_flat_args)
+                for index, value in zip(active, active_values):
+                    values[index] = value
+                return fun(*jax.tree.unflatten(args_tree, values))
 
-    wrapped_apply_fn.defvjp(wrapped_fun_fwd, wrapped_fun_bwd)
-    wrapped_apply_fn.def_vmap(wrapped_fun_batch)
+            active_args = tuple(local_flat_args[index] for index in active)
+            return jax.vjp(active_fun, *active_args)[1](local_cotangent)
 
+        active_cotangents = _reverse_closed(
+            pullback,
+            lambda child: _sequential_vmap_rule(child),
+        )((args, output_cotangent))
+        active_cotangents = iter(active_cotangents)
+        cotangents = [
+            next(active_cotangents)
+            if perturbed
+            else SymbolicZero.from_primal_value(value)
+            for value, perturbed in zip(flat_args, flat_activity)
+        ]
+        return jax.tree.unflatten(args_tree, cotangents)
+
+    wrapped.defvjp(wrapped_fwd, wrapped_bwd, symbolic_zeros=True)
     return wrapped
 
 
-def flatten_graph(axis_size, in_batched, senders, receivers, edge_features, node_features):
-        """Flattens batched graphs into a supergraph."""
+def flatten_graph(
+    axis_size,
+    in_batched,
+    senders,
+    receivers,
+    edge_features,
+    node_features,
+):
+    """Flatten one mapped graph axis into a disconnected supergraph."""
 
-        bsenders, breceivers, bedge_features, bnode_features = in_batched
+    bsenders, breceivers, bedge_features, bnode_features = in_batched
+    num_graphs = axis_size
+    node_feature_leaves = jax.tree.leaves(node_features)
+    node_batched_leaves = jax.tree.leaves(bnode_features)
+    if not node_feature_leaves:
+        raise ValueError("At least one node feature array is required")
+    first_node_feature = node_feature_leaves[0]
+    natoms = (
+        first_node_feature.shape[1]
+        if node_batched_leaves[0]
+        else first_node_feature.shape[0]
+    )
 
-        num_graphs = axis_size
-        num_edges = (
-            senders.shape[1] if bsenders
-            else senders.shape[0]
+    if bool(bsenders) != bool(breceivers):
+        raise ValueError("senders and receivers must be batched together")
+    if not bsenders:
+        senders = jnp.broadcast_to(
+            senders, (num_graphs,) + senders.shape
         )
-        natoms = (
-            node_features[0].shape[1] if bnode_features[0]
-            else node_features[0].shape[0]
+        receivers = jnp.broadcast_to(
+            receivers, (num_graphs,) + receivers.shape
         )
 
-        if bsenders:
-            assert breceivers, (
-                "If vectors are batched, senders and receivers must be batched."
-            )
+    # Relabel graph-local indices before flattening graph and edge axes. One
+    # invalid endpoint invalidates the whole edge and sends both endpoints to
+    # the same trailing sentinel node.
+    offsets = natoms * jnp.arange(
+        num_graphs, dtype=senders.dtype
+    )[:, None]
+    valid_index = jnp.logical_and(
+        jnp.logical_and(senders >= 0, senders < natoms),
+        jnp.logical_and(receivers >= 0, receivers < natoms),
+    )
+    sentinel = num_graphs * natoms
+    senders = jnp.where(
+        valid_index, senders + offsets, sentinel
+    ).reshape(-1)
+    receivers = jnp.where(
+        valid_index, receivers + offsets, sentinel
+    ).reshape(-1)
 
-        else:
-            assert not breceivers, (
-                "If vectors are not batched, senders and receivers must not be batched."
-            )
-
-            senders = jnp.tile(
-                senders[None, :], (num_graphs, 1) + (1,) * (senders.ndim -1)
-            )
-            receivers = jnp.tile(
-                receivers[None, :], (num_graphs, 1) + (1,) * (receivers.ndim -1)
-            )            
-
-        # Relabel the senders and receiver indices. Offset the senders
-        # by the number of atoms in previous graphs.
-        senders = jnp.where(
-            senders.ravel() < natoms,
-            senders.ravel() + natoms * jnp.repeat(jnp.arange(num_graphs), num_edges),
-            num_graphs * natoms
+    def flatten_features(features, batched):
+        return jax.tree.map(
+            lambda feature, is_batched: (
+                feature.reshape((-1,) + feature.shape[2:])
+                if is_batched
+                else jnp.broadcast_to(
+                    feature, (num_graphs,) + feature.shape
+                ).reshape((-1,) + feature.shape[1:])
+            ),
+            features,
+            batched,
         )
-        receivers = receivers.reshape((-1, 2))
-        receivers = jnp.where(
-            receivers.ravel() < natoms,
-            receivers.ravel() + natoms * jnp.repeat(jnp.arange(num_graphs), num_edges),
-            num_graphs * natoms
-            )
 
-        edge_features_flat = ()
-        for b, feat in zip(bedge_features, edge_features):
-            if b:
-                edge_features_flat += (jnp.reshape(feat, (-1,) + feat.shape[2:]),)
-            else:
-                edge_features_flat += (jnp.tile(
-                    feat[None, :], (num_graphs, 1) + (1,) * (feat.ndim -1)
-                ).ravel(),)
-
-        node_features_flat = ()
-        for b, feat in zip(bnode_features, node_features):
-            if b:
-                node_features_flat += (jnp.reshape(feat, (-1,) + feat.shape[2:]),)
-            else:
-                node_features_flat += (jnp.tile(
-                    feat[None, :], (num_graphs, 1) + (1,) * (feat.ndim -1)
-                ).ravel(),)
-
-        return senders, receivers, edge_features_flat, node_features_flat
+    return (
+        senders,
+        receivers,
+        flatten_features(edge_features, bedge_features),
+        flatten_features(node_features, bnode_features),
+    )

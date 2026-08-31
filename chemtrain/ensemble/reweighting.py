@@ -25,6 +25,7 @@ provided here: :doc:`/algorithms/difftre`.
 
 """
 import functools
+import math
 import time
 import warnings
 from functools import partial
@@ -439,6 +440,46 @@ ReweightingFns = Union[
 ]
 
 
+def reallocate_overflowing_trajectory(traj_state, neighbor_fn, capacity_factor,
+                                      extra_capacity):
+    """Restart an overflowed trajectory with a larger neighbor list.
+
+    The neighbor list stores the positions from its last valid update. Use
+    these positions instead of the final state of the overflowed trajectory.
+    The number of extra slots is
+    ``ceil((capacity_factor - 1) * current_capacity) + extra_capacity``.
+    """
+    current_neighbors = traj_state.sim_state.nbrs
+    current_capacity = current_neighbors.max_occupancy
+    increased_capacity = math.ceil(
+        (capacity_factor - 1.0) * current_capacity
+    ) + extra_capacity
+    reference_state = traj_state.sim_state.sim_state.set(
+        position=current_neighbors.reference_position
+    )
+
+    if reference_state.position.ndim > 2:
+        single_neighbors = util.neighbor_allocate(
+            neighbor_fn,
+            util.tree_get_single(reference_state),
+            extra_capacity=increased_capacity,
+        )
+        enlarged_neighbors = vmap(util.neighbor_update, (None, 0))(
+            single_neighbors, reference_state
+        )
+    else:
+        enlarged_neighbors = util.neighbor_allocate(
+            neighbor_fn,
+            reference_state,
+            extra_capacity=increased_capacity,
+        )
+
+    reset_state = sampling.SimulatorState(
+        sim_state=reference_state, nbrs=enlarged_neighbors
+    )
+    return traj_state.replace(sim_state=reset_state)
+
+
 def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
                                       simulator_template: Callable,
                                       neighbor_fn: NeighborFn,
@@ -451,6 +492,8 @@ def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
                                       max_iter_bar: int = 25,
                                       safe_propagation: bool = True,
                                       resample_simstates: bool = False,
+                                      overflow_capacity_factor: float = 1.25,
+                                      overflow_extra_capacity: int = 0,
                                       ) -> ReweightingFns:
     """
     Initializes all functions necessary for trajectory reweighting for
@@ -460,13 +503,11 @@ def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
     given trajectory and a function that propagates the trajectory forward
     if the statistical error does not allow a re-use of the trajectory.
 
-    The third and (optionally) forth function depends on the value of
-    ``safe_propagation``. If set to True, only three functions are returned.
-    Additionally, the propagation function checks the neighbor list for
-    overflow and the trajectory for NaNs. However, in this case, the
-    propagation function is not jit-able. Instead, for
-    ``safe_propagation=False``, the fourth function can be used as decorator
-    to extend a non-jitable outer function.
+    The third and optional fourth functions depend on ``safe_propagation``.
+    If it is True, the returned propagation function checks for neighbor-list
+    overflow and NaN positions, but cannot be JIT-compiled as a whole. If it
+    is False, the fourth function is a decorator that adds the same checks to
+    an outer function.
 
     Args:
         energy_fn_template: Energy function template to initialize a new
@@ -488,18 +529,22 @@ def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
             any neighbor list overflow.
         resample_simstates: Re-samples the sim states from the trajectory for
             a new simulation.
+        overflow_capacity_factor: Factor used to grow the current neighbor
+            list capacity after an overflow. Must be at least one.
+        overflow_extra_capacity: Fixed number of neighbor slots added after
+            applying ``overflow_capacity_factor``. Must be non-negative.
 
     Example:
 
-        Here, we increase the number of retires for overflown neighbor lists
-        and additionally return additional arguments besides the trajectory
-        state.
+        This example allows more retries after a neighbor-list overflow and
+        returns values in addition to the trajectory state.
 
         .. code:: python
 
-            @partial(safe_propagate, multiple_argents=True, max_retry=10)
-            def outer_fn(params, traj_state):
-                traj_state = propagate(params, traj_state)
+            @partial(safe_propagate, multiple_arguments=True, max_retry=10)
+            def outer_fn(params, traj_state, recompute=False):
+                traj_state = propagate(
+                    params, traj_state, recompute=recompute)
                 weights = compute_weights(params, traj_state)
 
                 loss, predictions = some_loss_fn(traj_state, weights)
@@ -518,6 +563,13 @@ def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
         The fourth function is only returned if ``safe_propagation=False``.
 
     """
+    if overflow_capacity_factor < 1.0:
+        raise ValueError("overflow_capacity_factor must be at least one.")
+    if overflow_extra_capacity < 0:
+        raise ValueError("overflow_extra_capacity must be non-negative.")
+    if overflow_capacity_factor == 1.0 and overflow_extra_capacity == 0:
+        raise ValueError("Overflow recovery must increase neighbor capacity.")
+
     traj_energy_fn = custom_quantity.energy_wrapper(energy_fn_template)
     reweighting_quantities = {'energy': traj_energy_fn}
 
@@ -684,7 +736,10 @@ def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
 
 
     def safe_propagate(fun, multiple_arguments=True, max_retry=3):
-        """Re-executes the wrapped function until errors are resolved."""
+        """Retry an overflow from the last valid state with more capacity.
+
+        Raise after ``max_retry`` attempts. NaN positions cannot be recovered.
+        """
 
         def wrapped(params, traj_state, *args, **kwargs):
             recompute = kwargs.pop("recompute", False)
@@ -696,41 +751,30 @@ def init_pot_reweight_propagation_fns(energy_fn_template: EnergyFnTemplate,
                     'help, but comes at the cost that the reference state is '
                     'likely not representative.')
 
-            for reset_counter in range(max_retry):
+            for _ in range(max_retry):
+                if recompute:
+                    kwargs["recompute"] = True
+
                 # When only propagating then only the trajectory is returned
                 if multiple_arguments:
                     traj_state, *returns = fun(
                         params, traj_state, *args, **kwargs)
                 else:
-                    traj_state = fun(params, traj_state)
+                    traj_state = fun(params, traj_state, *args, **kwargs)
                     returns = None
 
-                if recompute:
-                    print(f"[Safe Propagate] Forced recomputation.")
-                    traj_state = recompute_trajectory(
-                        (params, traj_state))
-
-                if traj_state.overflow:
+                if onp.any(onp.asarray(traj_state.overflow)):
                     print(f"[Safe Propagate] Overflow detected, recompute "
                           f"trajectory with increased neighbor list size.")
 
-                    last_state = traj_state.sim_state.sim_state
-                    if last_state.position.ndim > 2:
-                        single_enlarged_nbrs = util.neighbor_allocate(
-                            neighbor_fn, util.tree_get_single(last_state))
-                        enlarged_nbrs = vmap(util.neighbor_update, (None, 0))(
-                            single_enlarged_nbrs, last_state)
-                    else:
-                        enlarged_nbrs = util.neighbor_allocate(
-                            neighbor_fn, last_state)
-                    reset_traj_state = traj_state.replace(
-                        sim_state=sampling.SimulatorState(
-                            sim_state=last_state, nbrs=enlarged_nbrs
-                        )
+                    reset_traj_state = reallocate_overflowing_trajectory(
+                        traj_state,
+                        neighbor_fn,
+                        overflow_capacity_factor,
+                        overflow_extra_capacity,
                     )
-                    traj_state = recompute_trajectory(
-                        (params, reset_traj_state))
-                    reset_counter += 1
+                    traj_state = reset_traj_state
+                    recompute = True
                 else:
                     if multiple_arguments:
                         return traj_state, *returns

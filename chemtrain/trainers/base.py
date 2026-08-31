@@ -41,6 +41,7 @@ from jax_sgmc import data
 
 from chemtrain import util
 from chemtrain import config as chemtrain_config
+from chemtrain import parallel
 from chemtrain.data import data_loaders
 from chemtrain.learn import max_likelihood, difftre
 from chemtrain.ensemble import sampling, reweighting
@@ -310,8 +311,11 @@ class TrainerInterface(metaclass=abc.ABCMeta):
                 a dictionary containing the trainer state.
 
         """
-        with open(checkpoint, "rb") as f:
-            checkpoint = pickle.load(f)
+        if isinstance(checkpoint, (str, PathLike)):
+            with open(checkpoint, "rb") as f:
+                checkpoint = pickle.load(f)
+        elif not isinstance(checkpoint, dict):
+            raise TypeError("checkpoint must be a path or checkpoint dictionary.")
 
         # Restore all attributes that were marked as checkpointable
         restored = []
@@ -323,14 +327,16 @@ class TrainerInterface(metaclass=abc.ABCMeta):
         self._epoch += 1
 
         # Write summary
-        print(f"[{self.__class__.__name__}] Attributes Restored:")
-        print(f", ".join(restored))
+        if self.is_root():
+            print(f"[{self.__class__.__name__}] Attributes Restored:")
+            print(f", ".join(restored))
 
         unchanged = [
             attr for attr in self.__dict__.keys() if attr not in restored
         ]
-        print(f"[{self.__class__.__name__}] Attributes Unchanged:")
-        print(f", ".join(unchanged))
+        if self.is_root():
+            print(f"[{self.__class__.__name__}] Attributes Unchanged:")
+            print(f", ".join(unchanged))
 
 
 class MLETrainerTemplate(TrainerInterface):
@@ -854,12 +860,29 @@ class PropagationBase(MLETrainerTemplate):
 
 
 class DataParallelTrainer(MLETrainerTemplate):
-    """Trainer for parallelized MLE training based on a dataset.
+    """Trainer for data-parallel maximum-likelihood training.
 
-    This trainer implements methods for MLE training on a dataset, where
-    parallelization can simply be accomplished by pmapping over batched data.
-    As pmap requires constant batch dimensions, data with unequal number of
-    atoms needs to be padded and to be compatible with this trainer.
+    Samples must have fixed shapes. Systems with different atom counts need to
+    be padded before they are passed to the trainer.
+
+    Args:
+        loss_fn: Loss function applied to model predictions and reference data.
+        model: Model with signature ``model(params, batch)``.
+        init_params: Initial model parameters.
+        optimizer: Optax optimizer.
+        checkpoint_path: Folder for training checkpoints.
+        batch: Global batch size across all processes and devices.
+        batch_cache: Number of batches kept in each data cache.
+        full_checkpoint: Save the complete trainer in every checkpoint.
+        penalty_fn: Optional penalty based on the model parameters.
+        energy_fn_template: Optional energy function for inference.
+        convergence_criterion: Criterion used for early stopping.
+        log_file: File used for training output.
+        disable_shmap: Deprecated compatibility argument. Passing ``True``
+            raises an error; use ``parallelism="jax"`` instead.
+        batch_per_device: Deprecated batch size per device.
+        parallelism: ``auto``, ``single``, ``mpi``, or ``jax``.
+        mesh: Optional one-dimensional JAX mesh named ``data``.
     """
 
     _train_loader: data.DataLoader
@@ -883,30 +906,40 @@ class DataParallelTrainer(MLETrainerTemplate):
         disable_shmap: bool = False,
         *,
         batch_per_device: Optional[int] = None,
+        parallelism: parallel.Parallelism = "auto",
+        mesh=None,
     ):
 
-        self._disable_shmap = disable_shmap
-        self.batched_model = model
         if disable_shmap:
-            self._update_fn = max_likelihood.pmap_update_fn(
-                self.batched_model, loss_fn, optimizer, penalty_fn)
-            self._evaluate_fn = None
+            raise ValueError(
+                "disable_shmap is no longer supported; use "
+                "parallelism='jax'."
+            )
+
+        self.parallel_context = parallel.resolve_parallelism(parallelism, mesh)
+        self.batched_model = model
+        if self.parallel_context.mode == "mpi":
+            self._update_fn = max_likelihood.mpi_update_fn(
+                self.batched_model, loss_fn, optimizer, penalty_fn
+            )
+            self._evaluate_fn = max_likelihood.mpi_loss_fn(
+                self.batched_model, loss_fn, penalty_fn
+            )
         else:
-            # shmap performs better, but some replication rules are missing
             self._update_fn = max_likelihood.shmap_update_fn(
-                self.batched_model, loss_fn, optimizer, penalty_fn)
+                self.batched_model, loss_fn, optimizer, penalty_fn,
+                mesh=self.parallel_context.mesh,
+            )
             self._evaluate_fn = max_likelihood.shmap_loss_fn(
-                self.batched_model, loss_fn, penalty_fn)
+                self.batched_model, loss_fn, penalty_fn,
+                mesh=self.parallel_context.mesh,
+            )
 
         self._loss_fn = loss_fn
+        self._penalty_fn = penalty_fn
         self.batch_cache = batch_cache
 
-        local_device_count = int(device_count())
-        mpi_world_size = 1
-        if util.use_mpi():
-            comm = util.get_communicator()
-            if comm is not None:
-                mpi_world_size = int(comm.Get_size())
+        data_parallel_size = int(self.parallel_context.size)
 
         if batch is None and batch_per_device is None:
             raise ValueError(
@@ -916,32 +949,60 @@ class DataParallelTrainer(MLETrainerTemplate):
             raise ValueError("Provide only one of `batch` or `batch_per_device`.")
 
         if batch_per_device is not None:
-            # Legacy convention: batch_per_device is local to a rank.
-            local_batch_size = int(batch_per_device) * local_device_count
-            global_batch_size = local_batch_size * mpi_world_size
+            warnings.warn(
+                "batch_per_device is deprecated; pass the global batch instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            global_batch_size = int(batch_per_device) * data_parallel_size
         else:
             global_batch_size = int(batch)
-            if global_batch_size % mpi_world_size != 0:
+            if global_batch_size % data_parallel_size != 0:
                 raise ValueError(
-                    f"Global batch {global_batch_size} must be divisible by MPI world size {mpi_world_size}."
+                    f"Global batch {global_batch_size} must be divisible by "
+                    f"the data-parallel size {data_parallel_size}."
                 )
-            local_batch_size = global_batch_size // mpi_world_size
+            batch_per_device = global_batch_size // data_parallel_size
 
-            if local_batch_size % local_device_count != 0:
-                raise ValueError(
-                    f"Per-rank batch {local_batch_size} must be divisible by local device_count {local_device_count}."
-                )
-            batch_per_device = local_batch_size // local_device_count
+        if self.parallel_context.mode == "mpi":
+            local_batch_size = global_batch_size // data_parallel_size
+        elif self.parallel_context.mode == "jax":
+            local_batch_size = global_batch_size // int(jax.process_count())
+        else:
+            local_batch_size = global_batch_size
 
         self.global_batch_size = int(global_batch_size)
         self.local_batch_size = int(local_batch_size)
         self.batch_per_device = int(batch_per_device)
 
         if optimizer is None:
-            print(f"No optimizer specified")
+            print("No optimizer specified")
             opt_state = None
         else:
             opt_state = optimizer.init(init_params)  # initialize optimizer state
+
+        # A replicated sharding only describes array layout. In a multi-host
+        # run, process zero must first provide the same initial state to every
+        # host before JAX can safely treat that state as replicated.
+        if (
+            self.parallel_context.mode == "jax"
+            and jax.process_count() > 1
+        ):
+            from jax.experimental import multihost_utils
+
+            init_params, opt_state = multihost_utils.broadcast_one_to_all(
+                (init_params, opt_state),
+                is_source=jax.process_index() == 0,
+            )
+
+        if self.parallel_context.replicated_sharding is not None:
+            init_params = jax.device_put(
+                init_params, self.parallel_context.replicated_sharding
+            )
+            if opt_state is not None:
+                opt_state = jax.device_put(
+                    opt_state, self.parallel_context.replicated_sharding
+                )
         init_state = util.TrainerState(params=init_params, opt_state=opt_state)
 
         super().__init__(
@@ -950,6 +1011,12 @@ class DataParallelTrainer(MLETrainerTemplate):
             full_checkpoint=full_checkpoint,
             log_file=log_file,
             reference_energy_fn_template=energy_fn_template)
+
+        # MPI processes keep separate copies of the training state. Copy the
+        # initial or restored state once. The averaged gradient then keeps all
+        # copies equal without sending the full model after every update.
+        if self.parallel_context.mode == "mpi":
+            self.state = util.mpi_tree_broadcast(self.state)
 
         self.train_batch_losses = self.checkpoint("train_batch_losses", [])
         self.train_losses = self.checkpoint("train_losses", [])
@@ -1070,18 +1137,11 @@ class DataParallelTrainer(MLETrainerTemplate):
         if batch_size > observation_count:
             batch_size = observation_count
 
-        mpi_world_size = 1
-        if util.use_mpi():
-            comm = util.get_communicator()
-            if comm is not None:
-                mpi_world_size = comm.Get_size()
-
-        local_device_count = int(device_count())
-        divisor = int(mpi_world_size) * local_device_count
+        divisor = int(self.parallel_context.size)
         if divisor <= 0:
             raise RuntimeError("Invalid divisor for batch sharding.")
 
-        # Ensure GLOBAL batch is divisible by MPI world size and local device_count.
+        # A single global batch contract is shared by every execution backend.
         if onp.mod(batch_size, divisor) != 0:
             new_batch_size = int(batch_size - onp.mod(batch_size, divisor))
             if new_batch_size <= 0:
@@ -1095,8 +1155,6 @@ class DataParallelTrainer(MLETrainerTemplate):
             batch_size = new_batch_size
 
         global_batch_size = int(batch_size)
-        local_batch_size = int(global_batch_size // int(mpi_world_size))
-
         if global_batch_size != self.global_batch_size:
             logging.info(
                 f"Global batch size for stage {stage} changed to {global_batch_size} "
@@ -1124,10 +1182,10 @@ class DataParallelTrainer(MLETrainerTemplate):
         # Initialize the access functions
         batch_fns = data_loaders.init_batch_functions(
             data_loader,
-            mb_size=local_batch_size,
+            mb_size=global_batch_size,
             cache_size=self.batch_cache,
             prefetch=chemtrain_config.read("async_dataloading", True),
-            use_mpi=util.use_mpi(),
+            parallel_context=self.parallel_context,
         )
         init_train_state, get_train_batch, release = batch_fns
 
@@ -1139,6 +1197,14 @@ class DataParallelTrainer(MLETrainerTemplate):
         self._batch_states[stage] = train_batch_state
         self._batches_per_epoch[stage] = observation_count // global_batch_size
         self.release_fns[stage] = release
+
+    def _pre_batch_stage(self, batch, stage="training"):
+        """Transform loaded batch before application in a stage."""
+        return batch
+
+    def _post_batch_stage(self, out, stage="training") -> bool:
+        """Checks whether an update has been sucessful."""
+        return True
 
     def _get_batch_stage(self, stage, information=False):
         for _ in range(self._batches_per_epoch[stage]):
@@ -1176,20 +1242,34 @@ class DataParallelTrainer(MLETrainerTemplate):
         """Function to iterate, optimizing parameters and saving
         training and validation loss values.
         """
-        params, opt_state, train_loss, curr_grad, per_target_losses = self._update_fn(
-            self.state.params, self.state.opt_state, batch, per_target=True)
+
+        max_trials = 10
+        out: max_likelihood.UpdateOutputPerTarget = None
+
+        for idx in range(max_trials):
+            batch = self._pre_batch_stage(batch, stage="training")
+
+            out = self._update_fn(
+                self.state.params, self.state.opt_state, batch, per_target=True)
+
+            if self._post_batch_stage(out, stage="training"): break
+        else:
+            raise RuntimeError(
+                f"The update was unsucessful after {max_trials} trials."
+            )
 
         # Save the statistics
-        for key, val in per_target_losses.items():
+        for key, val in out.target_losses.items():
             if key not in self.train_target_losses.keys():
                 self.train_target_losses[key] = []
 
             self.train_target_losses[key].append(onp.asarray(val))
 
-        self.state = self.state.replace(params=params, opt_state=opt_state)
-        self.train_batch_losses.append(onp.asarray(train_loss))
+        self.state = self.state.replace(
+            params=out.params, opt_state=out.opt_state)
+        self.train_batch_losses.append(onp.asarray(out.loss))
 
-        self.gradient_norm_history.append(util.tree_norm(curr_grad))
+        self.gradient_norm_history.append(util.tree_norm(out.grad))
 
     def predict(self, dataset, params=None, batch_size=10):
         """Computes predictions for a dataset.
@@ -1208,15 +1288,23 @@ class DataParallelTrainer(MLETrainerTemplate):
 
         # Set random to False to prevent shuffling of results by shuffling
         # inputs
-        self.set_dataset(dataset, "predict", include_all=True, random=False)
+        self.set_dataset(
+            dataset, "predict", include_all=True, random=False,
+            batch_size=batch_size,
+        )
 
         if params is None:
             params = self.params
 
-        if self._disable_shmap:
-            raise NotImplementedError("Pmapped predictions not implemented.")
+        if self.parallel_context.mode == "mpi":
+            mapped_model = jax.jit(self.batched_model)
+
+            def shmapped_model(params, batch):
+                return max_likelihood.ModelOutput(mapped_model(params, batch))
         else:
-            shmapped_model = max_likelihood.shmap_model(self.batched_model)
+            shmapped_model = max_likelihood.shmap_model(
+                self.batched_model, mesh=self.parallel_context.mesh
+            )
 
         all_predictions = None
         for batch_with_info in self._get_batch_stage("predict", information=True):
@@ -1224,13 +1312,38 @@ class DataParallelTrainer(MLETrainerTemplate):
             # target
             batch, batch_info = batch_with_info
 
-            # Only get valid samples by masking with numpy
-            predictions = shmapped_model(params, batch)
+            max_trials = 10
+            out: max_likelihood.ModelOutput = None
+
+            for _ in range(max_trials):
+
+                batch = self._pre_batch_stage(batch, stage="predict")
+
+                # Only get valid samples by masking with numpy
+                out = shmapped_model(params, batch)
+
+                if self._post_batch_stage(out, stage="predict"): break
+
+            else:
+                raise RuntimeError(
+                    f"Failed to make predictions after {max_trials} trials."
+                )
+
             mask = jnp.asarray(batch_info.mask, dtype=jnp.bool_)
-            if util.use_mpi():
-                # shmap_model gathers predictions across ranks under MPI.
-                # Gather mask as well to keep shapes consistent.
-                mask = util.mpi_tree_gather(mask)
+            predictions = out.predictions
+            if self.parallel_context.mode == "jax" and jax.process_count() > 1:
+                from jax.experimental import multihost_utils
+                predictions = multihost_utils.process_allgather(
+                    predictions, tiled=True
+                )
+                mask = multihost_utils.process_allgather(mask, tiled=True)
+            if self.parallel_context.mode == "mpi":
+                comm = util.get_communicator()
+                predictions = tree_util.tree_map(
+                    lambda x: onp.concatenate(comm.allgather(onp.asarray(x)), axis=0),
+                    device_get(predictions),
+                )
+                mask = onp.concatenate(comm.allgather(onp.asarray(mask)), axis=0)
 
             mask_np = onp.asarray(mask)
             predictions = tree_util.tree_map(
@@ -1273,12 +1386,18 @@ class DataParallelTrainer(MLETrainerTemplate):
             params = self.params
 
         # Option to define a new loss function, e.g., for MAE error
+        includes_penalty = loss_fn is None and self._penalty_fn is not None
         if loss_fn is None:
             loss_fn = self._evaluate_fn
-        elif not self._disable_shmap:
-            loss_fn = max_likelihood.shmap_loss_fn(self.batched_model, loss_fn)
         else:
-            raise NotImplementedError
+            if self.parallel_context.mode == "mpi":
+                loss_fn = max_likelihood.mpi_loss_fn(self.batched_model, loss_fn)
+            else:
+                loss_fn = max_likelihood.shmap_loss_fn(
+                    self.batched_model, loss_fn, mesh=self.parallel_context.mesh
+                )
+
+        max_trials = 10
 
         total_loss, per_target_losses = 0.0, {}
         total_samples, valid_samples = 0, 0
@@ -1288,14 +1407,26 @@ class DataParallelTrainer(MLETrainerTemplate):
             batch, batch_info = batch_with_info
 
             # Compute a correction factor
-            valid_samples += onp.sum(batch_info.mask)
+            valid_samples += int(jax.device_get(jnp.sum(batch_info.mask)))
             total_samples += batch_info.batch_size
 
-            val_loss, per_target_loss = loss_fn(
-                params, batch, mask=batch_info.mask, per_target=True)
+            out: max_likelihood.LossOutputPerTarget = None
+            for _ in range(max_trials):
 
-            total_loss += onp.asarray(val_loss)
-            for key, val in per_target_loss.items():
+                batch = self._pre_batch_stage(batch, stage=stage)
+
+                out = loss_fn(
+                    params, batch, mask=batch_info.mask, per_target=True)
+
+                if self._post_batch_stage(out, stage=stage): break
+
+            else:
+                raise RuntimeError(
+                    f"Failed to evaluate the model after {max_trials} trials."
+                )
+
+            total_loss += onp.asarray(out.loss)
+            for key, val in out.target_losses.items():
                 if key not in per_target_losses:
                     per_target_losses[key] = []
 
@@ -1303,7 +1434,7 @@ class DataParallelTrainer(MLETrainerTemplate):
 
         # The correction factor accounts for including invalid (masked) samples
         # in the mean of the split
-        if util.use_mpi():
+        if self.parallel_context.mode == "mpi":
             comm = util.get_communicator()
             MPI = util.get_mpi()
             if comm is not None and MPI is not None:
@@ -1312,7 +1443,11 @@ class DataParallelTrainer(MLETrainerTemplate):
         scale_factor =  total_samples / valid_samples
 
         total_loss /= self._batches_per_epoch[stage]
-        total_loss *= scale_factor
+        if includes_penalty:
+            penalty = onp.asarray(self._penalty_fn(params))
+            total_loss = (total_loss - penalty) * scale_factor + penalty
+        else:
+            total_loss *= scale_factor
 
         per_target_losses = {
             key: sum(val) / len(val) * scale_factor

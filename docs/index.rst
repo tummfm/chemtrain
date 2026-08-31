@@ -32,13 +32,8 @@ Please follow the `JAX Installation Instructions <https://github.com/google/jax#
 
 .. note::
 
-   Chemtrain installs ``jax == 0.4.30`` which is, in principle, incompatible
-   with ``jax_md <= 0.1.29`` but resolves an
-   `XLA issue <https://github.com/google/jax/issues/17730>`_ which can prevent
-   training.
-   By importing ``chemtrain`` or the ``jax_md_mod`` module
-   **before importing** ``jax_md``, the compatibility is restored by a simple
-   patch.
+   chemtrain supports JAX versions from 0.5 up to, but not including, 0.12.
+   Install the matching CPU or GPU JAX package for your system.
 
 
 Advanced Installation
@@ -105,6 +100,8 @@ procedures of some recent papers:
 
    algorithms/difftre
    algorithms/force_matching
+   force_matching_parallelism
+   difftre_parallelism
    algorithms/relative_entropy
    algorithms/prior_simulation
 
@@ -124,7 +121,7 @@ API Documentation
 ==================
 
 .. toctree::
-   :caption: Chemtrain
+   :caption: chemtrain
    :maxdepth: 2
    :titlesonly:
 
