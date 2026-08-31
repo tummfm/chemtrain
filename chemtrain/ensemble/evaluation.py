@@ -19,7 +19,7 @@ from jax._src.basearray import ArrayLike
 
 from jax_md_mod import custom_partition
 from jax_md import simulate
-from jax_md.partition import NeighborList
+from jax_md.partition import NeighborList, NeighborListFns
 
 from chemtrain import util
 from chemtrain.typing import QuantityDict
@@ -53,7 +53,7 @@ class SimpleState(NamedTuple):
 
 def quantity_map(states: State,
                  quantities: QuantityDict,
-                 nbrs: NeighborList = None,
+                 nbrs: None | NeighborList = None,
                  state_kwargs: Dict[str, Array] = None,
                  constant_state_kwargs: Dict[str, Array] = None,
                  energy_params: Any = None,
@@ -120,7 +120,7 @@ def quantity_map(states: State,
 
 def quantity_multimap(*states: State,
                       quantities: QuantityDict,
-                      nbrs: NeighborList = None,
+                      nbrs: None | NeighborList = None,
                       state_kwargs: Dict[str, Array] = None,
                       constant_state_kwargs: Dict[str, Array] = None,
                       energy_params: Any = None,
@@ -160,8 +160,6 @@ def quantity_multimap(*states: State,
         A dict of quantity trajectories saved under the same key as the
         input quantity function.
     """
-    nbrs_update_fn = nbrs.update_fn
-
     # Check that all states have the same format
     if state_kwargs is None:
         state_kwargs = {}
@@ -201,8 +199,16 @@ def quantity_multimap(*states: State,
         if util.is_npt_ensemble(states):
             box = simulate.npt_box(states[0])
             kwargs['box'] = box
-        if nbrs is not None:
-            new_nbrs = nbrs_update_fn(states[0].position, nbrs, **kwargs)
+
+        # Update the neighbor list if a neighbor kwarg exists or a neighborlist
+        # is requested by passing nbrs to quantity_multimap.
+        if nbrs is not None or "neighbor" in kwargs:
+            keyword_neighbor = kwargs.pop("neighbor", None)
+            neighbor = nbrs if nbrs is not None else keyword_neighbor
+            new_nbrs = custom_partition.update_neighbor_list(
+                neighbor, states[0].position, **kwargs
+            )
+
             mask = kwargs.get(
                 "mask", jnp.ones(new_nbrs.reference_position.shape[0]))
             kwargs["neighbor"] = custom_partition.mask_neighbor_list(

@@ -5,10 +5,14 @@
 
 .. automodule:: chemtrain.compose.mace_jax
 
-.. autofunction:: mace_jax_neighborlist
+Foundation Models
+-----------------
 
-.. autoclass:: JaxMACE
-    :members:
+.. autofunction:: load_foundational_model
+
+.. autofunction:: load_torch_model
+
+.. autofunction:: mace_jax_neighborlist_from_torch
 
 
 Species Mappings
@@ -21,7 +25,7 @@ Species Mappings
     :members:
 
 
-Load Foundational Models
--------------------------
+Build a Model
+-------------
 
-.. autofunction:: load_foundational_model
+.. autofunction:: mace_jax_neighborlist

@@ -119,9 +119,9 @@ def _split_targets_inputs(observation, quantities):
         else:
             dynamic_kwargs[key] = observation[key]
 
-    assert set(quantities.keys()) == set(targets.keys()), (
-        'All trainig targets must be present in the observation data.'
-    )
+    # assert set(quantities.keys()) == set(targets.keys()), (
+    #     'All trainig targets must be present in the observation data.'
+    # )
 
     return dynamic_kwargs, targets
 
@@ -141,7 +141,7 @@ def state_from_positions(input_dict: Dict[str, ArrayLike]):
 
 # TODO: Initialize predictions for all kinds of quantities
 
-def init_model(nbrs_init: NeighborList,
+def init_model(nbrs_init: None | NeighborList,
                quantities: Dict[str, ComputeFn],
                state_from_input: Callable = None,
                feature_extract_fns: Dict[str, Callable] = None):
@@ -174,13 +174,17 @@ def init_model(nbrs_init: NeighborList,
         state_from_input = state_from_positions
 
     def fm_model(energy_params, observations):
-        # Remove default arguments if not provided in dataset
-        if 'F' not in observations.keys():
-            quantities.pop('F', None)
-        if 'U' not in observations.keys():
-            quantities.pop('U', None)
+        # Compute only requested targets, while retaining auxiliary values used
+        # by the trainer. Do not change the captured dictionary during tracing.
+        active_quantities = {
+            key: quantity_fn
+            for key, quantity_fn in quantities.items()
+            if key in observations or key == "overflow"
+        }
 
-        dynamic_kwargs, _ = _split_targets_inputs(observations, quantities)
+        dynamic_kwargs, _ = _split_targets_inputs(
+            observations, active_quantities
+        )
 
         # Provides the possibility to add a more detailed state of the
         # system, i.e., with velocities, box, etc.
@@ -192,7 +196,7 @@ def init_model(nbrs_init: NeighborList,
         batch_size = states.position.shape[0]
 
         predictions = evaluation.quantity_map(
-            states, quantities, nbrs_init, dynamic_kwargs, {},
+            states, active_quantities, nbrs_init, dynamic_kwargs, {},
             energy_params, batch_size, feature_extract_fns
         )
 
@@ -237,6 +241,17 @@ def init_loss_fn(error_fns: Union[ErrorFn, dict[str, ErrorFn]] = None,
         _error_fns.update(error_fns)
 
     def loss_fn(predictions, targets):
+        missing = {
+            key
+            for key in gammas
+            if key not in targets or key not in predictions
+        }
+        if missing:
+            raise ValueError(
+                "Missing force-matching targets or predictions: "
+                f"{sorted(missing)}."
+            )
+
         errors = {}
         loss_val = 0.
 

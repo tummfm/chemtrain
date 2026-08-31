@@ -16,7 +16,7 @@
 """Custom functions to analyze the neighborlist graph."""
 import importlib
 import warnings
-from typing import Union
+from typing import Union, Callable
 
 import functools
 
@@ -28,6 +28,79 @@ import numpy as onp
 
 from jax_md import partition, space
 from jax_md_mod.model import sparse_graph
+
+import dataclasses
+
+
+def mapped_update_fn(position, neighbor, **kwargs):
+    kwargs.pop("neighbor", None)
+    return neighbor.set(
+        neighbors={
+            key: nbr.update(position, **kwargs)
+            for key, nbr in neighbor.items()
+        }
+    )
+
+
+@jax.tree_util.register_dataclass
+@dataclasses.dataclass
+class NeighborListMap:
+    neighbors: dict[str, partition.NeighborList]
+
+    update_fn: Callable = dataclasses.field(
+        default=mapped_update_fn,
+        metadata={"static": True},
+    )
+
+    def __getitem__(self, key):
+        return self.neighbors[key]
+
+    def items(self):
+        return self.neighbors.items()
+
+    def update(self, position, **kwargs):
+        return self.update_fn(position, self, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self.neighbors["default"], name)
+
+    def set(self, **kwargs):
+        if "neighbors" in kwargs:
+            return dataclasses.replace(self, **kwargs)
+
+        neighbors = dict(self.neighbors)
+        neighbors["default"] = neighbors["default"].set(**kwargs)
+        return dataclasses.replace(self, neighbors=neighbors)
+
+
+def update_neighbor_list(neighbor, position, **kwargs):
+    """Update one neighbor list while preserving JAX sharding information.
+
+    Under ``shard_map``, the saved neighbor list and positions can have
+    different JAX manual-axis markings. Match those markings before the
+    update. This changes only sharding information, not the data.
+    """
+    kwargs.pop("neighbor", None)
+    kwargs.pop("energy_params", None)
+    return _update_neighbor_list(neighbor, position, kwargs)
+
+
+@jax.custom_batching.sequential_vmap
+def _update_neighbor_list(neighbor, position, neighbor_kwargs):
+    """Apply a neighbor-list update one graph at a time under vmap."""
+    manual_axis_type = getattr(jax.typeof(position), "manual_axis_type", None)
+    position_axes = frozenset(getattr(manual_axis_type, "varying", ()))
+
+    def match_position_axes(value):
+        value_axis_type = getattr(jax.typeof(value), "manual_axis_type", None)
+        value_axes = frozenset(getattr(value_axis_type, "varying", ()))
+        missing_axes = position_axes - value_axes
+        if missing_axes:
+            return jax.lax.pcast(value, tuple(missing_axes), to="varying")
+        return value
+
+    neighbor = jax.tree.map(match_position_axes, neighbor)
+    return neighbor.update(position, **neighbor_kwargs)
 
 
 def mask_dense(idx, mask=None):
@@ -88,8 +161,13 @@ def partition_neighbor_list(nbrs: partition.NeighborList,
                 new_idx[0, :] < invalid_idx,
                 new_idx[1, :] < invalid_idx
             )
-            _, select = lax.top_k(valid, k=max_capacity)
+            valid_count = jnp.minimum(jnp.count_nonzero(valid), max_capacity)
+            select = jnp.nonzero(
+                valid, size=max_capacity, fill_value=0
+            )[0]
             new_idx = jnp.take(new_idx, select, axis=1)
+            selected = jnp.arange(max_capacity) < valid_count
+            new_idx = jnp.where(selected[None, :], new_idx, invalid_idx)
 
     return nbrs.set(
         idx=new_idx, max_occupancy=max_capacity
@@ -97,12 +175,14 @@ def partition_neighbor_list(nbrs: partition.NeighborList,
     )
 
 
-def mask_neighbor_list(nbrs: partition.NeighborList,
-                       mask: Array = None) -> partition.NeighborList:
+def mask_neighbor_list(
+    nbrs: partition.NeighborList | NeighborListMap,
+    mask: Array = None,
+) -> partition.NeighborList | NeighborListMap:
     """Masks the neighbor list indices.
 
     Args:
-        nbrs: Dense or sparse neighbor list.
+        nbrs: Dense or sparse neighbor list, or a named collection of lists.
         mask: Boolean array masking valid particles (True). Edges from and to
             invalid particles (False) are removed from the neighbor list.
 
@@ -110,6 +190,12 @@ def mask_neighbor_list(nbrs: partition.NeighborList,
         Returns a neighbor list without edges to invalid particles.
 
     """
+
+    if isinstance(nbrs, NeighborListMap):
+        return nbrs.set(neighbors={
+            key: mask_neighbor_list(neighbor, mask)
+            for key, neighbor in nbrs.items()
+        })
 
     def mask_sparse(idx, mask):
         # Mask out all invalid edges
@@ -456,11 +542,13 @@ def get_triplet_indices(neighbor: partition.NeighborList):
             jnp.all(jk != invalid_idx, axis=-1),
         )
 
-        # Sort (simpler to later prune the triplet array)
-        order = jnp.argsort(-1.0 * mask)
+        valid_count = jnp.count_nonzero(mask)
+        order = jnp.nonzero(mask, size=mask.size, fill_value=0)[0]
         ij = ij[order, :]
         jk = jnp.flip(jk, axis=-1)[order, :]
-        mask = mask[order]
+        mask = jnp.arange(mask.size) < valid_count
+        ij = jnp.where(mask[:, None], ij, invalid_idx)
+        jk = jnp.where(mask[:, None], jk, invalid_idx)
 
         return ij, jk, mask
     else:

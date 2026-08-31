@@ -37,6 +37,27 @@ jobs:
       run: |
         pylint chemtrain --fail-under 7.5
 
+  test-without-mpi:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install non-MPI test dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install .[test]
+
+    - name: Test without MPI dependencies
+      run: |
+        pytest --tb=line -q -m "not jax_multidevice and not mpi" \
+          tests/test_utils tests/test_learn/test_data_parallel.py
+
   doctest:
     runs-on: ubuntu-latest
 
@@ -122,8 +143,23 @@ jobs:
     - name: Install requirements
       run: |
         python -m pip install --upgrade pip
-        pip install .[test,all]
+        pip install .[test,all,mace-jax]
 
     - name: Test with pytest
       run: |
-        pytest --tb=line
+        pytest --tb=line -m "not jax_multidevice"
+
+    - name: Test with two JAX devices
+      env:
+        JAX_PLATFORMS: cpu
+        XLA_FLAGS: --xla_force_host_platform_device_count=2
+      run: |
+        pytest --tb=line -m jax_multidevice
+
+    - name: Test with two MPI ranks
+      env:
+        OMPI_ALLOW_RUN_AS_ROOT: 1
+        OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: 1
+        JAX_PLATFORMS: cpu
+      run: |
+        mpiexec -n 2 pytest --tb=line -m mpi

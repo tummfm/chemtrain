@@ -23,7 +23,6 @@
 
 """Loads a MACE model from PyTorch via MACE-JAX."""
 
-import functools
 
 from typing import Dict, Any, Tuple, Callable
 
@@ -37,7 +36,6 @@ from jax_md_mod import custom_partition
 from jax_md import space, partition
 
 from mace_jax.modules.wrapper_ops import (
-    CuEquivarianceConfig,
     EquivarianceConfig,
     resolve_equivariance_config,
 )
@@ -45,7 +43,7 @@ from mace_jax.modules import models as mace_jax_models
 from mace_jax.nnx_config import ConfigDict, ConfigVar
 
 from mace_jax.cli import mace_jax_from_torch
-import torch
+from mace_jax.adapters.cuequivariance import symmetric_contraction as sc
 
 from . import utils
 
@@ -54,6 +52,32 @@ from mace_jax.tools.model_builder import (
     _build_jax_model,
     _prepare_template_data,
 )
+
+
+# cuEquivariance checks selector bounds with lax.cond. Some JAX transforms
+# evaluate both branches, so use masked indices and keep the check in Python.
+def _select_weights_no_raise(weight_flat, selector, *, dtype, num_elements):
+    """Select element weights without a transformed runtime assertion."""
+    selector = jnp.asarray(selector)
+
+    if selector.ndim == 1:
+        idx = selector.astype(jnp.int32)
+        invalid = (idx < 0) | (idx >= num_elements)
+        return weight_flat[jnp.where(invalid, jnp.int32(0), idx)]
+
+    if selector.ndim == 2:
+        if selector.shape[1] != num_elements:
+            raise ValueError(
+                "Mixing matrix must have second dimension num_elements"
+            )
+        return jnp.asarray(selector, dtype=dtype) @ weight_flat
+
+    raise ValueError(
+        "indices must be rank-1 element ids or a rank-2 mixing matrix"
+    )
+
+
+sc._select_weights = _select_weights_no_raise
 
 
 def _variable_value(value):
@@ -249,6 +273,8 @@ def load_torch_model(model_file: str):
 
     """
 
+    import torch
+
     torch_model = torch.load(model_file)
     torch_model.eval()
 
@@ -257,6 +283,33 @@ def load_torch_model(model_file: str):
         raise RuntimeError(config["error"])
 
     return torch_model, config
+
+
+def _resolve_head_index(
+    head: str | int | None,
+    torch_model: Any,
+    config: Dict[str, Any],
+) -> int:
+    """Resolve one checkpoint head without pruning or changing its state."""
+    raw_heads = getattr(torch_model, "heads", None)
+    if raw_heads is None:
+        raw_heads = config.get("heads")
+    heads = tuple(str(value) for value in raw_heads) if raw_heads else ("Default",)
+
+    if head is None:
+        return 0
+    if isinstance(head, str):
+        if head not in heads:
+            raise ValueError(
+                f"Unknown MACE head {head!r}; available heads are {heads!r}."
+            )
+        return heads.index(head)
+    index = int(head)
+    if index < 0 or index >= len(heads):
+        raise ValueError(
+            f"MACE head index {index} is outside [0, {len(heads)})."
+        )
+    return index
 
 
 class SpeciesMapping:
@@ -296,9 +349,9 @@ def mace_jax_neighborlist_from_torch(
     scale_pot: float = 96.485,
     species_mapping: SpeciesMapping = SpeciesMapping(),
     equivariance_config: EquivarianceConfig = None,
-    cueq_config: CuEquivarianceConfig = None,
-    use_custom_batch_fn: bool = False,
+    use_custom_batch_fn: bool = True,
     comm: Any = None,
+    head: str | int | None = None,
 ) -> Tuple[Any, Callable]:
     """MACE model for property prediction.
 
@@ -313,30 +366,26 @@ def mace_jax_neighborlist_from_torch(
         scale_pot: Scaling factor for potentials, i.e., to convert units.
         species_mapping: Mapping for species to model-compatible indices.
         equivariance_config: Backend-neutral equivariance configuration.
-        cueq_config: Deprecated alias for a CuEquivariance-only configuration.
-        use_custom_batch_fn: Whether to use custom batch function.
-            Required when cueq_config is enabled, optional otherwise.
+        use_custom_batch_fn: Whether to use chemtrain's custom graph-batching
+            transform. Pass ``False`` to bypass it explicitly.
         comm: Optional deployment communication interface. It must provide a
             ``gather`` method used between message-passing blocks.
+        head: Checkpoint head name or index. The selected index is closed over
+            by the JAX model so export and deployment specialize it without
+            pruning or changing any checkpoint array.
 
     Returns:
         Returns a tuple of parameters and an apply function.
 
     """
 
-    equivariance_config = resolve_equivariance_config(
-        equivariance_config, cueq_config=cueq_config
-    )
+    equivariance_config = resolve_equivariance_config(equivariance_config)
+    head_index = _resolve_head_index(head, torch_model, config)
     jax_model, state, template_data = mace_jax_from_torch.convert_model(
         torch_model, config, equivariance_config=equivariance_config
     )
     uses_nnx_state = isinstance(state, nnx.State)
     variables = _state_to_legacy_variables(state)
-
-    cueq = (
-        None if equivariance_config is None else equivariance_config.cueq_config
-    )
-    cueq_enabled = False if cueq is None else cueq.enabled
 
     del template_data  # Unused
 
@@ -370,6 +419,7 @@ def mace_jax_neighborlist_from_torch(
             "num_species": config["num_elements"],
             "batch": jnp.zeros(species.shape, dtype=jnp.int32),  # Unused, but some models require it
             "unit_shifts": jnp.zeros((vectors.shape[0], 3)),  # Unused, but some models require it
+            "head": jnp.asarray([head_index], dtype=jnp.int32),
         }
 
         if state is None:
@@ -380,7 +430,29 @@ def mace_jax_neighborlist_from_torch(
                 data, compute_force=False, compute_stress=False, comm=comm)
         return out["node_energy"] * mask
 
-    use_batched_apply = cueq_enabled or use_custom_batch_fn
+    def _apply_variables(
+        variables, senders, receivers, edge_feats, node_feats
+    ):
+        """Apply explicitly passed params/state to one flattened graph.
+
+        NNX state may contain dynamic JAX arrays. It must therefore be an
+        operand of the custom batching transform, never a value captured by a
+        closure created while tracing ``apply_fn``.
+        """
+        model_params, model_state = variables
+        return _apply_fn(
+            model_params,
+            senders,
+            receivers,
+            edge_feats,
+            node_feats,
+            state=model_state,
+            comm=None,
+        )
+
+    batched_apply = (
+        utils.batch_apply_fn(_apply_variables) if use_custom_batch_fn else None
+    )
 
     def apply_fn(
         params: Any,
@@ -421,22 +493,22 @@ def mace_jax_neighborlist_from_torch(
             } or None
         else:
             model_params, model_state = params, None
-        model_args = (model_params, senders, receivers, (vectors,), (species, mask))
-        if use_batched_apply and comm is None:
-            # Construct the batching transform only for the ordinary model;
-            # ``comm`` is a static JIT property, so this branch is specialized
-            # independently from the communicating deployment variant.
-            batched_apply = utils.batch_apply_fn(
-                functools.partial(_apply_fn, state=model_state, comm=comm)
+        graph_args = (senders, receivers, (vectors,), (species, mask))
+        if use_custom_batch_fn and comm is None:
+            # Params and NNX state are both explicit unbatched operands. This
+            # prevents dynamic state arrays from leaking into a traced closure.
+            per_atom_energies = batched_apply(
+                (model_params, model_state), *graph_args
             )
-            per_atom_energies = batched_apply(*model_args)
         else:
             # Deployment passes one already flattened graph, so feature
             # communication does not need the custom batching transform. Its
             # backward rule intentionally recomputes the model from its inputs;
             # bypassing it lets JAX retain the communicated primal features and
             # avoids a second forward halo exchange before the reverse one.
-            per_atom_energies = _apply_fn(*model_args, state=model_state, comm=comm)
+            per_atom_energies = _apply_fn(
+                model_params, *graph_args, state=model_state, comm=comm
+            )
         per_atom_energies *= scale_pot
 
         if per_particle:
@@ -462,8 +534,7 @@ def mace_jax_neighborlist(
     mode: str = "energy",
     per_particle: bool = False,
     equivariance_config: EquivarianceConfig = None,
-    cueq_config: CuEquivarianceConfig = None,
-    use_custom_batch_fn: bool = False,
+    use_custom_batch_fn: bool = True,
     mace_config: Dict[str, Any] = None,
 ) -> Tuple[Any, Callable, Dict[str, Any]]:
     """MACE model for property prediction.
@@ -486,6 +557,9 @@ def mace_jax_neighborlist(
             returns the learned node features. If "energy_prediction", returns
             the total energy of the system.
         per_particle: Return per-particle energies instead of total energy.
+        equivariance_config: Backend-neutral equivariance configuration.
+        use_custom_batch_fn: Whether to use chemtrain's custom graph-batching
+            transform. Pass ``False`` to bypass it explicitly.
         mace_config: Kwargs to change the default structure of MACE.
             For definition of the kwargs, see MACE.
 
@@ -493,9 +567,7 @@ def mace_jax_neighborlist(
         Returns a tuple of parameters and an apply function.
 
     """
-    equivariance_config = resolve_equivariance_config(
-        equivariance_config, cueq_config=cueq_config
-    )
+    equivariance_config = resolve_equivariance_config(equivariance_config)
     species_mapping = AtomicNumberMapping(n_species)
 
     # Keys based on MACE JAX
@@ -544,11 +616,6 @@ def mace_jax_neighborlist(
     template_vars = jax_model.init(jax.random.PRNGKey(0), template_data)
     del template_data  # Unused
 
-    cueq = (
-        None if equivariance_config is None else equivariance_config.cueq_config
-    )
-    cueq_enabled = False if cueq is None else cueq.enabled
-
     # We need a different __call__ method
     jax_model.__class__ = JaxMACE
 
@@ -568,8 +635,8 @@ def mace_jax_neighborlist(
             num_species=config["num_species"],
         )
 
-    # Apply custom batch function if enabled via cueq or explicitly requested
-    if cueq_enabled or use_custom_batch_fn:
+    # Apply the custom batch function only when explicitly requested.
+    if use_custom_batch_fn:
         _apply_fn = utils.batch_apply_fn(_apply_fn)
 
     def apply_fn(

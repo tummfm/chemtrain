@@ -23,8 +23,6 @@ many samples instead of a single snapshot. Therefore, **chemtrain** provides
 functions to efficiently parallelize these evaluations, using vectorization
 and parallelization.
 
-.. autofunction:: pmap_update_fn
-
 .. autofunction:: shmap_update_fn
 
 .. autofunction:: shmap_loss_fn

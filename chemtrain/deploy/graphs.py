@@ -648,10 +648,14 @@ def prune_neighbor_list(list, local, max_edges, nbr_order: int, half_list: bool 
     receivers = jnp.where(mask, list.receivers, local.size)
     n_valid = jnp.sum(mask)
 
-    # Reduce the size of the neighbor list
-    mask, select = lax.top_k(mask, k=max_edges)
+    # Keep valid edges in source order and pad the fixed-size output.
+    selected_count = jnp.minimum(n_valid, max_edges)
+    select = jnp.nonzero(mask, size=max_edges, fill_value=0)[0]
     senders = senders[select]
     receivers = receivers[select]
+    mask = jnp.arange(max_edges) < selected_count
+    senders = jnp.where(mask, senders, local.size)
+    receivers = jnp.where(mask, receivers, local.size)
 
     return SimpleSparseNeighborList(senders, receivers, mask), n_valid
 

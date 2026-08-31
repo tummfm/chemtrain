@@ -25,7 +25,7 @@ classifiers = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    'jax < 0.10.0',
+    'jax >= 0.5.0, < 0.12.0',
     'scipy',
     'jax-md >= 0.2.25',
     'jax-sgmc',
@@ -56,7 +56,12 @@ dynamic = ["version"]
     'tomli-w',
     "scikit-learn",
     "h5py",
-    "mpi4jax"
+    "mpi4py",
+    "mpi4jax >= 0.9.0.post1"
+]
+"mpi" = [
+    "mpi4py",
+    "mpi4jax >= 0.9.0.post1"
 ]
 "test" = [
     "pylint",
