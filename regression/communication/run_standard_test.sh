@@ -16,6 +16,8 @@ export XLA_PYTHON_CLIENT_PREALLOCATE="${XLA_PYTHON_CLIENT_PREALLOCATE:-false}"
 # Ask the connector to verify that runtime forward/reverse exchanges match the
 # communication sites recorded in the exported model.
 export JCN_VALIDATE_COMMUNICATION="${JCN_VALIDATE_COMMUNICATION:-1}"
+# Include the stable compilation records checked by the regression driver.
+export JCN_LOGLEVEL="${JCN_LOGLEVEL:-1}"
 
 PYTHON_EXECUTABLE="${PYTHON_EXECUTABLE:-python}"
 LAMMPS_EXECUTABLE="${LAMMPS_EXECUTABLE:-lmp}"
@@ -29,6 +31,7 @@ echo "  CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 echo "  OMP_NUM_THREADS=${OMP_NUM_THREADS}"
 echo "  XLA_PYTHON_CLIENT_PREALLOCATE=${XLA_PYTHON_CLIENT_PREALLOCATE}"
 echo "  JCN_VALIDATE_COMMUNICATION=${JCN_VALIDATE_COMMUNICATION}"
+echo "  JCN_LOGLEVEL=${JCN_LOGLEVEL}"
 echo "  PYTHON_EXECUTABLE=${PYTHON_EXECUTABLE}"
 echo "  LAMMPS_EXECUTABLE=${LAMMPS_EXECUTABLE}"
 echo "  MPI_LAUNCHER=${MPI_LAUNCHER}"

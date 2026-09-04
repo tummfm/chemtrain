@@ -231,6 +231,7 @@ def mpi_tree_gather(tree, dim=None):
             (size * x.shape[0] if dim is None else dim, *x.shape[1:]), dtype=x.dtype
         ).at[rank::size].set(x), tree
     )
+
     def gather_leaf(x):
         """Reduce one gathered array."""
         return mpi4jax.allreduce(
@@ -238,7 +239,6 @@ def mpi_tree_gather(tree, dim=None):
         )
 
     tree = tree_util.tree_map(gather_leaf, gathered_tree)
-
     return tree
 
 
@@ -273,7 +273,6 @@ def mpi_tree_mean(tree, dim=None):
         )
 
     tree = tree_util.tree_map(mean_leaf, tree)
-
     return tree
 
 

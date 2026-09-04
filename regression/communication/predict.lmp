@@ -33,8 +33,8 @@ mass * 1.0
 
 # `comm` selects the baseline or internal-communication model variant. This
 # test targets predictions on fixed inputs rather than buffer growth.
-pair_style chemtrain_deploy cuda 0.85 comm ${comm}
-pair_coeff * * ${model} 2.0 4.0
+pair_style chemtrain cuda 0.85 comm ${comm} capacity/atom 2.0 capacity/edge 4.0
+pair_coeff * * ${model}
 neighbor 2.0 bin
 neigh_modify every 1 delay 0 check no
 

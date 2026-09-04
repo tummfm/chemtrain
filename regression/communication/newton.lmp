@@ -2,9 +2,9 @@
 # Exercise the explicit contract between internal communication and Newton.
 #
 # The Python driver invokes this file four times:
-#   1. default model variant with Newton pair forces on;
-#   2. default model variant with Newton pair forces off; and
-#   3. internal communication with Newton pair forces on; and
+#   1. comm_off_newton_on;
+#   2. comm_off_newton_off;
+#   3. comm_on_newton_on; and
 #   4. internal communication with Newton off, which must fail clearly.
 # The successful runs use exactly the same static crystal. Their atom-ID-aligned
 # energies and forces must agree within the tolerances in run_regression.py.
@@ -21,7 +21,10 @@ atom_style atomic
 boundary p p p
 newton ${newton_setting}
 processors 2 1 1
-lattice bcc 3.21
+# MACE-MP medium-0b3 with the default head predicts a zero-pressure BCC Ti
+# lattice constant of 3.2663 Angstrom. Start from that relaxed bulk cell before
+# adding the deterministic distortion below.
+lattice bcc 3.2663
 region box block 0 4 0 4 0 4 units lattice
 create_box 22 box
 create_atoms 22 box
@@ -36,15 +39,15 @@ displace_atoms defect random 0.45 0.35 0.35 20260623 units box
 # Masses are required during run setup but do not affect this static evaluation.
 mass * 1.0
 
-# `comm` selects the baseline or internal-communication model variant. Padding
-# is generous here because this test targets Newton behavior, not recompilation.
-pair_style chemtrain_deploy cuda 0.85 comm ${comm}
-pair_coeff * * ${model} 2.0 4.0
+# `comm` and `newton` together select the specialized model variant. Padding is
+# generous here because this test targets Newton behavior, not recompilation.
+pair_style chemtrain cuda 0.85 comm ${comm} capacity/atom 2.0 capacity/edge 4.0
+pair_coeff * * ${model}
 neighbor 2.0 bin
 neigh_modify every 1 delay 0 check no
 
 thermo 1
-thermo_style custom step atoms pe
+thermo_style custom step atoms pe pxx pyy pzz pxy pxz pyz
 thermo_modify format float %.16g
 compute atom_energy all pe/atom
 dump prediction all custom 1 ${prediction_dump} id type x y z fx fy fz c_atom_energy

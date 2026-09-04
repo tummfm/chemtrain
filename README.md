@@ -52,24 +52,33 @@ We recommend viewing the examples in the [reference documentation](https://chemt
 
 ## Installation
 
-**chemtrain** can be installed with pip:
+Install chemtrain with pip:
 
 ```shell
 pip install chemtrain --upgrade
 ```
 
-The above command installs **JAX for CPU**.
-Running **chemtrain on the GPU** requires the installation of a special JAX
-version.
-Please follow the
-[JAX Installation Instructions](https://github.com/google/jax#installation).
+The base installation uses JAX for CPU. chemtrain supports JAX versions from
+0.5.0 up to, but not including, 0.12. JAX 0.10.2 is excluded. It requires
+JAX-MD 0.2.29 or newer. No special import order is required.
 
-> **Note:** chemtrain supports JAX versions from 0.5 up to, but not including,
-> 0.12. Install the matching CPU or GPU JAX package for your system.
+For NVIDIA CUDA Python packages, choose the CUDA major version installed on
+the target system:
+
+```shell
+pip install 'chemtrain[cuda12]' --upgrade
+# or
+pip install 'chemtrain[cuda13]' --upgrade
+```
+
+These extras install JAX's CUDA Python dependencies only. Building
+chemtrain-deploy and its PJRT runtime is a separate step. Follow the
+[chemtrain-deploy installation guide](https://chemtrain.readthedocs.io/en/latest/chemtrain-deploy/installation.html)
+when that runtime is needed.
 
 ### Additional Packages
 
-Some parts of **chemtrain** require additional packages.
+Some parts of chemtrain require additional packages.
 To install these, provide the `all` option.
 
 ```shell

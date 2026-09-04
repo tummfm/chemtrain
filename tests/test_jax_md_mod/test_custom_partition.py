@@ -16,8 +16,8 @@ import itertools
 import jax
 from jax import numpy as jnp, Array
 
-from jax_md_mod import custom_partition
-from jax_md import partition, dataclasses
+from jax_md_mod import custom_partition, custom_quantity
+from jax_md import partition, dataclasses, space
 
 import numpy as onp
 
@@ -85,10 +85,109 @@ class NeighborIdx:
     format: partition.NeighborListFormat
     reference_position: Array = None
     max_occupancy: int = None
+    did_buffer_overflow: Array = False
+
+
+class TestBoxConvention:
+    def test_lower_triangular_box_is_not_malformed(self):
+        lower = jnp.asarray([
+            [2.0, 0.0, 0.0],
+            [0.2, 2.1, 0.0],
+            [0.1, 0.3, 2.2],
+        ])
+        upper = lower.T
+
+        assert not partition.is_box_valid(lower)
+        assert partition.is_box_valid(upper)
+        assert not partition.is_box_valid(jnp.asarray([2.0, 2.1, 2.2]))
 
 
 class TestEdgeMasking:
 
+    def test_readout_vectors_maps_invalid_edges_to_cutoff_before_sorting(self):
+        position = jnp.asarray([
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0],
+        ])
+        neighbor = NeighborIdx(
+            idx=jnp.asarray(
+                [[0, 0, 3, -1], [1, 2, 1, 1]], dtype=jnp.int32
+            ),
+            format=partition.NeighborListFormat.Sparse,
+        )
+        displacement, _ = space.free()
+
+        vectors, senders, receivers = custom_partition.readout_vectors(
+            displacement,
+            2.0,
+            position,
+            neighbor,
+            mask=jnp.ones(3, dtype=bool),
+        )
+        onp.testing.assert_allclose(
+            onp.linalg.norm(onp.asarray(vectors), axis=-1),
+            onp.asarray([1.0, 2.0, 2.0, 2.0]),
+        )
+        onp.testing.assert_array_equal(onp.asarray(senders), [0, 3, 3, 3])
+        onp.testing.assert_array_equal(onp.asarray(receivers), [1, 3, 3, 3])
+        contributions = jax.ops.segment_sum(
+            jnp.ones_like(senders), senders, num_segments=position.shape[0]
+        )
+        onp.testing.assert_array_equal(onp.asarray(contributions), [1, 0, 0])
+
+        sorted_vectors, _, _ = custom_partition.readout_vectors(
+            displacement,
+            2.0,
+            position,
+            neighbor,
+            mask=jnp.ones(3, dtype=bool),
+            max_edges=2,
+        )
+        onp.testing.assert_allclose(
+            onp.linalg.norm(onp.asarray(sorted_vectors), axis=-1),
+            onp.asarray([1.0, 2.0]),
+        )
+
+        gradient = jax.grad(
+            lambda pos: jnp.sum(custom_partition.readout_vectors(
+                displacement,
+                2.0,
+                pos,
+                neighbor,
+                mask=jnp.ones(3, dtype=bool),
+            )[0])
+        )(position)
+        assert jnp.all(jnp.isfinite(gradient))
+
+    def test_tetrahedral_neighbors_ignore_dense_padding(self):
+        position = jnp.asarray([
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0],
+            [0.0, 0.0, 3.0],
+            [0.1, 0.0, 0.0],
+        ])
+        padding = position.shape[0]
+        neighbor = NeighborIdx(
+            idx=jnp.asarray([
+                [1, 2, 3, 4, padding],
+                [padding, padding, padding, padding, padding],
+                [padding, padding, padding, padding, padding],
+                [padding, padding, padding, padding, padding],
+                [padding, padding, padding, padding, padding],
+            ], dtype=jnp.int32),
+            format=partition.NeighborListFormat.Dense,
+        )
+        displacement, _ = space.free()
+
+        nearest = jax.jit(
+            lambda pos: custom_quantity._nearest_tetrahedral_nbrs(
+                displacement, pos, neighbor
+            )
+        )(position)
+        norms = onp.sort(onp.linalg.norm(onp.asarray(nearest[0]), axis=-1))
+        onp.testing.assert_allclose(norms, [0.1, 1.0, 2.0, 3.0])
     @pytest.mark.parametrize(
         "partitions, capacity, expected",
         (
@@ -151,6 +250,31 @@ class TestEdgeMasking:
             masked["longer_range"].idx,
             jnp.asarray([[0, 2, 3, 3], [2, 0, 3, 3]]),
         )
+
+    def test_neighbor_list_map_reports_overflow_from_every_list(self):
+        """Generic simulation checks also see non-default-list overflow."""
+        position = jnp.zeros((2, 3))
+        edge_index = jnp.asarray([[0, 2], [1, 2]])
+        neighbors = custom_partition.NeighborListMap({
+            "default": NeighborIdx(
+                idx=edge_index,
+                format=partition.NeighborListFormat.Sparse,
+                reference_position=position,
+                did_buffer_overflow=jnp.asarray([False, False]),
+            ),
+            "longer_range": NeighborIdx(
+                idx=edge_index,
+                format=partition.NeighborListFormat.Sparse,
+                reference_position=position,
+                did_buffer_overflow=jnp.asarray([False, True]),
+            ),
+        })
+
+        overflow = jax.jit(lambda neighbor: neighbor.did_buffer_overflow)(
+            neighbors
+        )
+
+        onp.testing.assert_array_equal(overflow, jnp.asarray([False, True]))
 
     @pytest.mark.parametrize("graph", (star_graph_dense, fc_graph_dense))
     @pytest.mark.parametrize("exclude", (
@@ -229,6 +353,30 @@ class TestEdgeMasking:
 
 
 class TestTriplets:
+
+    def test_dense_triplets_mask_all_out_of_bounds_indices(self):
+        n_particles = 4
+        idx = jnp.asarray([
+            [1, 2, -1, n_particles + 1],
+            [0, 2, n_particles, n_particles],
+            [0, 1, n_particles, n_particles],
+            [n_particles, n_particles, n_particles, n_particles],
+        ], dtype=jnp.int32)
+
+        @jax.jit
+        def triplets(dense_idx):
+            neighbor = NeighborIdx(
+                idx=dense_idx,
+                format=partition.NeighborListFormat.Dense,
+            )
+            return custom_partition.get_triplet_indices(neighbor)
+
+        ij, kj, mask = triplets(idx)
+        valid_ij = onp.asarray(ij)[onp.asarray(mask)]
+        valid_kj = onp.asarray(kj)[onp.asarray(mask)]
+        assert valid_ij.size > 0
+        assert onp.all((0 <= valid_ij) & (valid_ij < n_particles))
+        assert onp.all((0 <= valid_kj) & (valid_kj < n_particles))
 
     @pytest.mark.parametrize("graph", (star_graph_dense, fc_graph_dense))
     def test_get_dense(self, graph):

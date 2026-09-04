@@ -19,21 +19,30 @@ physics and hardware acceleration through GPUs to provide flexibility at scale.
 Installation
 =============
 
-**chemtrain** can be installed with pip:
+Install chemtrain with pip:
 
 .. code-block:: shell
 
    pip install chemtrain --upgrade
 
-The above command installs **JAX for CPU**.
-Running **chemtrain on the GPU** requires the installation of a particular JAX
-version.
-Please follow the `JAX Installation Instructions <https://github.com/google/jax#installation>`_.
+The base installation uses JAX for CPU. chemtrain supports JAX versions from
+0.5.0 up to, but not including, 0.12. JAX 0.10.2 is excluded. It requires
+JAX-MD 0.2.29 or newer. No special import order is required.
+
+For NVIDIA CUDA Python packages, choose the CUDA major version installed on
+the target system:
+
+.. code-block:: shell
+
+   pip install 'chemtrain[cuda12]' --upgrade
+   # or
+   pip install 'chemtrain[cuda13]' --upgrade
 
 .. note::
 
-   chemtrain supports JAX versions from 0.5 up to, but not including, 0.12.
-   Install the matching CPU or GPU JAX package for your system.
+   These extras install JAX's CUDA Python dependencies only. Building
+   chemtrain-deploy and its PJRT runtime is a separate step. See
+   :doc:`chemtrain-deploy/installation`.
 
 
 Advanced Installation
@@ -43,7 +52,7 @@ Advanced Installation
 Additional Packages
 ____________________
 
-Some parts of **chemtrain** require additional packages.
+Some parts of chemtrain require additional packages.
 To install these, provide the `all` option.
 
 .. code-block:: shell
@@ -141,9 +150,16 @@ API Documentation
 
    chemtrain-deploy/installation
    chemtrain-deploy/getting_started
+   chemtrain-deploy/lammps
+   chemtrain-deploy/model_inputs
    chemtrain-deploy/mace_foundation_models
+
+.. toctree::
+   :titlesonly:
+   :caption: Adapter Development
+   :maxdepth: 1
+
    chemtrain-deploy/connector
-   chemtrain-deploy/implementation
 
 .. toctree::
    :titlesonly:

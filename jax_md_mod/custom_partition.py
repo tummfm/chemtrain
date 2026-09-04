@@ -61,6 +61,21 @@ class NeighborListMap:
     def update(self, position, **kwargs):
         return self.update_fn(position, self, **kwargs)
 
+    @property
+    def did_buffer_overflow(self):
+        """Whether any contained neighbor list overflowed its capacity.
+
+        Preserve any leading batch dimensions so callers can decide whether
+        to reduce over trajectories or devices themselves.
+        """
+        return jnp.any(
+            jnp.stack([
+                neighbor.did_buffer_overflow
+                for neighbor in self.neighbors.values()
+            ]),
+            axis=0,
+        )
+
     def __getattr__(self, name):
         return getattr(self.neighbors["default"], name)
 
@@ -536,11 +551,10 @@ def get_triplet_indices(neighbor: partition.NeighborList):
         ij = ij.reshape((2, -1)).swapaxes(0, 1)
         jk = jk.reshape((2, -1)).swapaxes(0, 1)
 
-        # Mask out all invalid triplets
-        mask = jax.vmap(jnp.logical_and)(
-            jnp.all(ij != invalid_idx, axis=-1),
-            jnp.all(jk != invalid_idx, axis=-1),
-        )
+        # Mask every triplet with an endpoint outside the particle array.
+        valid_ij = jnp.all((0 <= ij) & (ij < invalid_idx), axis=-1)
+        valid_jk = jnp.all((0 <= jk) & (jk < invalid_idx), axis=-1)
+        mask = valid_ij & valid_jk
 
         valid_count = jnp.count_nonzero(mask)
         order = jnp.nonzero(mask, size=mask.size, fill_value=0)[0]
@@ -787,13 +801,30 @@ def readout_vectors(displacement_fn: space.DisplacementFn,
         2, neighbor.idx.shape[1]), "Neighbor list has wrong shape."
         senders, receivers = neighbor.idx
 
-    # Set invalid edges to the cutoff to avoid numerical issues
-    vectors = jax.vmap(dyn_displacement)(position[senders], position[receivers])
-    vectors = jnp.where(
-        jnp.logical_and(
-            jnp.logical_and(senders < position.shape[0], mask[senders]),
-            jnp.logical_and(receivers < position.shape[0], mask[receivers])
-        )[:, jnp.newaxis], vectors, r_cutoff / jnp.sqrt(3))
+    valid_index = jnp.logical_and(
+        jnp.logical_and(0 <= senders, senders < position.shape[0]),
+        jnp.logical_and(0 <= receivers, receivers < position.shape[0]),
+    )
+    safe_senders = jnp.where(valid_index, senders, 0)
+    safe_receivers = jnp.where(valid_index, receivers, 0)
+
+    # Set invalid or out-of-cutoff edges to the cutoff to avoid numerical
+    # issues and to keep them after all valid edges when sorting by length.
+    # Their endpoint is the padded particle index, so a segment sum ignores
+    # them even when a model does not vanish exactly at the cutoff.
+    vectors = jax.vmap(dyn_displacement)(
+        position[safe_senders], position[safe_receivers]
+    )
+    node_mask = jnp.logical_and(
+        jnp.logical_and(valid_index, mask[safe_senders]),
+        mask[safe_receivers]
+    )
+    lengths = jnp.linalg.norm(vectors, axis=-1)
+    edge_mask = jnp.logical_and(node_mask, lengths < r_cutoff)
+    vectors = jnp.where(edge_mask[:, jnp.newaxis], vectors, r_cutoff / jnp.sqrt(3))
+    invalid_index = position.shape[0]
+    senders = jnp.where(edge_mask, senders, invalid_index)
+    receivers = jnp.where(edge_mask, receivers, invalid_index)
 
     if max_edges is not None:
         # Sort vectors by length and remove up to max_edges edges
