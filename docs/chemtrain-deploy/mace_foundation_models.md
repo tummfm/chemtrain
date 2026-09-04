@@ -7,7 +7,8 @@ The simulation uses a 10,000-molecule, 30,000-atom water box on two GPUs.
 
 ## Prerequisites
 
-- A working {doc}`chemtrain-deploy installation <installation>`.
+- A CUDA {doc}`chemtrain-deploy installation <installation>` built with the
+  optional OpenEquivariance extension.
 - `chemtrain`
 - MACE 0.3.16 and
   [MACE-JAX PR #21 at commit 594563b](https://github.com/ACEsuit/mace-jax/commit/594563b322d6127f9b8903eec534dcde51fed83d)
@@ -36,7 +37,7 @@ The workflow has three steps:
 
 ## Step 1: Export the Model
 
-The export script loads MACE-MH-1 with the `omol` head, wraps the model in an
+The export script loads MACE-MH-1 with the `omol` head and wraps the model in an
 {class}`chemtrain.deploy.exporter.Exporter` subclass. The bundle contains both
 comm-off Newton variants and a communication-enabled Newton-on variant.
 
@@ -251,7 +252,7 @@ Key settings:
 
 ## Running on 2 GPUs
 
-Expose exactly the two GPUs you want to use via `CUDA_VISIBLE_DEVICES` and
+Expose exactly two GPUs via `CUDA_VISIBLE_DEVICES` and
 launch LAMMPS with 2 MPI ranks:
 
 ```bash
@@ -264,10 +265,10 @@ mpirun -np 2 lmp -k on g 2 -sf kk \
   -in simulation.lmp
 ```
 
-With the packaged layout, PJRT and CUDA FFI providers are found beside the
-loaded `libconnector.so`. Set `JCN_PJRT_PATH` only to select one alternate
-`pjrt/` directory. Set `JCN_FFI_PATH` to a colon-separated ordered list only
-when providers are installed outside the adjacent `ffi/` directory.
+The packaged installation finds its runtime backend and extensions
+automatically. Set `JCN_PJRT_PATH` only when the runtime backend is installed
+elsewhere. Set `JCN_FFI_PATH` only when extensions are installed elsewhere. It
+accepts an ordered, colon-separated list of directories.
 
 The runtime selects one visible GPU per local MPI rank. `OMP_NUM_THREADS=1`
 avoids CPU thread oversubscription when MPI and OpenMP are both active.

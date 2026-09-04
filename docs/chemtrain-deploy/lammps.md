@@ -94,15 +94,19 @@ All active models use the same communication setting and the same
 neighbor-list format. The pair style requests the largest cutoff and
 communication distance declared by any model.
 
-## Model Inputs
+## Supplying Model Inputs
+
+Export-side declarations, supported dtypes, and communication variants are
+described in {doc}`model_inputs`. This section explains how LAMMPS supplies
+the declared fields.
 
 ### Particle Fields
 
 LAMMPS maps its one-based atom type to the model's zero-based `species` field.
 `species` is always present and cannot be remapped.
 
-Every additional particle field is a scalar `int32` array. By default, model
-field `FIELD` maps to an existing LAMMPS custom property named `i_FIELD`:
+For every additional particle field, LAMMPS reads an existing custom integer
+property. By default, field `FIELD` uses the property named `i_FIELD`:
 
 ```text
 fix             fields all property/atom i_residue_id ghost yes
@@ -132,8 +136,8 @@ pair_style chemtrain cuda \
 
 ### Global Fields
 
-Every exported global field requires an explicit `global/input` mapping. A
-source is either a numeric literal or an equal-style variable:
+Every declared global field needs a `global/input` mapping. Its source is
+either a numeric literal or an equal-style variable:
 
 ```text
 variable        switching_radius equal 3.2
@@ -143,21 +147,14 @@ pair_style      chemtrain cuda \
 pair_coeff      * * parameterized_model.ptb
 ```
 
-Equal-style variables are evaluated for every force call. The resulting value
-is converted to the `float32`, `float64`, or `int32` type declared by the
-exported model.
+Equal-style variables are evaluated for every force call. LAMMPS converts the
+result to the dtype declared by the model.
 
 The ordinary `chemtrain` pair style uses LAMMPS host-side `float64` positions
-and outputs with either the CPU or CUDA PJRT backend. The Kokkos device pair
-style currently uses a `float32` device ABI. A model exported with
-`position_dtype = jnp.float64` differentiates with respect to `float64`
-positions behind that Kokkos interface, but the connector converts positions
-and built-in outputs at the adapter boundary. The energy function must also
-use `float64` parameters, constants, and calculations when the entire model is
-intended to run in double precision. Use the ordinary pair style with the CUDA
-backend when the complete LAMMPS-to-model path must remain `float64`.
-
-See {doc}`model_inputs` for the corresponding exporter declarations.
+and outputs with either the CPU or CUDA backend. The Kokkos device pair style
+uses a `float32` device interface. Use the ordinary pair style with CUDA when
+the complete LAMMPS-to-model path must remain `float64`. See
+{doc}`getting_started` for export-side precision choices.
 
 ## Auxiliary Outputs
 
@@ -178,16 +175,11 @@ For multiple models, the compute also takes the model context:
 compute q all chemtrain/output order steinhardt_l4
 ```
 
-Define `compute chemtrain/output` after `pair_coeff`. LAMMPS obtains the output
-scope and shape from model metadata when the command is parsed. `PARTICLE`
-outputs use a per-atom vector or array. `LOCAL` outputs are summed once across MPI
-ranks and exposed as a global scalar or vector. `GLOBAL` outputs are complete
-configuration values and are exposed without a LAMMPS reduction. For example,
-an interface-pinning bias computed after `comm.reduce` is `GLOBAL`. LAMMPS must
-not reduce the already complete bias again. For configuration outputs, the
-exported `extensive` flag tells LAMMPS whether the value scales with system
-size. It affects LAMMPS normalization but does not change the `LOCAL` or
-`GLOBAL` reduction behavior.
+Define `compute chemtrain/output` after `pair_coeff`. LAMMPS reads the output
+scope and shape from the model when the compute is defined. Particle outputs
+become per-atom values. Local outputs are summed once across MPI ranks, while
+global outputs are already complete and are not reduced again. The exporter
+defines each output's scope and whether it is extensive. See {doc}`model_inputs`.
 
 All configuration outputs require group `all`.
 
@@ -201,19 +193,11 @@ and exposes the same scope-specific interface.
 
 ## Communication and MPI
 
-`comm off` selects `comm_off_newton_off` or `comm_off_newton_on` from the
-LAMMPS Newton setting. Both variants can run on one or multiple ranks without
-exchanging intermediate model values.
-
-`comm on` selects `comm_on_newton_on` from a model exported with
-`Exporter.export(communication=True)`. It allows model code to call
-`comm.gather(...)` between message-passing layers and `comm.reduce(...)` for
-scalar or vector sums across ranks. The communication structure must be fixed
-during export.
-
-Calling `comm.reduce` marks the bundle as communication-required. LAMMPS then
-rejects `comm off` even for a single MPI rank. Gather-only models may still use
-`comm off` with their exported expanded neighbor halo.
+`comm off` selects a non-communication model variant. `comm on` selects the
+communication variant created by `model.export(communication=True)`. It is
+required when the model exchanges intermediate values between MPI ranks.
+Models that call `comm.reduce` always require `comm on`. See
+{ref}`chemtrain-deploy-model-inputs-communication` for the export-side API.
 
 Communication-aware runs require Newton pair forces:
 
@@ -235,22 +219,10 @@ halo. LAMMPS adds the current neighbor skin to that distance.
 
 ## Virial
 
-Format-5 bundles always provide
-
-$$
-V = -\frac{d U_{\mathrm{local}}}{d(e_{xx}, e_{yy}, e_{zz}, e_{xy}, e_{xz}, e_{yz})}
-$$
-
-for both Newton settings. The exporter applies the lower-triangular deformation
-
-$$
-\mathbf{r}' = \bigl((1 + e_{xx})x,\ e_{xy}x + (1 + e_{yy})y,\ e_{xz}x + e_{yz}y + (1 + e_{zz})z\bigr)
-$$
-
-while graph connectivity remains fixed. `V` has the model's energy units and
-uses LAMMPS order `(xx, yy, zz, xy, xz, yz)`. The adapter binds `V` for every
-evaluation and accumulates it only when LAMMPS requests the global virial.
-Bundles without this output are rejected. Per-atom stress is not provided.
+Exported models provide the configuration virial in LAMMPS order
+`(xx, yy, zz, xy, xz, yz)`. The pair style adds it only when LAMMPS requests
+the global virial. Per-atom stress is not available. See {doc}`model_inputs`
+for the export-side definition.
 
 ## Kokkos CUDA
 
@@ -293,44 +265,11 @@ with `neigh full`.
 
 ## Topology
 
-Set `include_pair_type = True` on the exporter when a model consumes topology
-categories aligned with geometric neighbor edges. LAMMPS supplies:
-
-| Value | Category |
-|---:|---|
-| `0` | unclassified or padding |
-| `1` | 1-2 pair |
-| `2` | 1-3 pair |
-| `3` | 1-4 pair |
-| `4` | 1-5 pair |
-
-Topology labels annotate geometric edges inside the model cutoff. The labels do
-not add excluded or out-of-cutoff edges.
+Models that declare pair-topology input receive topology categories for their
+geometric neighbor edges. See {ref}`chemtrain-deploy-model-inputs-topology`
+for the export-side declaration and category values.
 
 The `topology` pair-style keyword installs `zero` styles for bonded interaction
 classes present in the system but not otherwise configured. Existing styles
 are left unchanged. If a data file contains coefficients owned entirely by the
 model, use `read_data ... nocoeff`.
-
-## Troubleshooting
-
-`Model does not contain the requested 'comm' variant`
-: Re-export the model with `communication=True`, or use `comm off`.
-
-`global field ... requires an explicit global/input mapping`
-: Add one `global/input` entry for every global field declared by the selected
-  model.
-
-`Compute chemtrain/output must be defined after pair_coeff`
-: Move the compute command below the command that loads the model bundle.
-
-`chemtrain/kk communication models require newton pair on`
-: Set `newton on` before `pair_coeff`.
-
-`chemtrain/kk multi-rank device communication requires CUDA-aware MPI`
-: Use a CUDA-aware MPI build and
-  `-pk kokkos ... comm device gpu/aware on`, or select the host pair style.
-
-`Incorrect number of arguments for pair_coeff chemtrain`
-: Supply exactly one model file for the unnamed form, or one file per declared
-  model context. Configure scales and capacities on `pair_style`.
