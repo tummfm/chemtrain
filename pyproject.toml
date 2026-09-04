@@ -71,6 +71,7 @@ dynamic = ["version"]
     "mpi4jax >= 0.9.0.post1"
 ]
 "test" = [
+    "h5py",
     "pylint",
     "pytest",
     "pytest-mock",

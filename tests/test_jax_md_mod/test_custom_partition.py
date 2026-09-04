@@ -82,7 +82,7 @@ fc_graph_sparse = jnp.asarray([
 @dataclasses.dataclass
 class NeighborIdx:
     idx: Array
-    format: partition.NeighborListFormat
+    format: partition.NeighborListFormat = dataclasses.static_field()
     reference_position: Array = None
     max_occupancy: int = None
     did_buffer_overflow: Array = False
