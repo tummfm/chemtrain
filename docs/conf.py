@@ -11,8 +11,11 @@
 # documentation root, use os.path.abspath to make it absolute, like shown here.
 #
 import os
+import shutil
 import sys
 import subprocess
+import tempfile
+from pathlib import Path
 
 sys.path.insert(0, os.path.abspath('..'))
 
@@ -79,7 +82,7 @@ remove_from_toctrees = [
 templates_path = ["_templates"]
 
 autodoc_mock_imports = [
-    'cuequivariance', 'cuequivariance_jax', 'e3nn_jax', 'mace_jax'
+    'cuequivariance', 'cuequivariance_jax', 'e3nn_jax', 'mace_jax', 'torch'
 ]
 
 
@@ -102,12 +105,22 @@ intersphinx_mapping = {
 # Jupyter options
 nb_execution_mode = "auto"
 nb_execution_timeout = -1
+nb_execution_in_temp = True
 nb_execution_excludepatterns = [
   # Require long computations
   'examples/*',
 ]
 
-os.environ["DATA_PATH"] = "../../examples/data"
+# Executed notebooks read shared example fixtures and may write updated
+# trajectories or checkpoints. A private copy keeps documentation builds from
+# changing the source tree while preserving the expected input data.
+_notebook_data_directory = tempfile.TemporaryDirectory(
+    prefix="chemtrain-docs-data-"
+)
+_notebook_data_path = Path(_notebook_data_directory.name) / "data"
+shutil.copytree(Path(__file__).resolve().parents[1] / "examples" / "data",
+                _notebook_data_path)
+os.environ["DATA_PATH"] = str(_notebook_data_path)
 
 myst_footnote_transition = False
 

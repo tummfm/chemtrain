@@ -613,9 +613,16 @@ def _triplet_pairwise_displacements(position,
         kj = kj[:max_triplets, ...]
         mask = mask[:max_triplets]
 
-    # Compute the displacements
-    r_ij = vmap(displacement_fn)(position[ij[:, 0]], position[ij[:, 1]])
-    r_kj = vmap(displacement_fn)(position[kj[:, 0]], position[kj[:, 1]])
+    # Padded triplets can contain the neighbor-list sentinel. Replace both
+    # edges before gathering and retain the separate mask for the consumer.
+    safe_ij = jnp.where(mask[:, None], ij, 0)
+    safe_kj = jnp.where(mask[:, None], kj, 0)
+    r_ij = vmap(displacement_fn)(
+        position[safe_ij[:, 0]], position[safe_ij[:, 1]]
+    )
+    r_kj = vmap(displacement_fn)(
+        position[safe_kj[:, 0]], position[safe_kj[:, 1]]
+    )
 
     if return_mask:
         return r_kj, r_ij, mask
@@ -634,9 +641,11 @@ def _triplet_species(neighbor,
         kj = kj[:max_triplets]
         mask = mask[:max_triplets]
 
-    si = species[ij[:, 0]]
-    sj = species[ij[:, 1]]
-    sk = species[kj[:, 0]]
+    safe_ij = jnp.where(mask[:, None], ij, 0)
+    safe_kj = jnp.where(mask[:, None], kj, 0)
+    si = species[safe_ij[:, 0]]
+    sj = species[safe_ij[:, 1]]
+    sk = species[safe_kj[:, 0]]
 
     if return_mask:
         return si, sj, sk, mask
@@ -916,8 +925,9 @@ def _nearest_tetrahedral_nbrs(displacement_fn, position, nbrs):
     """Returns the displacement vectors r_ij of the 4 nearest neighbors."""
     neighbor_displacement = space.map_neighbor(displacement_fn)
     n_particles, _ = nbrs.idx.shape
-    neighbor_mask = nbrs.idx != n_particles
-    r_neigh = position[nbrs.idx]
+    neighbor_mask = (0 <= nbrs.idx) & (nbrs.idx < n_particles)
+    safe_neighbors = jnp.where(neighbor_mask, nbrs.idx, 0)
+    r_neigh = position[safe_neighbors]
     # R_ij = R_i - R_j; i = central atom
     displacements = neighbor_displacement(position, r_neigh)
     distances = space.distance(displacements)

@@ -14,7 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#ifndef CHEMTRAIN_DEPLOY_CONNECTOR_COMPILER_H_
+#define CHEMTRAIN_DEPLOY_CONNECTOR_COMPILER_H_
+
 #include <string>
+#include <vector>
 
 #include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -52,50 +56,57 @@ limitations under the License.
 #include "xla/xla_data.pb.h"
 
 #include "absl/types/span.h"
-
-
-#ifndef COMPILE_H
-#define COMPILE_H
+#include "connector/model_shape.h"
+#include "connector/runtime_types.h"
 
 
 namespace jcn {
-    class Compiler {
-    public:
-        Compiler(const std::string& mlir_module);
-        ~Compiler() = default;
 
-        /**
-        * Prepares the MLIR module for XLA by performing dynamic shape refinement.
-        *
-        * @param n_atoms The number of atoms in the system (including ghost atoms)
-        *     and invalid atoms to be masked out. Determines also the size of
-        *     the species array and the ghost mask.
-        * @param graph_shapes A list of shapes for each graph argument.
-        * @param graph_types A list of types for each graph argument.
-        *
-        * @return Returns the compiled XLA computation with refined shapes.
-        */
-        void compile(
-            const int n_atoms,
-            std::vector<std::vector<int64_t>> graph_shapes,
-            std::vector<xla::PrimitiveType> graph_types
-        );
+class Compiler {
+ public:
+  Compiler(const std::string& mlir_module_serialized,
+           int calling_convention_version, int communication_buffer_width,
+           std::vector<std::string> platforms, std::string backend);
+  ~Compiler() = default;
 
-        // Seems no longer needed
-        mlir::ModuleOp module() const { return module_ref.get(); }
+  /**
+   * Refines a serialized StableHLO module for the engine ABI.
+   *
+   * @param n_atoms Compiled capacity for owned, ghost, and padding atoms. The
+   *     value determines every particle-leading input shape.
+   * @param graph_inputs Runtime graph buffers and shape-only capacity inputs.
+   *     Shape-only inputs participate in refinement and are removed from the
+   *     compiled ABI afterward.
+   * @param particle_types Canonical dtypes of the named particle fields.
+   * @param particle_names Particle field names in exported argument order.
+   * @param global_types Canonical dtypes of the named global fields.
+   * @param global_names Global field names in exported argument order.
+   * @param engine_abi Dtype and species-numbering policy expected by the
+   *     simulation-engine adapter.
+   * @param output_fields Output descriptors in executable result order.
+   */
+  void compile(
+      int n_atoms, std::vector<GraphInputDescriptor> graph_inputs,
+      std::vector<xla::PrimitiveType> particle_types,
+      std::vector<std::string> particle_names,
+      std::vector<xla::PrimitiveType> global_types,
+      std::vector<std::string> global_names, const EngineAbiSpec& engine_abi,
+      std::vector<ModelProperties::OutputField> output_fields);
 
-    private:
-	    mlir::MLIRContext context;
-        mlir::MLIRContext export_context;
+  mlir::ModuleOp module() const { return module_ref.get(); }
 
-        std::string mlir_module;
-        mlir::OwningOpRef<mlir::ModuleOp> module_ref;
-    };
-}
+ private:
+  mlir::MLIRContext context;
+  mlir::MLIRContext export_context;
 
+  std::string mlir_module_serialized;
+  int calling_convention_version;
+  int communication_buffer_width;
+  std::vector<std::string> platforms;
+  std::string backend;
+  mlir::OwningOpRef<mlir::ModuleOp> module_ref;
+};
 
+}  // namespace jcn
 
-
-
-
-#endif //COMPILE_H
+#endif  // CHEMTRAIN_DEPLOY_CONNECTOR_COMPILER_H_

@@ -11,7 +11,10 @@ from pathlib import Path
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Export MACE-MP medium-0b3 with default and comm variants."
+        description=(
+            "Export MACE-MP medium-0b3 with both non-communication Newton "
+            "variants and the communication-enabled Newton-on variant."
+        )
     )
     parser.add_argument(
         "--output",
@@ -44,10 +47,7 @@ def main() -> None:
     from chemtrain.compose import mace_jax as mace_jax_compose
     from chemtrain.deploy import exporter, graphs as export_graphs
     from jax_md import space
-    from mace_jax.modules.wrapper_ops import (
-        EquivarianceConfig,
-        OpenEquivarianceConfig,
-    )
+    from mace_jax.modules.wrapper_ops import EquivarianceConfig
 
     class MaceCommunicationExporter(exporter.Exporter):
         """Expose a converted MACE model through chemtrain's exporter API."""
@@ -65,27 +65,23 @@ def main() -> None:
             self.displacement = displacement
             super().__init__()
 
-        def energy_fn(self, position, species, graph, comm=None):
+        def energy_fn(self, position, particle_data, graph, comm=None):
             neighbor = graph.to_neighborlist()
             # The connector converts LAMMPS atom types to zero-based values;
             # MACE uses one-based atomic numbers.
             return self.model(
                 position,
                 neighbor,
-                species=species + 1,
+                species=particle_data["species"] + 1,
                 comm=comm,
             )
 
     equivariance = EquivarianceConfig(
+        backend="openeq",
         layout="mul_ir",
-        openeq_config=OpenEquivarianceConfig(
-            enabled=True,
-            optimize_all=False,
-            optimize_channelwise=True,
-            optimize_fctp=False,
-            conv_fusion=True,
-            group="O3_e3nn",
-        ),
+        group="O3_e3nn",
+        optimize_channelwise=True,
+        conv_fusion=True,
     )
     torch_model, model_config = mace_jax_compose.load_foundational_model(
         family=args.family,
@@ -115,16 +111,25 @@ def main() -> None:
     )
 
     variants = {variant.name: variant for variant in model._proto.variants}
-    if set(variants) != {"default", "comm"}:
+    expected = {
+        "comm_off_newton_off",
+        "comm_off_newton_on",
+        "comm_on_newton_on",
+    }
+    if set(variants) != expected:
         raise RuntimeError(
-            "Export must produce exactly the default and comm variants; got "
+            "Export did not produce the three execution variants; got "
             f"{sorted(variants)}"
         )
-    communication = variants["comm"]
+    communication = variants["comm_on_newton_on"]
     if not communication.uses_communication:
-        raise RuntimeError("The comm variant does not declare communication")
-    if communication.communication_forward_sites <= 0:
-        raise RuntimeError("The comm variant contains no forward gather sites")
+        raise RuntimeError(
+            "The communication variant does not declare communication"
+        )
+    if communication.communication_buffer_width <= 0:
+        raise RuntimeError(
+            "The communication variant has no communication buffer"
+        )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     model.save(args.output)
@@ -132,7 +137,6 @@ def main() -> None:
     torch.save(torch_model, args.reference_output)
     print(
         "Exported communication regression model: "
-        f"gathers={communication.communication_forward_sites}, "
         f"width={communication.communication_buffer_width}, "
         f"neighbor_order={list(communication.neighbor_list.nbr_order)}, "
         f"path={args.output}, reference={args.reference_output}",

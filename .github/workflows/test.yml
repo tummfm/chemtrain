@@ -42,6 +42,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        lfs: true
 
     - name: Set up Python 3.11
       uses: actions/setup-python@v5
@@ -52,6 +54,9 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install .[test]
+
+    - name: Checkout LFS objects
+      run: git lfs pull
 
     - name: Test without MPI dependencies
       run: |

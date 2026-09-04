@@ -1,113 +1,85 @@
-# Connector
+# chemtrain-deploy
 
-The connector compiles the JAX model to HLO using python and provides an interface to
-evaluate the model in C++ via a shared library.
+chemtrain-deploy exports JAX potential models as StableHLO bundles and evaluates
+them from native molecular-simulation engines. The runtime installation
+contains the versioned `libconnector.so` C API, PJRT plugins, and optional FFI
+provider libraries. The supported LAMMPS integration is provided by the
+optional in-tree `chemtrain-deploy` package.
 
-## Docker Container
+User documentation:
 
-**Note**: Using chemtrain-deploy within a docker container requires the 
-[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+- [Installation](https://chemtrain.readthedocs.io/en/latest/chemtrain-deploy/installation.html)
+- [Getting started](https://chemtrain.readthedocs.io/en/latest/chemtrain-deploy/getting_started.html)
+- [LAMMPS package](https://chemtrain.readthedocs.io/en/latest/chemtrain-deploy/lammps.html)
+- [Model inputs](https://chemtrain.readthedocs.io/en/latest/chemtrain-deploy/model_inputs.html)
 
-Before compiling the connector, we have to determine the compute capabilities
-of the GPUs. Therefore, we can run the following command
+Install chemtrain with `pip install chemtrain` for CPU exports, or with
+`pip install 'chemtrain[cuda12]'` or `pip install 'chemtrain[cuda13]'` for the
+corresponding NVIDIA CUDA Python packages. These extras install Python
+dependencies only. Build chemtrain-deploy separately with `build.py`.
 
-```bash
-nvidia-smi --query-gpu=compute_cap --format=csv,noheader
-```
-
-We then set the compute capabilities as environment variable and build the
-docker container.
-
-```bash
-CUDA_COMPUTE_CAPABILITIES="8.6,8.0"
-
-docker build -t chemtrain-deploy \
-    --build-arg CUDA_COMPUTE_CAPABILITIES=${CUDA_COMPUTE_CAPABILITIES} \
-    -f Dockerfile .
-```
-
-Afterward, simulations can be run inside the container:
+Run `python build.py --help` for connector build options. A CUDA installation
+uses separate build and runtime destinations:
 
 ```bash
-docker run --gpus all -it --rm -v /home/ga27pej/myjaxmd/examples/spice:/workspace chemtrain-deploy
+python build.py \
+  --enable_cuda \
+  --build_gpu_pjrt_plugin \
+  --cuda_version=12.9.1 \
+  --cudnn_version=9.8.0 \
+  --cuda_compute_capabilities=8.0 \
+  --output_path="$PWD/out" \
+  --install_location="$PWD/lib"
 ```
 
-## Build Connector
-The connector interfaces XLA and PJRT with MD applications such as LAMMPS,
-which might use a different building system and MPI.
+`out` is the Bazel output base. Runtime artifacts are copied to `lib`. The
+default runtime layout puts `pjrt/` and `ffi/` next to `libconnector.so`; the
+connector discovers both relative to the loaded connector library. Set the
+single-root `JCN_PJRT_PATH` override only when PJRT plugins live elsewhere.
+Set `JCN_FFI_PATH` to a colon-separated list of provider directories when the
+default `ffi/` directory is not sufficient.
 
-To build the connector, create an environment with python 3.11 and install JAX for GPU:
-```bash
-pip install "jax[cuda12]==0.4.37"
+FFI providers are independent shared libraries, conventionally named
+`libjcn_ffi_<name>.so`. Each exports:
+
+```cpp
+extern "C" int RegisterFFi(const XLA_FFI_Api* api,
+                           const char* platform_name);
 ```
 
-The connector can be built using the following command:
+Chemtrain loads each provider explicitly, then asks the loaded PJRT plugin for
+its plugin-local `XLA_FFI_Api`. Providers register complete handler bundles
+through `api->XLA_FFI_Handler_Register` for the supplied platform and return
+zero on success. This supports every XLA FFI lifecycle stage without an XLA
+source patch. The pinned XLA build keeps `XLA_FFI_GetApi` hidden, so Chemtrain
+exports the strictly equivalent generic `XLA_FFI_GetPluginApi` forwarding
+anchor from each packaged PJRT plugin. The provider-only build mode reuses the
+configured XLA FFI headers and compiler settings without rebuilding the
+connector, PJRT plugins, or LAMMPS. See the installation guide for discovery
+and build details.
 
-```bash
-python build.py
-```
+Chemtrain communication registers a complete four-stage bundle for both
+`Host` and `CUDA`. CUDA validates immutable buffer metadata during
+instantiation; Host keeps that validation in execute because the pinned CPU
+runtime supplies no buffers to its instantiate call. Prepare and initialize
+are stateless and never retain execution buffers, streams, or callbacks.
 
-Additionally, the PjRt plugin for CUDA enabled GPUs can be built using
-
-```bash
-python build.py --build_gpu_pjrt_plugin --enable_cuda --cuda_version 12.6.0
-```
-
-Alternatively, a prebuilt PjRt plugin can be fetched from JAX.
-Therefore, a JAX version compatible to the installed CUDA version and 
-compatible to the XLA library must be installed.
-Then, the plugin can be fetched via
-
-```bash
-python build.py --load_gpu_pjrt_plugin
-```
-
-
-## Building LAMMPS Plugin
-
-In the connector directory create and cd into a build directory and compile
-the plugin with the following commands:
-
-```bash
-mkdir build && cd build
-cmake -D CMAKE_BUILD_TYPE=Release \
-      -D CHEMTRAIN_DEPLOY_NATIVE_ARCH=ON \
-      -D LAMMPS_HEADER_DIR=<path/to/lammps/src> ../lammps_plugin
-cmake --build .
-```
-
-Release mode enables `-O3`; native-architecture optimization is enabled by
-default and can be disabled for portable plugin binaries with
-`-D CHEMTRAIN_DEPLOY_NATIVE_ARCH=OFF`.
-
-**Note:** When the plugin is changed, it must be recompiled via
+The OpenEquivariance provider is an explicit CUDA target at
+`@openequivariance_src//openequivariance_extjax:libjcn_ffi_openequivariance.so`.
+The workspace downloads a pinned OpenEquivariance revision. It uses the
+connector's pinned XLA and CUDA repositories and is not part of a standard
+connector build. Pass `--openequivariance_root=/path/to/OpenEquivariance` to
+build an uncommitted or locally modified checkout instead.
 
 ```bash
-cmake --build . --clean-first
+python build.py --enable_cuda \
+  --ffi_provider_target=@openequivariance_src//openequivariance_extjax:libjcn_ffi_openequivariance.so
 ```
 
-## Building LAMMPS with Plugin Support
+## Full CPU regression
 
-To build lammps with plugin support, run:
-
-```bash
-cmake -D PKG_PLUGIN=yes ../cmake
-cmake --build . -j <number_of_cores>
-```
-
-## "Installing" LAMMPS and the plugin
-
-To "install" LAMMPS and the plugin, we can create a script to set the
-correct environment variables. The script should look like this:
-
-__activate:__ 
-```bash
-#! /bin/bash
-
-export PATH=<path/to/lammps/build>:$PATH
-export LAMMPS_PLUGIN_PATH=<path/to/chemtrain-deploy/build>
-export JCN_PJRT_PATH=<path/to/chemtrain-deploy/lib>
-```
-
-Calling the script with ``source ./activate`` will set all necessary variables
-to discover the LAMMPS executable, the plugin, and the PJRT library.
+Merge-request pipelines run the standalone CPU connector regression only when
+the merge request has the exact, case-sensitive `CI-ready` label. Add the
+label before starting the pipeline, or retry the pipeline after adding it. The
+job builds the CPU connector and PJRT plugin, exports its model fixtures, and
+tests the public JCN API without LAMMPS, MPI, Kokkos, or a GPU.

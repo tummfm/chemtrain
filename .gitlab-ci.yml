@@ -16,11 +16,13 @@ variables:
 cache:
   paths:
     - .cache/pip
+    - .cache/bazel
 
 before_script:
   - apt-get update
   - apt-get install -y doxygen libopenmpi-dev
-  - python --version ; pip --version  # For debugging
+  - python --version  # Print tool versions for debugging.
+  - pip --version
   - pip install virtualenv
 
 lint:
@@ -52,3 +54,46 @@ pages:
       - public
   only:
     - branches
+
+full_connector_regression:
+  image: python:3.13
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_LABELS =~ /(^|, *)CI-ready(,|$)/'
+    - when: never
+  timeout: 3h
+  before_script:
+    - apt-get update
+    - apt-get install -y clang lld patchelf
+    - python --version
+    - pip --version
+  script:
+    - python -m venv venv_connector
+    - source venv_connector/bin/activate
+    - pip install --upgrade pip build packaging
+    - pip install --editable ".[test]"
+    - python -c "import jax; assert jax.__version__.startswith('0.11.')"
+    - python -m build --wheel --outdir dist
+    - python scripts/check_package_metadata.py dist/chemtrain-*.whl
+    - export CHEMTRAIN_WHEEL="$(find dist -maxdepth 1 -name 'chemtrain-*.whl' -print -quit)"
+    - pip install --dry-run --ignore-installed --report cuda12-resolution.json "${CHEMTRAIN_WHEEL}[cuda12]"
+    - python -c "import json; names = {item['metadata']['name'].lower() for item in json.load(open('cuda12-resolution.json'))['install']}; assert {'jax-cuda12-plugin', 'jax-cuda12-pjrt'} <= names"
+    - pip install --dry-run --ignore-installed --report cuda13-resolution.json "${CHEMTRAIN_WHEEL}[cuda13]"
+    - python -c "import json; names = {item['metadata']['name'].lower() for item in json.load(open('cuda13-resolution.json'))['install']}; assert {'jax-cuda13-plugin', 'jax-cuda13-pjrt'} <= names"
+    - python -m venv venv_jax_minimum
+    - venv_jax_minimum/bin/pip install "$CHEMTRAIN_WHEEL" "jax==0.5.0" "jaxlib==0.5.0" "jax-md==0.2.29"
+    - venv_jax_minimum/bin/python -c "import chemtrain, jax, jax_md_mod; from chemtrain.deploy import exporter; assert jax.__version__ == '0.5.0'"
+    - python -m venv venv_jax_latest
+    - venv_jax_latest/bin/pip install "$CHEMTRAIN_WHEEL"
+    - venv_jax_latest/bin/python -c "import chemtrain, jax, jax_md_mod; from chemtrain.deploy import exporter; assert jax.__version__.startswith('0.11.')"
+    - python chemtrain-deploy/build.py --bazel_path="$CI_PROJECT_DIR/chemtrain-deploy/bazel-7.4.1-linux-x86_64" --build_cpu_pjrt_plugin --noenable_cuda --bazel_options=--jobs=12 --output_path="$CI_PROJECT_DIR/.cache/bazel/cpu-regression" --install_location="$CI_PROJECT_DIR/chemtrain-deploy/lib/cpu-regression"
+    - test -f chemtrain-deploy/lib/cpu-regression/LICENSE
+    - test -f chemtrain-deploy/lib/cpu-regression/THIRD_PARTY_NOTICES
+    - JCN_PJRT_PATH="$CI_PROJECT_DIR/chemtrain-deploy/lib/cpu-regression/pjrt" venv_jax_minimum/bin/python chemtrain-deploy/regression/run_cpu_regression.py --bazel "$CI_PROJECT_DIR/chemtrain-deploy/bazel-7.4.1-linux-x86_64" --bazelrc "$CI_PROJECT_DIR/chemtrain-deploy/config.bazelrc" --output-base "$CI_PROJECT_DIR/.cache/bazel/cpu-regression" --output-directory "$CI_PROJECT_DIR/cpu-regression-models/jax-0.5" --test_output=errors
+    - JCN_PJRT_PATH="$CI_PROJECT_DIR/chemtrain-deploy/lib/cpu-regression/pjrt" venv_jax_latest/bin/python chemtrain-deploy/regression/run_cpu_regression.py --bazel "$CI_PROJECT_DIR/chemtrain-deploy/bazel-7.4.1-linux-x86_64" --bazelrc "$CI_PROJECT_DIR/chemtrain-deploy/config.bazelrc" --output-base "$CI_PROJECT_DIR/.cache/bazel/cpu-regression" --output-directory "$CI_PROJECT_DIR/cpu-regression-models/jax-0.11" --test_output=errors
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths:
+      - cpu-regression-models/
+      - chemtrain-deploy/bazel-testlogs/regression/cpu_connector_regression_test/test.log
+      - chemtrain-deploy/lib/cpu-regression/

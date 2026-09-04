@@ -16,7 +16,7 @@ from jax_md import partition, space
 from jax_md_mod import custom_partition
 
 from mace_jax.cli import mace_jax_from_torch
-from mace_jax.modules.wrapper_ops import CuEquivarianceConfig
+from mace_jax.modules.wrapper_ops import EquivarianceConfig
 
 from tojax import tojax
 from tojax.patches import patch_module
@@ -131,13 +131,13 @@ def tojax_vectors_from_torch(
     per_particle: bool = False,
     scale_pot: float = 96.485,
     species_mapping: SpeciesMapping = SpeciesMapping(),
-    cueq_config: CuEquivarianceConfig = None,
+    equivariance_config: EquivarianceConfig | None = None,
     use_custom_batch_fn: bool = False,
     head: str | None = None,
 ) -> Tuple[Any, Callable]:
     """Wrap a torch MACE model as a vector-first JAX callable via toJax."""
 
-    del cueq_config, use_custom_batch_fn
+    del equivariance_config, use_custom_batch_fn
 
     torch_model = patch_module(deepcopy(torch_model))
     torch_model.eval()
@@ -238,7 +238,7 @@ def tojax_neighborlist_from_torch(
     scale_pos: float = 0.1,
     scale_pot: float = 96.485,
     species_mapping: SpeciesMapping = SpeciesMapping(),
-    cueq_config: CuEquivarianceConfig = None,
+    equivariance_config: EquivarianceConfig | None = None,
     use_custom_batch_fn: bool = False,
     head: str | None = None,
 ) -> Tuple[Any, Callable]:
@@ -250,7 +250,7 @@ def tojax_neighborlist_from_torch(
         per_particle=per_particle,
         scale_pot=scale_pot,
         species_mapping=species_mapping,
-        cueq_config=cueq_config,
+        equivariance_config=equivariance_config,
         use_custom_batch_fn=use_custom_batch_fn,
         head=head,
     )

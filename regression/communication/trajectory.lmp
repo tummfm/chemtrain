@@ -36,8 +36,8 @@ mass * 47.867
 # `comm` selects the baseline or internal-communication model variant. This
 # test supplies deliberately small capacity padding so compression triggers the
 # runtime buffer-growth path.
-pair_style chemtrain_deploy cuda 0.85 comm ${comm}
-pair_coeff * * ${model} ${atom_padding} ${edge_padding}
+pair_style chemtrain cuda 0.85 comm ${comm} capacity/atom ${atom_padding} capacity/edge ${edge_padding}
+pair_coeff * * ${model}
 neighbor 2.0 bin
 neigh_modify every 1 delay 0 check yes
 

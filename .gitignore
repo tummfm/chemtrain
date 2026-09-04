@@ -34,4 +34,6 @@ bazel-*-linux-*
 /chemtrain-deploy/build/
 /chemtrain-deploy/out/
 /chemtrain-deploy/lib/
-/chemtrain-deploy/libconnect/
+/chemtrain-deploy/.apptainer-build/
+/chemtrain-deploy/*.sif
+/chemtrain-deploy/*.sandbox/

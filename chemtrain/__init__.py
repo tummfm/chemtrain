@@ -12,6 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import warnings
+
+import jax
+
+
+def _warn_if_default_matmul_precision_unset() -> None:
+    """Warn when JAX matmul precision falls back to the backend default."""
+    if jax.config.jax_default_matmul_precision is not None:
+        return
+    warnings.warn(
+        "JAX default matmul precision is not set. For float32 model training, "
+        "evaluation, and deployment export, consider setting "
+        "JAX_DEFAULT_MATMUL_PRECISION=highest or "
+        "jax.config.update('jax_default_matmul_precision', 'highest') for more "
+        "reproducible matmul/contraction behavior.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+
+
+_warn_if_default_matmul_precision_unset()
+
 # Applies patches
 import jax_md_mod
 

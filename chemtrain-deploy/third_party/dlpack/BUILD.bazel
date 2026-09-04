@@ -1,0 +1,10 @@
+# DLPack is distributed under Apache-2.0. This target exposes the reduced,
+# locally modified header described in include/dlpack/dlpack.h.
+licenses(["notice"])
+
+cc_library(
+    name = "dlpack",
+    hdrs = ["include/dlpack/dlpack.h"],
+    strip_include_prefix = "include",
+    visibility = ["//visibility:public"],
+)

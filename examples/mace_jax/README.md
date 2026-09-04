@@ -10,8 +10,10 @@ optional data dependencies:
 
 ```bash
 git clone https://github.com/ACEsuit/mace-jax /tmp/mace-jax
-git -C /tmp/mace-jax switch --detach 7e9d467d1701290b6606a20ff2c625c27e973254
-pip install /tmp/mace-jax h5py mace-torch
+git -C /tmp/mace-jax fetch origin pull/21/head
+git -C /tmp/mace-jax switch --detach 594563b322d6127f9b8903eec534dcde51fed83d
+python -m pip install /tmp/mace-jax
+python -m pip install h5py mace-torch
 ```
 
 Run one normal training job with all visible JAX devices:

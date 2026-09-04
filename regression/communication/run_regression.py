@@ -30,8 +30,8 @@ import numpy as onp
 # Regression thresholds
 # ---------------------------------------------------------------------------
 #
-# Direct default/communication comparisons use tight tolerances because both
-# paths should evaluate the same exported model through LAMMPS. The independent
+# Direct comparisons between execution variants use tight tolerances because
+# all paths evaluate the same exported model through LAMMPS. The independent
 # MACE reference check uses looser tolerances because it crosses a separate CLI
 # and model-loading path.
 
@@ -42,6 +42,8 @@ MAX_TOTAL_ENERGY_TRACE_ERROR_EV_PER_ATOM = 5.0e-5
 MAX_NVE_ENERGY_DRIFT_EV_PER_ATOM = 1.0e-3
 MAX_NEWTON_FALLBACK_ATOMIC_ENERGY_ERROR_EV = 1.0e-3
 MIN_NEWTON_REFERENCE_FORCE_EV_PER_ANGSTROM = 1.0e-3
+MAX_NEWTON_PRESSURE_ABSOLUTE_ERROR_BAR = 1.0e-1
+MAX_NEWTON_PRESSURE_RELATIVE_ERROR = 5.0e-5
 MACE_ENERGY_ERROR_EV_PER_ATOM = 1.0e-3
 MACE_FORCE_ERROR_EV_PER_ANGSTROM = 5.0e-2
 MODEL_CUTOFF_ANGSTROM = 5.0
@@ -112,17 +114,18 @@ def run_command(
     fails before producing complete dumps or logs.
     """
     print(f"\n[{name}] {' '.join(command)}", flush=True)
-    completed = subprocess.run(
-        command,
-        cwd=working_directory,
-        env=environment,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        check=False,
-    )
     screen_path = output_directory / f"{name}.screen"
-    screen_path.write_text(completed.stdout)
+    with screen_path.open("w") as screen:
+        completed = subprocess.run(
+            command,
+            cwd=working_directory,
+            env=environment,
+            text=True,
+            stdout=screen,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+    completed.stdout = screen_path.read_text()
 
     if expect_success and completed.returncode != 0:
         raise RuntimeError(
@@ -141,9 +144,9 @@ def run_command(
 def read_lammps_dump(path: Path) -> list[dict[str, onp.ndarray]]:
     """Read a LAMMPS custom dump into atom-aligned frame dictionaries.
 
-    Frames are sorted by atom ID so default and communication runs can be
-    compared directly even when LAMMPS writes atoms in different rank-local
-    order.
+    Frames are sorted by atom ID so runs with and without model communication
+    can be compared directly even when LAMMPS writes atoms in different
+    rank-local order.
     """
     frames: list[dict[str, onp.ndarray]] = []
     lines = path.read_text().splitlines()
@@ -498,12 +501,12 @@ def run_trajectory_case(
     output_directory: Path,
     environment: dict[str, str],
 ) -> dict[str, object]:
-    """Run one trajectory recompilation scenario with both model variants.
+    """Run one recompilation scenario with both Newton-on variants.
 
     ``trajectory.lmp`` first runs a two-rank bcc Ti trajectory, then compresses
     the box and continues. With low padding, the compression should exercise
     both atom and edge recompilation paths while preserving numerical agreement
-    between the default and communication-enabled models.
+    between the Newton-on variants with and without model communication.
     """
     outputs: dict[str, tuple[Path, subprocess.CompletedProcess[str]]] = {}
 
@@ -570,21 +573,18 @@ def run_trajectory_case(
     statistics: dict[str, dict[str, int]] = {}
     for variant, (_, completed) in outputs.items():
         text = completed.stdout
-        statistics[variant] = {}
-        for label, key in (
-            ("Initial compilations", "initial"),
-            ("Atom recompilations", "atom"),
-            ("Edge recompilations", "edge"),
-        ):
-            stable_key = {
-                "Initial compilations": "initial_total",
-                "Atom recompilations": "atom_total",
-                "Edge recompilations": "edge_total",
-            }[label]
-            matches = re.findall(rf"JCN_STATS .*?{stable_key}=([0-9]+)", text)
-            if not matches:
-                raise RuntimeError(f"{case}/{variant}: missing {label} summary")
-            statistics[variant][key] = max(int(value) for value in matches)
+        records = re.findall(
+            r"JCN_STATS compilation initial=([01]) atom=([01]) edge=([01])",
+            text,
+        )
+        if not records:
+            raise RuntimeError(
+                f"{case}/{variant}: missing connector compilation records"
+            )
+        statistics[variant] = {
+            key: sum(int(record[index]) for record in records)
+            for index, key in enumerate(("initial", "atom", "edge"))
+        }
 
         if statistics[variant]["initial"] < 2:
             raise AssertionError(
@@ -611,17 +611,17 @@ def run_newton_cases(
     output_directory: Path,
     environment: dict[str, str],
 ) -> dict[str, object]:
-    """Check Newton pair-force fallback and rejection behavior.
+    """Check the three supported communication and Newton variants.
 
-    ``newton.lmp`` is a static two-rank bcc Ti prediction. The default model
-    must support both Newton-on and Newton-off execution. The communication
-    model must match Newton-on execution and reject Newton-off execution because
-    distributed communication requires Newton pair forces.
+    ``newton.lmp`` is a static two-rank bcc Ti prediction. The two variants
+    without model communication must support their respective Newton modes.
+    The communication variant must match Newton-on execution and reject
+    Newton-off execution because distributed communication requires Newton
+    pair forces.
     """
     successful: dict[str, tuple[Path, subprocess.CompletedProcess[str]]] = {}
 
-    # Successful runs cover the default Newton fallback and the supported
-    # communication configuration.
+    # Successful runs cover all three exported execution variants.
     for name, communication, newton in (
         ("newton_on_default", "off", "on"),
         ("newton_off_default", "off", "off"),
@@ -697,6 +697,38 @@ def run_newton_cases(
         successful["newton_on_comm"][1].stdout,
     )
 
+    # Pressure requests the global virial from the pair style. Compare every
+    # component so a variant cannot pass through energy and force agreement
+    # while dropping or misordering the strain derivative.
+    pressure_columns = ("Pxx", "Pyy", "Pzz", "Pxy", "Pxz", "Pyz")
+    reference_pressure = onp.column_stack([
+        read_thermo_quantity(
+            successful["newton_on_default"][1].stdout, column
+        )
+        for column in pressure_columns
+    ])
+    pressure_errors: dict[str, float] = {}
+    for name in ("newton_off_default", "newton_on_comm"):
+        pressure = onp.column_stack([
+            read_thermo_quantity(successful[name][1].stdout, column)
+            for column in pressure_columns
+        ])
+        error = onp.abs(pressure - reference_pressure)
+        allowed = (
+            MAX_NEWTON_PRESSURE_ABSOLUTE_ERROR_BAR
+            + MAX_NEWTON_PRESSURE_RELATIVE_ERROR * onp.abs(reference_pressure)
+        )
+        if onp.any(error > allowed):
+            component = onp.unravel_index(
+                onp.argmax(error - allowed), error.shape
+            )
+            raise AssertionError(
+                f"{name}: virial-derived pressure component "
+                f"{pressure_columns[component[1]]} differs by "
+                f"{error[component]:.6g} bar"
+            )
+        pressure_errors[name] = float(onp.max(error))
+
     # The communication path should fail early and explicitly when configured
     # with unsupported Newton pair-force settings.
     rejected_name = "newton_off_comm_rejected"
@@ -737,6 +769,7 @@ def run_newton_cases(
     return {
         "fallback_metrics": fallback_metrics,
         "communication_metrics": communication_metrics,
+        "pressure_error_bar": pressure_errors,
         "rejected_error": expected_error,
     }
 
@@ -1149,7 +1182,7 @@ def render_report(summary: dict[str, object]) -> str:
             "edge padding. The first segment establishes the compiled shapes; "
             "the box compression then increases halo occupancy and edge count. "
             "The case passes only if atom and edge recompilation both occur and "
-            "the default and communication-enabled trajectories remain within "
+            "the trajectories with and without model communication remain within "
             "the strict comparison tolerances."
         ),
         "",
@@ -1293,6 +1326,9 @@ def main() -> None:
     # headless CI environments.
     environment = os.environ.copy()
     environment["JCN_VALIDATE_COMMUNICATION"] = "1"
+    # Compilation records are informational connector messages. They verify
+    # that the low-padding case exercises both capacity-growth paths.
+    environment["JCN_LOGLEVEL"] = "1"
     environment.setdefault("MPLBACKEND", "Agg")
     environment.setdefault("MPLCONFIGDIR", f"/tmp/matplotlib-{os.getuid()}")
 
