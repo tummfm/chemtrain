@@ -82,6 +82,8 @@ dynamic = ["version"]
     "sphinx-autodoc-typehints == 1.11.1",
     "myst-nb",
     "matplotlib",
+    "mdtraj",
+    "tomli",
     "sphinx-remove-toctrees",
     "breathe",
     "sphinxcontrib-mermaid"
