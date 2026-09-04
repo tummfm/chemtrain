@@ -105,10 +105,10 @@ Avoid that conversion when the complete input and output path must retain
 
 Backend executables and model variants describe different choices. Every
 bundle contains `comm_off_newton_off` and `comm_off_newton_on` variants.
-`communication=True` also adds `comm_on_newton_on`; comm on with Newton off is
-unsupported. Each variant can contain CPU, CUDA, or both backend
-implementations. CPU communication requires host callbacks from the embedding
-application. CUDA communication uses the CUDA runtime path.
+`communication=True` also adds `comm_on_newton_on`. Communication cannot be
+combined with Newton pair off. Each variant can contain CPU, CUDA, or both
+backend implementations. CPU communication requires host callbacks from the
+embedding application. CUDA communication uses the CUDA runtime path.
 
 Every variant computes and returns the extensive rank-local strain virial.
 Newton and virial behavior are fixed in the executable rather than selected by
@@ -141,12 +141,6 @@ run            0
 
 The backend name is required. An optional second argument sets the PJRT memory
 fraction, which defaults to `0.75`.
-
-CUDA is currently the only LAMMPS execution path covered by the project's
-automated end-to-end checks. The CPU host pair style has also been validated
-manually with single-rank and MPI runs. A separate CPU regression tests
-exported models, the CPU PJRT runtime, the public connector API, and host
-communication callbacks without depending on LAMMPS.
 
 For one CUDA device with the Kokkos pair style:
 

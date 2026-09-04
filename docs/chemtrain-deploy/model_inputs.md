@@ -1,3 +1,4 @@
+(chemtrain-deploy-model-inputs)=
 # Model Inputs
 
 Exported models receive engine-independent particle data, global parameters,
@@ -52,10 +53,7 @@ return per_particle_energy, {
 `PARTICLE` outputs use the particle dimension as their leading dimension.
 `LOCAL` outputs are additive rank-local configuration values that an adapter
 reduces once. `GLOBAL` outputs are complete configuration values that the
-adapter must not reduce. For example, an interface-pinning model can combine
-rank-local contributions to its order parameter with `comm.reduce`, compute
-the bias from that total, and return the bias as `GLOBAL`. LAMMPS then exposes
-the completed bias without a second reduction. Output shapes and floating-point
+adapter must not reduce. Output shapes and floating-point
 dtypes are checked from the traced arrays. Names, scopes, logical dimensions,
 flattened component counts, and configuration-output extensivity are stored in
 the model bundle. Set ``extensive=True`` when a ``LOCAL`` or ``GLOBAL`` value
@@ -66,15 +64,15 @@ executable and aligned with the engine ABI by the connector's compiler wrapper.
 Energy (`U`), force (`F`), and virial (`V`) are reserved built-in outputs. The
 exporter computes
 
-$$
+```{math}
 V = -\frac{d U_{\mathrm{local}}}{d(e_{xx}, e_{yy}, e_{zz}, e_{xy}, e_{xz}, e_{yz})}
-$$
+```
 
 by applying the lower-triangular deformation
 
-$$
+```{math}
 \mathbf{r}' = \bigl((1 + e_{xx})x,\ e_{xy}x + (1 + e_{yy})y,\ e_{xz}x + e_{yz}y + (1 + e_{zz})z\bigr)
-$$
+```
 
 while keeping graph connectivity fixed. The result uses LAMMPS order
 `(xx, yy, zz, xy, xz, yz)` and the model's energy units. Model code only
@@ -105,12 +103,7 @@ class ResidueModel(exporter.Exporter):
 
 Field names are case-sensitive identifiers. Do not declare `species`
 explicitly. Floating-point particle fields are not supported by the current
-model format.
-
-In LAMMPS, additional fields map to scalar integer properties created with
-`fix property/atom ... ghost yes`. The default source for `FIELD` is
-`i_FIELD`. Use `atom/input` to select another property. See
-{ref}`chemtrain-deploy-lammps`.
+model format. See {ref}`chemtrain-deploy-lammps` for the LAMMPS field mapping.
 
 ## Global Fields
 
@@ -148,12 +141,13 @@ class ParameterizedModel(exporter.Exporter):
 
 Supported global dtypes are `float32`, `float64`, and `int32`. Values may
 change between force evaluations without re-exporting the model. Engine
-adapters must map every declared field explicitly. LAMMPS accepts a literal or
-an equal-style variable through `global/input`. A model that declares a
+adapters must map every declared field explicitly. A model that declares a
 `float64` field must enable `jax_enable_x64` before export. The exporter rejects
 the declaration otherwise because JAX would trace a `float32` input while the
-model metadata still requested `float64`.
+model metadata still requested `float64`. See {ref}`chemtrain-deploy-lammps`
+for LAMMPS `global/input` mappings.
 
+(chemtrain-deploy-model-inputs-communication)=
 ## Communication
 
 A communication-enabled model receives an
@@ -184,6 +178,7 @@ variants. Set
 `communication_required = True` for another model-specific reason that cannot
 be represented by an expanded halo alone.
 
+(chemtrain-deploy-model-inputs-topology)=
 ## Pair Topology
 
 Set `include_pair_type = True` when a model requires a topology category for
