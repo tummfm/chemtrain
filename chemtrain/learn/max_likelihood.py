@@ -29,7 +29,14 @@ import optax
 
 from chemtrain import util
 
-from typing import NamedTuple, Any, Callable, Optional, Union
+from typing import Any, Callable, NamedTuple, Optional, Union
+
+try:
+    from jax import shard_map
+except ImportError:
+    # Backwards compatibility for older JAX versions
+    from jax.experimental import shard_map
+    jax.shard_map = shard_map.shard_map
 
 
 class UpdateOutput(NamedTuple):
@@ -60,6 +67,7 @@ class LossOutput(NamedTuple):
 
     loss: jax.Array
 
+
 class LossOutputPerTarget(NamedTuple):
 
     loss: jax.Array
@@ -71,6 +79,7 @@ LossFn = Callable[
     [[Any, Any, jax.Array, bool]],
     Union[LossOutput, LossOutputPerTarget]
 ]
+
 
 class ModelOutput(NamedTuple):
 

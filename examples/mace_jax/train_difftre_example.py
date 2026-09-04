@@ -39,7 +39,7 @@ from chemtrain import quantity, trainers
 from chemtrain.quantity import observables
 
 
-from mace_jax.modules.wrapper_ops import CuEquivarianceConfig
+from mace_jax.modules.wrapper_ops import EquivarianceConfig
 
 
 def get_default_config():
@@ -123,32 +123,27 @@ def main():
     )
 
 
-    # Currently, models with cuequivariance are not supported in
-    # chemtrain-deploy
+    # Select the ordinary JAX backend when cueq acceleration is disabled.
     if config["disable_cue"]:
-        cueq_config = None
+        equivariance_config = None
     else:
-        cueq_config = CuEquivarianceConfig(
-            enabled=True,
-            layout=(
-                'mul_ir'
-            ),
-            group=(
-                'O3'
-            ),
+        equivariance_config = EquivarianceConfig(
+            backend="cueq",
+            layout="mul_ir",
+            group="O3",
             optimize_all=True,
             conv_fusion=True,
         )
 
     print("Loaded model with config:", model_config)
     
-    variables, apply_fn = mace_jax_compose.mace_jax_neighborlist(
+    variables, apply_fn = mace_jax_compose.mace_jax_neighborlist_from_torch(
         model_config, torch_model, displacement_fn, max_edge_multiplier=1.25,
         per_particle=False,
         scale_pos=0.1,  # Convert from Angstrom to nm
         scale_pot=96.185,  # Convert from eV to kJ/mol
         species_mapping=mace_jax_compose.AtomicNumberMapping(max_number=90),
-        cueq_config=cueq_config
+        equivariance_config=equivariance_config,
     )
 
     

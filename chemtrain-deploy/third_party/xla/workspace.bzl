@@ -13,6 +13,8 @@
 # limitations under the License.
 
 # Reproduced from https://github.com/jax-ml/jax
+# Modified by Multiscale Modeling of Fluid Materials, TU Munich, to pin the
+# XLA revision used by the connector and report it through the runtime ABI.
 
 # buildifier: disable=module-docstring
 load("//third_party:repo.bzl", "tf_http_archive", "tf_mirror_urls")
@@ -24,9 +26,12 @@ load("//third_party:repo.bzl", "tf_http_archive", "tf_mirror_urls")
 #    and update XLA_SHA256 with the result.
 
 
-# XLA_COMMIT = "0fccb8a6037019b20af2e502ba4b8f5e0f98c8f6"
-XLA_COMMIT = "abb54a879d7c037b4aa0e82c947bdda746318bbc"
-XLA_SHA256 = "c6d06f9583da27a5fda475fbd9b82187b9a8a87a4d1751c6d4bd3f0026490868"
+# Keep the SHA next to the commit so the C API can report the exact XLA build
+# boundary LAMMPS loaded at runtime. JAX/JAXLIB versions are intentionally not
+# hard-coded here because users may build the connector against different
+# Python packages that share this XLA pin.
+XLA_COMMIT = "131bf41acb4650e4391a640c3f1859c1c86ad74b"
+XLA_SHA256 = "32bed9281ba153c67a75b658e240ddbcd1736e7929ad4ed3d13db691b6bfc9b3"
 
 def repo():
     tf_http_archive(

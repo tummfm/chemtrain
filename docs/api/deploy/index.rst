@@ -1,12 +1,13 @@
 :modulename:`deploy`
 ====================
 
-This module exports graph potential models that can be used in conjunction with
-``chemtrain-deploy`` to deploy the models in large-scale simulations, e.g., in
-LAMMPS.
+The ``deploy`` package exports graph potential models for native simulation
+engines through ``chemtrain-deploy``. The supported integration evaluates the
+exported models in LAMMPS.
 
 .. toctree::
    :titlesonly:
 
    exporter
+   communication
    graphs

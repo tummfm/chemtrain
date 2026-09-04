@@ -16,6 +16,7 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: MacOS",
     "Operating System :: POSIX :: Linux",
@@ -25,9 +26,9 @@ classifiers = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    'jax >= 0.5.0, < 0.12.0',
+    'jax>=0.5.0,<0.12,!=0.10.2',
     'scipy',
-    'jax-md >= 0.2.25',
+    'jax-md>=0.2.29',
     'jax-sgmc',
     'optax',
     'dm-haiku',
@@ -49,6 +50,12 @@ dynamic = ["version"]
 "Bug Tracker" = "https://github.com/tummfm/chemtrain/issues"
 
 [project.optional-dependencies]
+"cuda12" = [
+    "jax[cuda12]>=0.5.0,<0.12,!=0.10.2",
+]
+"cuda13" = [
+    "jax[cuda13]>=0.7.0,<0.12,!=0.10.2",
+]
 "all" = [
     "mdtraj",
     "matplotlib",
@@ -78,10 +85,6 @@ dynamic = ["version"]
     "breathe",
     "sphinxcontrib-mermaid"
 ]
-"mace-jax" = [
-    "mace-jax @ git+https://github.com/ACEsuit/mace-jax.git@7e9d467d1701290b6606a20ff2c625c27e973254"
-]
-
 [tool.setuptools.packages.find]
 namespaces = false
 include = ["chemtrain*", "jax_md_mod*"]

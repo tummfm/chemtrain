@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0bmodel.proto\x12\x03jcn\"\xdb\x05\n\x05Model\x12\x13\n\x0bmlir_module\x18\x01 \x01(\t\x12.\n\rneighbor_list\x18\x04 \x01(\x0b\x32\x17.jcn.Model.NeighborList\x12\x17\n\nunit_style\x18\x05 \x01(\tH\x00\x88\x01\x01\x12\x12\n\nquantities\x18\x06 \x03(\t\x12\x1a\n\x12uses_communication\x18\x07 \x01(\x08\x12\"\n\x1a\x63ommunication_buffer_width\x18\x08 \x01(\x05\x12)\n\x08variants\x18\t \x03(\x0b\x32\x17.jcn.Model.ModelVariant\x1a\x9b\x01\n\x0cNeighborList\x12)\n\x04type\x18\x01 \x01(\x0e\x32\x1b.jcn.Model.NeighborListType\x12\x0e\n\x06\x63utoff\x18\x02 \x01(\x02\x12\x11\n\tnbr_order\x18\x03 \x03(\x05\x12\x16\n\thalf_list\x18\x04 \x01(\x08H\x00\x88\x01\x01\x12\x17\n\x0fstatistics_keys\x18\x05 \x03(\tB\x0c\n\n_half_list\x1a\xea\x01\n\x0cModelVariant\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x13\n\x0bmlir_module\x18\x02 \x01(\t\x12.\n\rneighbor_list\x18\x03 \x01(\x0b\x32\x17.jcn.Model.NeighborList\x12\x1a\n\x12uses_communication\x18\x04 \x01(\x08\x12\"\n\x1a\x63ommunication_buffer_width\x18\x05 \x01(\x05\x12#\n\x1b\x63ommunication_forward_sites\x18\x06 \x01(\x05\x12\x1c\n\x14\x63ommunication_widths\x18\x07 \x03(\x05J\x04\x08\x08\x10\t\"[\n\x10NeighborListType\x12\x0f\n\x0bUNSPECIFIED\x10\x00\x12\x11\n\rDEVICE_SPARSE\x10\x01\x12\x10\n\x0cSIMPLE_DENSE\x10\x02\x12\x11\n\rSIMPLE_SPARSE\x10\x03\x42\r\n\x0b_unit_styleb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0bmodel.proto\x12\x03jcn\"\xf4\x0f\n\x05Model\x12\x1e\n\x16mlir_module_serialized\x18\x01 \x01(\x0c\x12.\n\rneighbor_list\x18\x04 \x01(\x0b\x32\x17.jcn.Model.NeighborList\x12\x17\n\nunit_style\x18\x05 \x01(\tH\x00\x88\x01\x01\x12\x12\n\nquantities\x18\x06 \x03(\t\x12\x1a\n\x12uses_communication\x18\x07 \x01(\x08\x12\"\n\x1a\x63ommunication_buffer_width\x18\x08 \x01(\x05\x12)\n\x08variants\x18\t \x03(\x0b\x32\x17.jcn.Model.ModelVariant\x12\x16\n\x0e\x66ormat_version\x18\n \x01(\r\x12\x31\n\x0fparticle_fields\x18\x0b \x03(\x0b\x32\x18.jcn.Model.ParticleField\x12\x1b\n\x13quantity_components\x18\x0c \x03(\r\x12-\n\rglobal_fields\x18\r \x03(\x0b\x32\x16.jcn.Model.GlobalField\x12\"\n\x1a\x63\x61lling_convention_version\x18\x0e \x01(\r\x12\x11\n\tplatforms\x18\x0f \x03(\t\x12-\n\routput_fields\x18\x10 \x03(\x0b\x32\x16.jcn.Model.OutputField\x12\x1e\n\x16requires_communication\x18\x11 \x01(\x08\x1a\xee\x03\n\x0cNeighborList\x12)\n\x04type\x18\x01 \x01(\x0e\x32\x1b.jcn.Model.NeighborListType\x12\x0e\n\x06\x63utoff\x18\x02 \x01(\x02\x12\x11\n\tnbr_order\x18\x03 \x03(\x05\x12\x16\n\thalf_list\x18\x04 \x01(\x08H\x00\x88\x01\x01\x12\x17\n\x0fstatistics_keys\x18\x05 \x03(\t\x12J\n\x15\x63\x61pacity_requirements\x18\x06 \x03(\x0b\x32+.jcn.Model.NeighborList.CapacityRequirement\x12\x19\n\x11include_pair_type\x18\x07 \x01(\x08\x1an\n\x13\x43\x61pacityRequirement\x12\x32\n\x04role\x18\x01 \x01(\x0e\x32$.jcn.Model.NeighborList.CapacityRole\x12\x0e\n\x06symbol\x18\x02 \x01(\t\x12\x13\n\x0b\x63onstraints\x18\x03 \x03(\t\"z\n\x0c\x43\x61pacityRole\x12\x18\n\x14\x43\x41PACITY_UNSPECIFIED\x10\x00\x12\r\n\tRAW_EDGES\x10\x01\x12\x1a\n\x16MAX_NEIGHBORS_PER_ATOM\x10\x02\x12\x10\n\x0cPRUNED_EDGES\x10\x03\x12\x13\n\x0fPRUNED_TRIPLETS\x10\x04\x42\x0c\n\n_half_list\x1a\xe0\x02\n\x0cModelVariant\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x1e\n\x16mlir_module_serialized\x18\x02 \x01(\x0c\x12.\n\rneighbor_list\x18\x03 \x01(\x0b\x32\x17.jcn.Model.NeighborList\x12\x1a\n\x12uses_communication\x18\x04 \x01(\x08\x12\"\n\x1a\x63ommunication_buffer_width\x18\x05 \x01(\x05\x12\"\n\x1a\x63\x61lling_convention_version\x18\x06 \x01(\r\x12\x11\n\tplatforms\x18\n \x03(\t\x12\x31\n\x0fparticle_fields\x18\x08 \x03(\x0b\x32\x18.jcn.Model.ParticleField\x12-\n\rglobal_fields\x18\t \x03(\x0b\x32\x16.jcn.Model.GlobalField\x12\x13\n\x0bnewton_pair\x18\x0b \x01(\x08J\x04\x08\x07\x10\x08\x1a\x83\x01\n\x0bOutputField\x12\x0c\n\x04name\x18\x01 \x01(\t\x12%\n\x05scope\x18\x02 \x01(\x0e\x32\x16.jcn.Model.OutputScope\x12\x12\n\ndimensions\x18\x04 \x03(\x04\x12\x12\n\ncomponents\x18\x05 \x01(\x04\x12\x11\n\textensive\x18\x06 \x01(\x08J\x04\x08\x03\x10\x04\x1aZ\n\rParticleField\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\'\n\x05\x64type\x18\x02 \x01(\x0e\x32\x18.jcn.Model.ParticleDtype\x12\x12\n\ncomponents\x18\x03 \x01(\r\x1a\x42\n\x0bGlobalField\x12\x0c\n\x04name\x18\x01 \x01(\t\x12%\n\x05\x64type\x18\x02 \x01(\x0e\x32\x16.jcn.Model.GlobalDtype\"[\n\x10NeighborListType\x12\x0f\n\x0bUNSPECIFIED\x10\x00\x12\x11\n\rDEVICE_SPARSE\x10\x01\x12\x10\n\x0cSIMPLE_DENSE\x10\x02\x12\x11\n\rSIMPLE_SPARSE\x10\x03\"P\n\x0bOutputScope\x12\x1c\n\x18OUTPUT_SCOPE_UNSPECIFIED\x10\x00\x12\x0c\n\x08PARTICLE\x10\x01\x12\t\n\x05LOCAL\x10\x02\x12\n\n\x06GLOBAL\x10\x03\"G\n\rParticleDtype\x12\x1e\n\x1aPARTICLE_DTYPE_UNSPECIFIED\x10\x00\x12\t\n\x05INT32\x10\x01\x12\x0b\n\x07\x46LOAT32\x10\x02\"e\n\x0bGlobalDtype\x12\x1c\n\x18GLOBAL_DTYPE_UNSPECIFIED\x10\x00\x12\x12\n\x0eGLOBAL_FLOAT32\x10\x01\x12\x12\n\x0eGLOBAL_FLOAT64\x10\x02\x12\x10\n\x0cGLOBAL_INT32\x10\x03\x42\r\n\x0b_unit_styleb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -32,11 +32,27 @@ _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'model_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
   _globals['_MODEL']._serialized_start=21
-  _globals['_MODEL']._serialized_end=752
-  _globals['_MODEL_NEIGHBORLIST']._serialized_start=252
-  _globals['_MODEL_NEIGHBORLIST']._serialized_end=407
-  _globals['_MODEL_MODELVARIANT']._serialized_start=410
-  _globals['_MODEL_MODELVARIANT']._serialized_end=644
-  _globals['_MODEL_NEIGHBORLISTTYPE']._serialized_start=646
-  _globals['_MODEL_NEIGHBORLISTTYPE']._serialized_end=737
+  _globals['_MODEL']._serialized_end=2057
+  _globals['_MODEL_NEIGHBORLIST']._serialized_start=548
+  _globals['_MODEL_NEIGHBORLIST']._serialized_end=1042
+  _globals['_MODEL_NEIGHBORLIST_CAPACITYREQUIREMENT']._serialized_start=794
+  _globals['_MODEL_NEIGHBORLIST_CAPACITYREQUIREMENT']._serialized_end=904
+  _globals['_MODEL_NEIGHBORLIST_CAPACITYROLE']._serialized_start=906
+  _globals['_MODEL_NEIGHBORLIST_CAPACITYROLE']._serialized_end=1028
+  _globals['_MODEL_MODELVARIANT']._serialized_start=1045
+  _globals['_MODEL_MODELVARIANT']._serialized_end=1397
+  _globals['_MODEL_OUTPUTFIELD']._serialized_start=1400
+  _globals['_MODEL_OUTPUTFIELD']._serialized_end=1531
+  _globals['_MODEL_PARTICLEFIELD']._serialized_start=1533
+  _globals['_MODEL_PARTICLEFIELD']._serialized_end=1623
+  _globals['_MODEL_GLOBALFIELD']._serialized_start=1625
+  _globals['_MODEL_GLOBALFIELD']._serialized_end=1691
+  _globals['_MODEL_NEIGHBORLISTTYPE']._serialized_start=1693
+  _globals['_MODEL_NEIGHBORLISTTYPE']._serialized_end=1784
+  _globals['_MODEL_OUTPUTSCOPE']._serialized_start=1786
+  _globals['_MODEL_OUTPUTSCOPE']._serialized_end=1866
+  _globals['_MODEL_PARTICLEDTYPE']._serialized_start=1868
+  _globals['_MODEL_PARTICLEDTYPE']._serialized_end=1939
+  _globals['_MODEL_GLOBALDTYPE']._serialized_start=1941
+  _globals['_MODEL_GLOBALDTYPE']._serialized_end=2042
 # @@protoc_insertion_point(module_scope)

@@ -55,11 +55,14 @@ def define_symbols(symbols: str, constraints: List[str] = None):
 
             return f(*args, **defined_symbols)
 
-        def wrapped(s: List[Any], c: List, apply_fns: List[Callable]):
+        def wrapped(s: List[Any], c: List, apply_fns: List[Callable],
+                    **static_kwargs):
             assert set(s).isdisjoint(set(symb)), "Symbols already defined"
 
             s.extend(symb)
-            apply_fns.append(apply_fn)
+            apply_fns.append(
+                lambda **defined: apply_fn(**defined, **static_kwargs)
+            )
 
             if constraints is not None:
                 c.extend(constraints)

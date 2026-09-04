@@ -278,20 +278,23 @@ def sparse_graph_from_neighborlist(displacement_fn: Callable,
     neighbor_displacement_fn = space.map_neighbor(displacement_fn)
 
     # compute pairwise distances
-    pos_neigh = positions[neighbor.idx]
+    valid_neighbors = (0 <= neighbor.idx) & (neighbor.idx < n_particles)
+    safe_neighbors = jnp.where(valid_neighbors, neighbor.idx, 0)
+    pos_neigh = positions[safe_neighbors]
     pair_displacement = neighbor_displacement_fn(positions, pos_neigh)
     pair_distances = space.distance(pair_displacement)
 
     # compute adjacency matrix via neighbor_list, then build sparse graph
     # representation to avoid part of padding overhead in dense neighborlist
     # adds all edges > cut-off to masked edges
-    edge_idx_ji = jnp.where(pair_distances < r_cutoff, neighbor.idx,
-                            n_particles)
+    edge_idx_ji = jnp.where(
+        valid_neighbors & (pair_distances < r_cutoff),
+        neighbor.idx,
+        n_particles,
+    )
     # neighbor.idx: an index j in row i encodes a directed edge from
     #               particle j to particle i.
     # edge_idx[i, j]: j->i. if j == N: encodes masked edge.
-    # Index N would index out-of-bounds, but in jax the last element is
-    # returned instead
 
     # conservative estimates for initialization run
     # use guess from initialization for tighter bound to save memory and

@@ -1,4 +1,6 @@
 /* Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+   Modifications Copyright 2025 Multiscale Modeling of Fluid Materials,
+   TU Munich.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -13,7 +15,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ===============================================================================
 
-Reproduced from https://github.com/tensorflow/tensorflow
+Derived from TensorFlow's XlaCallModule loader:
+https://github.com/tensorflow/tensorflow
+
+chemtrain-deploy modifications add engine ABI wrapping, dtype
+canonicalization, and communication custom-call adaptation.
 
 */
 
@@ -21,6 +27,7 @@ Reproduced from https://github.com/tensorflow/tensorflow
 
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
@@ -117,6 +124,153 @@ bool IsShapeAssertionsCheckDisabled(
 
 constexpr llvm::StringRef kUsesShapePolymorphismAttr =
     "jax.uses_shape_polymorphism";
+
+constexpr llvm::StringRef kWrappedModelMainName = "__jcn_model_main";
+constexpr llvm::StringRef kGatherForwardTarget =
+    "chemtrain_deploy.gather_forward";
+constexpr llvm::StringRef kGatherReverseTarget =
+    "chemtrain_deploy.gather_reverse";
+constexpr llvm::StringRef kReduceTarget = "chemtrain_deploy.reduce";
+constexpr llvm::StringRef kReduceTransposeTarget =
+    "chemtrain_deploy.reduce_transpose";
+
+mlir::Type ElementTypeForDtype(mlir::Builder& builder, TensorDtype dtype,
+                               mlir::Type model_default) {
+  switch (dtype) {
+    case TensorDtype::ModelDefault:
+      return model_default;
+    case TensorDtype::F32:
+      return builder.getF32Type();
+    case TensorDtype::F64:
+      return builder.getF64Type();
+    case TensorDtype::S32:
+      return builder.getI32Type();
+  }
+  return model_default;
+}
+
+mlir::RankedTensorType WithElementType(mlir::Type type,
+                                       mlir::Type element_type) {
+  auto ranked = mlir::dyn_cast<mlir::RankedTensorType>(type);
+  if (!ranked) return {};
+  return mlir::RankedTensorType::get(ranked.getShape(), element_type,
+                                     ranked.getEncoding());
+}
+
+bool IsFloatTensor(mlir::Type type) {
+  auto ranked = mlir::dyn_cast<mlir::RankedTensorType>(type);
+  return ranked && mlir::isa<mlir::FloatType>(ranked.getElementType());
+}
+
+bool IsCommunicationTarget(mlir::stablehlo::CustomCallOp op) {
+  llvm::StringRef target = op.getCallTargetName();
+  return target == kGatherForwardTarget || target == kGatherReverseTarget ||
+         target == kReduceTarget || target == kReduceTransposeTarget;
+}
+
+absl::StatusOr<mlir::Value> ConvertTensor(mlir::OpBuilder& builder,
+                                          mlir::Location loc,
+                                          mlir::Value value,
+                                          mlir::Type dst_type) {
+  if (value.getType() == dst_type) return value;
+  if (!mlir::isa<mlir::RankedTensorType>(value.getType()) ||
+      !mlir::isa<mlir::RankedTensorType>(dst_type)) {
+    return absl::InvalidArgumentError(
+        "engine ABI wrapper can only convert ranked tensor values");
+  }
+  return builder.create<mlir::stablehlo::ConvertOp>(loc, dst_type, value)
+      .getResult();
+}
+
+absl::Status RewriteCommunicationCustomCalls(mlir::ModuleOp module,
+                                             const EngineAbiSpec& spec) {
+  if (spec.communication_dtype == TensorDtype::ModelDefault) {
+    return absl::OkStatus();
+  }
+  mlir::Builder type_builder(module.getContext());
+  mlir::Type communication_element_type =
+      ElementTypeForDtype(type_builder, spec.communication_dtype,
+                          type_builder.getF32Type());
+  if (!mlir::isa<mlir::FloatType>(communication_element_type)) {
+    return absl::InvalidArgumentError(
+        "communication dtype must be f32, f64, or model default");
+  }
+
+  llvm::SmallVector<mlir::stablehlo::CustomCallOp> calls;
+  module.walk([&](mlir::stablehlo::CustomCallOp op) {
+    if (IsCommunicationTarget(op)) calls.push_back(op);
+  });
+
+  for (mlir::stablehlo::CustomCallOp op : calls) {
+    if (op->getNumOperands() != 2 || op->getNumResults() != 2) {
+      return absl::InvalidArgumentError(
+          "communication custom call must have two operands and two results");
+    }
+    auto feature_input =
+        mlir::dyn_cast<mlir::RankedTensorType>(op->getOperand(0).getType());
+    auto token_input =
+        mlir::dyn_cast<mlir::RankedTensorType>(op->getOperand(1).getType());
+    auto feature_result =
+        mlir::dyn_cast<mlir::RankedTensorType>(op->getResult(0).getType());
+    auto token_result =
+        mlir::dyn_cast<mlir::RankedTensorType>(op->getResult(1).getType());
+    if (!feature_input || !feature_result ||
+        !mlir::isa<mlir::FloatType>(feature_input.getElementType()) ||
+        !mlir::isa<mlir::FloatType>(feature_result.getElementType())) {
+      return absl::InvalidArgumentError(
+          "communication custom call feature input/result must be ranked float tensors");
+    }
+    const bool is_reduce = op.getCallTargetName() == kReduceTarget ||
+                           op.getCallTargetName() == kReduceTransposeTarget;
+    const int expected_rank = is_reduce ? 1 : 2;
+    if (feature_input.getRank() != expected_rank ||
+        feature_result.getRank() != expected_rank) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          is_reduce ? "reduce" : "gather",
+          " communication custom call feature input/result must have rank ",
+          expected_rank));
+    }
+    if (!token_input || !token_result ||
+        token_input != token_result ||
+        token_input.getRank() != 1 ||
+        token_input.getDimSize(0) != 1 ||
+        !token_input.getElementType().isF32()) {
+      return absl::InvalidArgumentError(
+          "communication custom call token must be tensor<1xf32>");
+    }
+
+    mlir::RankedTensorType communication_feature_type =
+        WithElementType(feature_input, communication_element_type);
+    mlir::RankedTensorType communication_result_type =
+        WithElementType(feature_result, communication_element_type);
+    mlir::OpBuilder builder(op);
+    TF_ASSIGN_OR_RETURN(
+        mlir::Value converted_feature_input,
+        ConvertTensor(builder, op.getLoc(), op->getOperand(0),
+                      communication_feature_type));
+
+    llvm::SmallVector<mlir::Value> operands = {
+        converted_feature_input, op->getOperand(1)};
+    llvm::SmallVector<mlir::Type> result_types = {
+        communication_result_type, token_result};
+    mlir::OperationState state(op.getLoc(), op->getName());
+    state.addOperands(operands);
+    state.addTypes(result_types);
+    state.addAttributes(op->getAttrs());
+    mlir::Operation* replacement = builder.create(state);
+
+    builder.setInsertionPointAfter(replacement);
+    TF_ASSIGN_OR_RETURN(
+        mlir::Value restored_feature_result,
+        ConvertTensor(builder, op.getLoc(), replacement->getResult(0),
+                      feature_result));
+    op->getResult(0).replaceAllUsesWith(restored_feature_result);
+    op->getResult(1).replaceAllUsesWith(replacement->getResult(1));
+    op->erase();
+  }
+
+  return absl::OkStatus();
+}
 
 }  // namespace
 
@@ -361,6 +515,263 @@ absl::Status XlaCallModuleLoader::RefineDynamicShapes(
     output_types_refined_ = true;
   }
 
+  return absl::OkStatus();
+}
+
+absl::Status RemoveAbstractArgumentsFromMain(
+    mlir::ModuleOp module, mlir::func::FuncOp main,
+    llvm::ArrayRef<int> argument_indices) {
+  if (!main) {
+    return absl::InvalidArgumentError(
+        "Cannot remove abstract arguments from missing main function");
+  }
+
+  // Shape refinement can leave pure operations whose results are dead. Remove
+  // those before deciding whether a carrier still has semantic value uses.
+  mlir::PassManager pm(module.getContext());
+  pm.addNestedPass<mlir::func::FuncOp>(mlir::createCanonicalizerPass());
+  if (mlir::failed(pm.run(module))) {
+    return absl::InternalError(
+        "Failed to canonicalize abstract argument uses");
+  }
+
+  llvm::SmallVector<int> sorted(argument_indices.begin(),
+                                argument_indices.end());
+  llvm::sort(sorted, std::greater<int>());
+  if (std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end()) {
+    return absl::InvalidArgumentError(
+        "Abstract argument indices must be unique");
+  }
+  for (int index : sorted) {
+    if (index < 0 || index >= static_cast<int>(main.getNumArguments())) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "Abstract argument index ", index, " is out of range"));
+    }
+    mlir::BlockArgument argument = main.getArgument(index);
+    if (!argument.use_empty()) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "Abstract argument ", index,
+          " still has value-semantic uses after shape refinement"));
+    }
+  }
+  for (int index : sorted) {
+    if (mlir::failed(main.eraseArgument(index))) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "Failed to erase abstract argument ", index));
+    }
+  }
+  return absl::OkStatus();
+}
+
+absl::Status XlaCallModuleLoader::RemoveAbstractArguments(
+    llvm::ArrayRef<int> argument_indices) {
+  if (!main_) {
+    return absl::InvalidArgumentError(
+        "Cannot remove abstract arguments from missing main function");
+  }
+  return RemoveAbstractArgumentsFromMain(*module_, main_, argument_indices);
+}
+
+absl::Status XlaCallModuleLoader::WrapMainForEngineAbi(
+    const EngineAbiSpec& spec,
+    const std::vector<std::string>& particle_names,
+    const std::vector<ModelProperties::OutputField>& output_fields) {
+  // Keep the exported function as the canonical model and build a public
+  // wrapper for the engine ABI. The wrapper converts engine input dtypes and
+  // species numbering before the call, then converts results to requested
+  // engine dtypes. Output descriptors carry scope and shape but no dtype.
+  if (!main_) {
+    return absl::InvalidArgumentError("Cannot wrap missing main function");
+  }
+  if (main_.getName() == kWrappedModelMainName) {
+    return absl::InvalidArgumentError("Model main is already wrapped");
+  }
+  const size_t fixed_model_arguments =
+      particle_names.size() + 3;
+  if (main_.getNumArguments() < fixed_model_arguments) {
+    return absl::InvalidArgumentError(
+        "Engine ABI wrapper has fewer canonical inputs than particle metadata requires");
+  }
+
+  mlir::OpBuilder builder(main_);
+  mlir::Location loc = main_.getLoc();
+  mlir::Builder type_builder(module_->getContext());
+
+  llvm::SmallVector<mlir::Type> canonical_arg_types(main_.getArgumentTypes());
+  llvm::SmallVector<mlir::Type> canonical_result_types(main_.getResultTypes());
+  mlir::ArrayAttr canonical_arg_attrs = main_.getAllArgAttrs();
+  mlir::ArrayAttr canonical_result_attrs = main_.getAllResultAttrs();
+  llvm::SmallVector<mlir::Type> engine_arg_types(
+      canonical_arg_types.begin(), canonical_arg_types.end());
+
+  // Derive the engine input types.
+
+  auto position_type =
+      mlir::dyn_cast<mlir::RankedTensorType>(canonical_arg_types[0]);
+  auto species_it =
+      std::find(particle_names.begin(), particle_names.end(), "species");
+  const int species_index = species_it == particle_names.end()
+                                ? -1
+                                : 1 + std::distance(particle_names.begin(), species_it);
+  mlir::RankedTensorType species_type;
+  if (species_index >= 0) {
+    species_type =
+        mlir::dyn_cast<mlir::RankedTensorType>(canonical_arg_types[species_index]);
+  }
+  if (!position_type || (species_index >= 0 && !species_type)) {
+    return absl::InvalidArgumentError(
+        "Engine ABI wrapper expects ranked position and species tensors");
+  }
+
+  engine_arg_types[0] =
+      WithElementType(canonical_arg_types[0],
+                      ElementTypeForDtype(type_builder, spec.position_dtype,
+                                          position_type.getElementType()));
+  if (species_index >= 0) {
+    engine_arg_types[species_index] = WithElementType(
+        canonical_arg_types[species_index],
+        ElementTypeForDtype(type_builder, spec.species_dtype,
+                            species_type.getElementType()));
+  }
+  if (!engine_arg_types[0] ||
+      (species_index >= 0 && !engine_arg_types[species_index])) {
+    return absl::InvalidArgumentError(
+        "Engine ABI wrapper failed to derive engine input tensor types");
+  }
+
+  // Model results may end with internal neighbor statistics that do not
+  // have public output descriptors.
+  if (output_fields.size() > canonical_result_types.size()) {
+    return absl::InvalidArgumentError(
+        "Engine ABI wrapper received too many output descriptors");
+  }
+
+  // Output descriptors follow canonical result order. PARTICLE results have
+  // the refined particle axis followed by declared value dimensions. LOCAL and
+  // GLOBAL results contain only their configuration dimensions.
+  for (int i = 0; i < static_cast<int>(output_fields.size()); ++i) {
+    auto ranked =
+        mlir::dyn_cast<mlir::RankedTensorType>(canonical_result_types[i]);
+    if (!ranked || !IsFloatTensor(canonical_result_types[i])) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "Model output '", output_fields[i].name,
+          "' must be a ranked floating-point tensor"));
+    }
+
+    const auto& field = output_fields[i];
+    const int particle_axis =
+        field.scope == ModelProperties::OutputScope::PARTICLE ? 1 : 0;
+    const int expected_rank =
+        static_cast<int>(field.dimensions.size()) + particle_axis;
+    if (ranked.getRank() != expected_rank) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "Model output '", field.name, "' has rank ", ranked.getRank(),
+          ", expected ", expected_rank));
+    }
+    if (particle_axis == 1 &&
+        ranked.getDimSize(0) != position_type.getDimSize(0)) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "Particle output '", field.name,
+          "' does not use the refined particle dimension"));
+    }
+    for (int dim = 0; dim < static_cast<int>(field.dimensions.size()); ++dim) {
+      if (ranked.getDimSize(dim + particle_axis) != field.dimensions[dim]) {
+        return absl::InvalidArgumentError(absl::StrCat(
+            "Model output '", field.name,
+            "' does not match its declared dimensions"));
+      }
+    }
+  }
+
+  // Derive the engine result dtypes.
+  llvm::SmallVector<mlir::Type> engine_result_types(
+      canonical_result_types.begin(), canonical_result_types.end());
+  auto output_dtype = [&](const std::string& name) {
+    for (const auto& entry : spec.output_dtypes) {
+      if (entry.first == name) return entry.second;
+    }
+    return spec.default_output_dtype;
+  };
+  auto convert_result_type = [&](int index) {
+    if (index >= static_cast<int>(engine_result_types.size()) ||
+        !IsFloatTensor(engine_result_types[index])) {
+      return;
+    }
+    auto ranked =
+        mlir::cast<mlir::RankedTensorType>(engine_result_types[index]);
+    engine_result_types[index] =
+        WithElementType(engine_result_types[index],
+                        ElementTypeForDtype(type_builder,
+                                            output_dtype(output_fields[index].name),
+                                            ranked.getElementType()));
+  };
+  for (int i = 0; i < static_cast<int>(output_fields.size()); ++i) {
+    convert_result_type(i);
+  }
+
+  // Create the engine wrapper and convert its inputs.
+  main_.setName(kWrappedModelMainName);
+  auto wrapper_type =
+      builder.getFunctionType(engine_arg_types, engine_result_types);
+  auto wrapper = mlir::func::FuncOp::create(loc, "main", wrapper_type);
+  if (canonical_arg_attrs) wrapper.setAllArgAttrs(canonical_arg_attrs);
+  if (canonical_result_attrs) wrapper.setAllResultAttrs(canonical_result_attrs);
+  wrapper.setPublic();
+  mlir::Block* body = wrapper.addEntryBlock();
+  builder.setInsertionPointToStart(body);
+
+  llvm::SmallVector<mlir::Value> canonical_args;
+  canonical_args.reserve(canonical_arg_types.size());
+  for (int i = 0; i < static_cast<int>(canonical_arg_types.size()); ++i) {
+    mlir::Value value = body->getArgument(i);
+    TF_ASSIGN_OR_RETURN(mlir::Value converted,
+                        ConvertTensor(builder, loc, value,
+                                      canonical_arg_types[i]));
+    if (i == species_index &&
+        spec.species_encoding == SpeciesEncoding::OneBased) {
+      auto canonical_species =
+          mlir::dyn_cast<mlir::RankedTensorType>(canonical_arg_types[i]);
+      if (!canonical_species ||
+          !canonical_species.getElementType().isSignlessInteger(32)) {
+        return absl::InvalidArgumentError(
+            "One-based species conversion requires canonical s32 species");
+      }
+      auto one_attr = mlir::DenseElementsAttr::get(
+          canonical_species,
+          type_builder.getIntegerAttr(canonical_species.getElementType(), 1));
+      auto one =
+          builder.create<mlir::stablehlo::ConstantOp>(loc, one_attr);
+      converted =
+          builder.create<mlir::stablehlo::SubtractOp>(
+              loc, canonical_species, converted, one.getResult())
+              .getResult();
+    }
+    canonical_args.push_back(converted);
+  }
+
+  // Call the canonical model and convert its results.
+  auto call = builder.create<mlir::func::CallOp>(
+      loc, kWrappedModelMainName, canonical_result_types, canonical_args);
+  llvm::SmallVector<mlir::Value> engine_results;
+  engine_results.reserve(engine_result_types.size());
+  for (int i = 0; i < static_cast<int>(engine_result_types.size()); ++i) {
+    TF_ASSIGN_OR_RETURN(mlir::Value converted,
+                        ConvertTensor(builder, loc, call.getResult(i),
+                                      engine_result_types[i]));
+    engine_results.push_back(converted);
+  }
+  builder.create<mlir::func::ReturnOp>(loc, engine_results);
+
+  // Apply communication rewriting after the wrapper is complete because the
+  // rewrite uses the selected engine dtypes. Then verify the full transformed
+  // module.
+  module_->push_back(wrapper);
+  main_ = wrapper;
+  TF_RETURN_IF_ERROR(RewriteCommunicationCustomCalls(*module_, spec));
+  if (mlir::failed(mlir::verify(*module_))) {
+    return absl::InvalidArgumentError(
+        "Engine ABI wrapper generated an invalid StableHLO module");
+  }
   return absl::OkStatus();
 }
 

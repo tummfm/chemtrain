@@ -1,4 +1,6 @@
 /* Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+   Modifications Copyright 2025 Multiscale Modeling of Fluid Materials,
+   TU Munich.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -13,7 +15,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ===============================================================================
 
-Reproduced from https://github.com/tensorflow/tensorflow
+Derived from TensorFlow's XlaCallModule loader:
+https://github.com/tensorflow/tensorflow
+
+chemtrain-deploy modifications add engine ABI wrapping, dtype
+canonicalization, and communication custom-call adaptation.
 
 */
 
@@ -41,10 +47,18 @@ Reproduced from https://github.com/tensorflow/tensorflow
 #include "xla/hlo/builder/xla_computation.h"
 #include "xla/shape.h"
 #include "xla/tsl/platform/statusor.h"
+#include "connector/runtime_types.h"
 
 namespace jcn {
 
 bool IsTokenType(mlir::Type type);
+
+// Canonicalizes dead operations, verifies that the selected arguments have no
+// value-semantic uses, and removes them without disturbing retained argument
+// order. Exposed for focused MLIR transformation tests.
+absl::Status RemoveAbstractArgumentsFromMain(
+    mlir::ModuleOp module, mlir::func::FuncOp main,
+    llvm::ArrayRef<int> argument_indices);
 
 class XlaCallModuleLoader {
  public:
@@ -83,8 +97,22 @@ class XlaCallModuleLoader {
   // arguments.
   absl::Status RefineDynamicShapes(llvm::ArrayRef<xla::Shape> input_shapes);
 
+  // Removes abstract capacity arguments after refinement. Each argument must
+  // have no remaining uses; otherwise its value affects the computation and
+  // silently replacing it with a constant would change model semantics.
+  absl::Status RemoveAbstractArguments(
+      llvm::ArrayRef<int> argument_indices);
+
   // Returns true iff the output types are refined by RefineDynamicShapes.
-  bool IsOutputTypeRefined() { return output_types_refined_; };
+  bool IsOutputTypeRefined() { return output_types_refined_; }
+
+  // Wraps the refined canonical model entrypoint with an engine-native ABI
+  // entrypoint. The original model remains as @__jcn_model_main and the new
+  // @main converts engine tensors to/from the canonical model ABI.
+  absl::Status WrapMainForEngineAbi(
+      const EngineAbiSpec& spec,
+      const std::vector<std::string>& particle_names,
+      const std::vector<ModelProperties::OutputField>& output_fields);
 
   // Validates that the module only contains ops from valid dialects and that
   // any `shape_assertion` custom calls have side effects as expected.
@@ -140,6 +168,6 @@ class XlaCallModuleLoader {
   bool use_shardy_partitioner_ = false;
 };
 
-}  // namespace tensorflow
+}  // namespace jcn
 
-#endif  
+#endif  // XLA_CALL_MODULE_LOADER_H_

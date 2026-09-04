@@ -44,14 +44,7 @@ import urllib.request
 import urllib.error
 
 
-import pkgutil
-import importlib
 from typing import Optional
-
-try:
-    import jax_plugins
-except ModuleNotFoundError:
-    jax_plugins = None
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +63,15 @@ def shell(cmd):
   return output.decode("UTF-8").strip()
 
 
+def read_xla_revision() -> dict[str, str]:
+  workspace = pathlib.Path(__file__).parent / "third_party/xla/workspace.bzl"
+  values = dict(XLA_REVISION_RE.findall(workspace.read_text()))
+  return {
+      "commit": values.get("XLA_COMMIT", "unknown"),
+      "sha256": values.get("XLA_SHA256", "unknown"),
+  }
+
+
 SKIP_BASENAMES = {
     "linux-vdso.so.1",
     "ld-linux-x86-64.so.2",
@@ -77,6 +79,7 @@ SKIP_BASENAMES = {
 }
 
 LDD_RE = re.compile(r"\s*(\S+) => (\S+) \(")
+XLA_REVISION_RE = re.compile(r'^(XLA_COMMIT|XLA_SHA256) = "([^"]+)"$', re.M)
 
 def resolved_deps(so_file: pathlib.Path, allowed_roots: list[pathlib.Path]) -> dict[str, pathlib.Path]:
   """Returns a mapping from soname to resolved path for the dependencies of the given .so file."""
@@ -146,57 +149,6 @@ def copy_and_patch_rpath(src_plugin: pathlib.Path, dst_plugin: pathlib.Path, rpa
 
     patchelf = _locate_tool("patchelf")
     subprocess.run([patchelf, "--set-rpath", rpath, str(dst_plugin)], check=True)
-
-# Python
-
-def load_pjrt_plugin_libraries(out) -> None:
-    """Discovers plugins in the namespace package `jax_plugins` and loads
-     the shared libraries.
-    """
-    plugin_modules = set()
-    # Scan installed modules under |jax_plugins|. Note that not all packaging
-    # scenarios are amenable to such scanning, so we also use the entry-point
-    # method to seed the list.
-    if jax_plugins:
-        for _, name, _ in pkgutil.iter_modules(
-            jax_plugins.__path__, jax_plugins.__name__ + '.'
-        ):
-            logger.debug("Discovered path based JAX plugin: %s", name)
-            plugin_modules.add(name)
-    else:
-        raise ModuleNotFoundError("To load shared libraries, the jax_plugins "
-                                  "namespace package must be available.")
-
-    # Augment with advertised entrypoints.
-    from importlib.metadata import entry_points
-
-    for entry_point in entry_points(group="jax_plugins"):
-        logger.debug("Discovered entry-point based JAX plugin: %s",
-                     entry_point.value)
-        plugin_modules.add(entry_point.value)
-
-    # Now load and initialize them all.
-    for plugin_module_name in plugin_modules:
-        logger.debug("Loading plugin module %s", plugin_module_name)
-        plugin_module = None
-        try:
-            plugin_module = importlib.import_module(plugin_module_name)
-        except ModuleNotFoundError:
-            logger.warning("Jax plugin configuration error: Plugin module %s "
-                           "does not exist", plugin_module_name)
-        except ImportError:
-            logger.exception("Jax plugin configuration error: Plugin module %s "
-                             "could not be loaded")
-
-        if plugin_module:
-            try:
-                name = plugin_module_name.replace("jax_plugins", "pjrt_plugin")
-                so_path = plugin_module._get_library_path()
-                out_path = (out / f"{name}.so")
-
-                out_path.write_bytes(pathlib.Path(so_path).read_bytes())
-            except:
-                raise RuntimeError(f"Failed to load plugin {plugin_module_name}")
 
 def get_python_bin_path(python_bin_path_flag):
   """Returns the path to the Python interpreter to use."""
@@ -344,11 +296,14 @@ def download_and_verify_bazel():
 
 
 def get_bazel_paths(bazel_path_flag):
-  """Yields a sequence of guesses about bazel path. Some of sequence elements
-  can be None. The resulting iterator is lazy and potentially has a side
-  effects."""
+  """Yields an explicit, system, or verified downloaded Bazel path.
+
+  An explicit path suppresses PATH lookup so CI and release builds use the
+  requested Bazel version or download the repository-pinned fallback.
+  """
   yield bazel_path_flag
-  yield shutil.which("bazel")
+  if bazel_path_flag is None:
+    yield shutil.which("bazel")
   yield download_and_verify_bazel()
 
 
@@ -524,6 +479,15 @@ def main():
       help="Directory to which the compiled connector should be copied."
   )
   parser.add_argument(
+      "--python_version",
+      choices=("3.11", "3.12", "3.13", "3.14", "3.14-ft"),
+      default="3.13",
+      help=(
+          "Hermetic Python toolchain used by the pinned XLA workspace. "
+          "The connector does not embed this interpreter."
+      ),
+  )
+  parser.add_argument(
       "--bazel_path",
       help="Path to the Bazel binary to use. The default is to find bazel via "
       "the PATH; if none is found, downloads a fresh copy of bazel from "
@@ -552,15 +516,6 @@ def main():
   )
   add_boolean_argument(
       parser,
-      "enable_nvshmem",
-      default=True,
-      help_str=(
-        "Enable NVSHMEM collectives for CUDA builds (PJRT). "
-        "Use --noenable_nvshmem to disable."
-      ),
-    )
-  add_boolean_argument(
-      parser,
       "build_gpu_pjrt_plugin",
       default=False,
       help_str=(
@@ -572,15 +527,25 @@ def main():
       "build_cpu_pjrt_plugin",
       default=False,
       help_str=(
-          "Are we building the cpu pjrt plugin?"
+          "Build and package the CPU PJRT plugin. Without --enable_cuda, "
+          "the connector and communication FFI handlers are CPU-only."
       ),
   )
-  add_boolean_argument(
-      parser,
-      "load_gpu_pjrt_plugin",
-      default=False,
-      help_str=(
-          "Load the GPU PJRT plugin from the jax wheels."
+  parser.add_argument(
+      "--ffi_provider_target",
+      action="append",
+      default=[],
+      help=(
+          "Build and install this Bazel FFI provider target. Repeat this "
+          "option to include more providers. Each target must produce one "
+          "libjcn_ffi_*.so shared library."
+      ),
+  )
+  parser.add_argument(
+      "--openequivariance_root",
+      help=(
+          "Use this local OpenEquivariance checkout instead of the revision "
+          "pinned in WORKSPACE."
       ),
   )
   add_boolean_argument(
@@ -633,7 +598,6 @@ def main():
       action="append", default=[],
       help="Additional options to pass to the main Bazel command to be "
            "executed, e.g. `run`.")
-
   parser.add_argument(
       "--output_path",
       default=os.path.join(cwd, "out"),
@@ -647,7 +611,7 @@ def main():
   parser.add_argument(
       "--target_cpu_features",
       choices=["release", "native", "default"],
-      default="native",
+      default="default",
       help="""
         What CPU features should we target? Release enables CPU features that
         should be enabled for a release build, which on x86-64 architectures
@@ -684,19 +648,50 @@ def main():
   }
 
   build_options = args.bazel_options
+  common_options = []
+  xla_revision = read_xla_revision()
+  for name, value in (
+      ("JCN_XLA_COMMIT", xla_revision["commit"]),
+      ("JCN_XLA_SHA256", xla_revision["sha256"]),
+      ("JCN_CONNECTOR_BUILD_VERSION", "chemtrain-deploy"),
+  ):
+      build_options.append(f'--copt=-D{name}=\\"{value}\\"')
 
-  # Keep XLA's hermetic Python repository aligned with the interpreter running
-  # this script. Without this repository setting XLA silently selects its own
-  # default and emits a misleading configuration warning.
+  # XLA uses Python for build actions even though the connector does not embed
+  # an interpreter. Select one of the lock files shipped by the pinned XLA
+  # workspace instead of coupling the build to the invoking Python version.
   python_bin_path = get_python_bin_path(None)
   python_version = get_python_version(python_bin_path)
   check_python_version(python_version)
   build_options.append(
-      "--repo_env=HERMETIC_PYTHON_VERSION={}.{}".format(*python_version))
+      f"--repo_env=HERMETIC_PYTHON_VERSION={args.python_version}")
+  if args.python_version.endswith("-ft"):
+      build_options.append(
+          '--@rules_python//python/config_settings:py_freethreaded="yes"')
 
   output_path = os.path.abspath(args.output_path)
-  config_path = os.path.abspath("config.bazelrc")
-  os.chdir(os.path.dirname(__file__ or args.prog) or '.')
+  source_directory = os.path.dirname(os.path.abspath(__file__))
+  config_path = os.path.join(source_directory, "config.bazelrc")
+  os.chdir(source_directory)
+
+  if args.openequivariance_root:
+      openequivariance_root = pathlib.Path(
+          args.openequivariance_root
+      ).expanduser().resolve()
+      build_file = (
+          openequivariance_root
+          / "openequivariance_extjax"
+          / "BUILD.bazel"
+      )
+      if not build_file.is_file():
+          raise ValueError(
+              "--openequivariance_root must contain "
+              "openequivariance_extjax/BUILD.bazel"
+          )
+      common_options.append(
+          "--override_repository=openequivariance_src="
+          f"{openequivariance_root}"
+      )
 
   # Find a working Bazel.
   bazel_path, bazel_version = get_bazel_path(args.bazel_path)
@@ -765,11 +760,6 @@ def main():
           f"--action_env=CLANG_CUDA_COMPILER_PATH={clang_path}"
       )
 
-      if not args.enable_nvshmem:
-        build_options.append(
-          "--@xla//xla/stream_executor/cuda:nvshmem_enabled=false"
-        )
-
       if not args.enable_nccl:
         # The connector creates one PJRT client for one selected device and
         # does not use XLA collectives. Avoid downloading and linking NCCL in
@@ -802,12 +792,19 @@ def main():
               f"--repo_env=HERMETIC_CUDA_COMPUTE_CAPABILITIES={args.cuda_compute_capabilities}"
           )
 
+  build_options.append(
+      "--define=chemtrain_connector_cuda=" +
+      ("true" if args.enable_cuda else "false")
+  )
 
   build_options.append("--cxxopt=-std=c++17")
   build_options.append("--host_cxxopt=-std=c++17")
 
   with open("config.bazelrc", "w") as f:
       f.write(__BAZELRC)
+      f.write("\n".join(f"common {flag}" for flag in common_options))
+      if common_options:
+          f.write("\n")
       f.write("\n".join(f"build {flag}" for flag in build_options))
 
   if args.configure_only:
@@ -822,86 +819,184 @@ def main():
     f"--output_base={output_path}",
     "build",
     "--verbose_failures=true",
-    f"--compilation_mode=opt",
-    f"--copt=-O3",
+    "--compilation_mode=opt",
+    "--copt=-O3",
     # *build_options,
   )
 
-  if args.build_gpu_pjrt_plugin:
-      assert args.enable_cuda, "Must enable cuda to build pjrt plugin."
+  if args.ffi_provider_target and not (
+      args.build_gpu_pjrt_plugin or args.build_cpu_pjrt_plugin
+  ):
+    plugin_build_command = [
+        *command_base,
+        *args.ffi_provider_target,
+        "--",
+    ]
+    print(" ".join(plugin_build_command))
+    shell(plugin_build_command)
 
-      build_pjrt_plugin_command = [
-          *command_base,
-          "@xla//xla/pjrt/c:pjrt_c_api_gpu_plugin.so",
-          "//connector:libconnector.so",
-          "--",
+    outputs = []
+    for provider_target in args.ffi_provider_target:
+      query_command = [
+          bazel_path,
+          f"--bazelrc={config_path}",
+          *args.bazel_startup_options,
+          f"--output_base={output_path}",
+          "cquery",
+          provider_target,
+          "--output=files",
       ]
+      outputs.extend(
+          pathlib.Path(line).resolve()
+          for line in shell(query_command).splitlines()
+          if line.strip().endswith(".so")
+      )
+    if len(outputs) != len(args.ffi_provider_target) or any(
+        not output.name.startswith("libjcn_ffi_") for output in outputs
+    ):
+      raise RuntimeError(
+          "Expected one libjcn_ffi_*.so output per FFI provider target, "
+          f"but found: {outputs}"
+      )
 
-      print(" ".join(build_pjrt_plugin_command))
-      shell(build_pjrt_plugin_command)
-      out_dir = pathlib.Path(args.install_location)
-      out_dir.mkdir(exist_ok=True, parents=True)
+    out_dir = pathlib.Path(args.install_location)
+    provider_backend = "cuda" if args.enable_cuda else "cpu"
+    provider_dir = out_dir / "ffi" / provider_backend
+    allowed_roots = [
+        pathlib.Path(output_path).resolve(),
+        pathlib.Path("./bazel-out").resolve(),
+        out_dir.resolve(),
+    ]
+    for output in outputs:
+      provider_destination = provider_dir / output.name
+      copy_and_patch_rpath(output, provider_destination, "$ORIGIN/deps")
+      copy_deps(output, provider_dir / "deps", allowed_roots)
+      print(f"Installed FFI provider to {provider_destination}")
 
-      source_dir = pathlib.Path("./bazel-bin/external/xla/xla/pjrt/c/pjrt_c_api_gpu_plugin.so").resolve()
+  elif args.build_gpu_pjrt_plugin or args.build_cpu_pjrt_plugin:
+    # Select and build the requested connector artifacts.
+    if args.build_gpu_pjrt_plugin:
+      assert args.enable_cuda, "Must enable CUDA to build the CUDA PJRT plugin."
+    pjrt_targets = ["//connector:libconnector.so"]
+    if args.build_gpu_pjrt_plugin:
+      pjrt_targets.append("//connector:pjrt_c_api_gpu_plugin.so")
+    if args.build_cpu_pjrt_plugin:
+      pjrt_targets.append("//connector:pjrt_c_api_cpu_plugin.so")
+    pjrt_targets.extend(args.ffi_provider_target)
+    build_pjrt_plugin_command = [*command_base, *pjrt_targets, "--"]
 
-      # Copy the .so file
-      target_dir = out_dir / "pjrt/cuda"
+    print(" ".join(build_pjrt_plugin_command))
+    shell(build_pjrt_plugin_command)
+
+    # Define the package roots.
+    out_dir = pathlib.Path(args.install_location)
+    out_dir.mkdir(exist_ok=True, parents=True)
+    # Treat the directory as one self-contained connector installation. Remove
+    # files installed by an earlier backend selection so runtime discovery
+    # cannot load an unrequested or ABI-incompatible PJRT plugin.
+    pjrt_dir = out_dir / "pjrt"
+    if pjrt_dir.is_symlink():
+      pjrt_dir.unlink()
+    elif pjrt_dir.exists():
+      shutil.rmtree(pjrt_dir)
+    ffi_dir = out_dir / "ffi"
+    if ffi_dir.is_symlink():
+      ffi_dir.unlink()
+    elif ffi_dir.exists():
+      shutil.rmtree(ffi_dir)
+    connector_destination = out_dir / "libconnector.so"
+    if connector_destination.exists() or connector_destination.is_symlink():
+      connector_destination.unlink()
+    allowed_roots = [
+        pathlib.Path(output_path).resolve(),
+        pathlib.Path("./bazel-out").resolve(),
+        out_dir.resolve(),
+    ]
+
+    # Package each requested PJRT plugin.
+    plugin_sources = []
+    if args.build_gpu_pjrt_plugin:
+      plugin_sources.append((
+          "cuda",
+          pathlib.Path(
+              "./bazel-bin/connector/"
+              "pjrt_c_api_gpu_plugin.so"
+          ).resolve(),
+      ))
+    if args.build_cpu_pjrt_plugin:
+      plugin_sources.append((
+          "cpu",
+          pathlib.Path(
+              "./bazel-bin/connector/pjrt_c_api_cpu_plugin.so"
+          ).resolve(),
+      ))
+    for backend, plugin_source in plugin_sources:
+      target_dir = out_dir / "pjrt" / backend
       target_dir.mkdir(exist_ok=True, parents=True)
+      copy_and_patch_rpath(
+          plugin_source,
+          target_dir / "pjrt_plugin.so",
+          "$ORIGIN/deps",
+      )
+      copy_deps(plugin_source, target_dir / "deps", allowed_roots)
 
-
-      # Copy the dependencies
-      allowed_roots = [
-         pathlib.Path("./out").resolve(),
-         pathlib.Path("./bazel-out").resolve(),
-         pathlib.Path(out_dir).resolve(),
+    for provider_target in args.ffi_provider_target:
+      query_command = [
+          bazel_path,
+          f"--bazelrc={config_path}",
+          *args.bazel_startup_options,
+          f"--output_base={output_path}",
+          "cquery",
+          provider_target,
+          "--output=files",
       ]
-      
+      provider_outputs = [
+          pathlib.Path(line).resolve()
+          for line in shell(query_command).splitlines()
+          if line.strip().endswith(".so")
+      ]
+      if len(provider_outputs) != 1 or not provider_outputs[0].name.startswith(
+          "libjcn_ffi_"
+      ):
+        raise RuntimeError(
+            f"Expected one libjcn_ffi_*.so output, found: {provider_outputs}"
+        )
+      provider_source = provider_outputs[0]
+      provider_backend = "cuda" if args.enable_cuda else "cpu"
+      provider_dir = out_dir / "ffi" / provider_backend
       copy_and_patch_rpath(
-        source_dir,
-        target_dir / f"pjrt_plugin.so",
-        "$ORIGIN/deps"
+          provider_source,
+          provider_dir / provider_source.name,
+          "$ORIGIN/deps",
       )
+      copy_deps(provider_source, provider_dir / "deps", allowed_roots)
 
-      copy_deps(
-        source_dir,
-        target_dir / "deps", allowed_roots
-      )
-
-      # Build and package the connector in the same Bazel invocation and with
-      # the same external XLA repository configuration as the PJRT plugin.
-      # Besides avoiding a second repository-analysis pass, this prevents the
-      # two shared libraries from accidentally being produced with different
-      # CUDA, compiler, or PJRT settings.
-      connector_source = pathlib.Path(
-          "./bazel-bin/connector/libconnector.so"
-      ).resolve()
-      copy_and_patch_rpath(
-          connector_source,
-          out_dir / "libconnector.so",
-          "$ORIGIN/pjrt/cuda/deps",
-      )
-      copy_deps(
-          connector_source,
-          target_dir / "deps",
-          allowed_roots,
-      )
-
-
-  elif args.build_cpu_pjrt_plugin:
-      raise NotImplementedError(
-            "Building CPU PJRT plugin is not supported yet."
-      )
-
-  elif args.load_gpu_pjrt_plugin:
-      # Loads a prebuilt pjrt plugin from the jaxlib wheels.
-      out_dir = pathlib.Path(args.install_location)
-      load_pjrt_plugin_libraries(out_dir)
+    # Package the connector from the same Bazel invocation as the PJRT plugins.
+    # Building all shared libraries together keeps the XLA repository, compiler,
+    # CUDA, and PJRT settings identical and avoids a second repository analysis.
+    # libconnector.so also exports the stable JCN C ABI used by LAMMPS.
+    connector_source = pathlib.Path(
+        "./bazel-bin/connector/libconnector.so"
+    ).resolve()
+    connector_rpaths = ["$ORIGIN/pjrt/connector-deps"]
+    if args.build_cpu_pjrt_plugin:
+      connector_rpaths.append("$ORIGIN/pjrt/cpu/deps")
+    if args.build_gpu_pjrt_plugin:
+      connector_rpaths.append("$ORIGIN/pjrt/cuda/deps")
+    copy_and_patch_rpath(
+        connector_source,
+        connector_destination,
+        ":".join(connector_rpaths),
+    )
+    copy_deps(
+        connector_source,
+        out_dir / "pjrt" / "connector-deps",
+        allowed_roots,
+    )
 
   else:
-      build_cpu_wheel_command = [
-          *command_base,
-          "//connector:libconnector.so", "--",
-      ]
+      connector_targets = ["//connector:libconnector.so"]
+      build_cpu_wheel_command = [*command_base, *connector_targets, "--"]
       print(" ".join(build_cpu_wheel_command))
       shell(build_cpu_wheel_command)
       out_dir = pathlib.Path(args.install_location)
@@ -911,7 +1006,7 @@ def main():
       ).resolve()
       dependency_dir = out_dir / "pjrt/cuda/deps"
       allowed_roots = [
-          pathlib.Path("./out").resolve(),
+          pathlib.Path(output_path).resolve(),
           pathlib.Path("./bazel-out").resolve(),
           out_dir.resolve(),
       ]
@@ -926,6 +1021,28 @@ def main():
           dependency_dir,
           allowed_roots,
       )
+
+  # Keep the project license and notices for code incorporated from other
+  # projects with every connector or provider installation.
+  shutil.copy2(
+      pathlib.Path(source_directory).parent / "LICENSE",
+      out_dir / "LICENSE",
+  )
+  shutil.copy2(
+      pathlib.Path(source_directory) / "THIRD_PARTY_NOTICES",
+      out_dir / "THIRD_PARTY_NOTICES",
+  )
+  if args.enable_cuda:
+    license_dir = out_dir / "third_party_licenses"
+    for repository, filename in (
+        ("cuda_cudart", "NVIDIA_CUDA_TOOLKIT_LICENSE"),
+        ("cuda_cudnn", "NVIDIA_CUDNN_LICENSE"),
+    ):
+      source = pathlib.Path(output_path) / "external" / repository / "LICENSE"
+      if not source.is_file():
+        raise RuntimeError(f"Missing NVIDIA license text: {source}")
+      license_dir.mkdir(exist_ok=True)
+      shutil.copy2(source, license_dir / filename)
 
 
 if __name__ == "__main__":

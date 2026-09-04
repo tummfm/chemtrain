@@ -20,7 +20,8 @@ package jcn;
 
 message Model {
 
-  string mlir_module = 1;
+  // Serialized StableHLO/VHLO portable artifact returned by JAX export.
+  bytes mlir_module_serialized = 1;
 
   enum NeighborListType {
     UNSPECIFIED = 0;
@@ -33,51 +34,150 @@ message Model {
     NeighborListType type = 1;
     float cutoff = 2;
 
-    // To which order neighbors are required for the newton and the
-    // non-newton setting
+    // The neighbor order required by this specialized model variant.
     repeated int32 nbr_order = 3;
 
-    optional bool half_list = 4; // Expect only a half neighbor list
+    // Whether the engine should supply a half neighbor list.
+    optional bool half_list = 4;
 
-    // Keys for returned statistics
+    // Keys for graph-capacity statistics returned after execution.
     repeated string statistics_keys = 5;
+
+    enum CapacityRole {
+      CAPACITY_UNSPECIFIED = 0;
+      RAW_EDGES = 1;
+      MAX_NEIGHBORS_PER_ATOM = 2;
+      PRUNED_EDGES = 3;
+      PRUNED_TRIPLETS = 4;
+    }
+
+    message CapacityRequirement {
+      CapacityRole role = 1;
+      string symbol = 2;
+      repeated string constraints = 3;
+    }
+
+    // The adapter owns concrete capacities. Capacity descriptors identify the
+    // pruning buffers needed to construct matching model inputs.
+    repeated CapacityRequirement capacity_requirements = 6;
+
+    // Whether every neighbor entry has an aligned topology category input.
+    bool include_pair_type = 7;
 
   }
 
-  NeighborList neighbor_list=4;
+  NeighborList neighbor_list = 4;
 
-  optional string unit_style = 5; // LAMMPS unit style definition
+  optional string unit_style = 5; // Engine unit style definition.
 
-  // Return additional quantities besides the energy and force
-
+  // Flattened output names for metadata-only readers.
   repeated string quantities = 6;
 
-  // The exported module contains ordered feature-communication FFI calls.
+  // The exported module contains token-ordered feature-communication FFI calls.
   bool uses_communication = 7;
 
   // Maximum number of scalar features packed by a communication call.
   int32 communication_buffer_width = 8;
 
-  // One executable form of the same physical model. Keeping variants in one
-  // file lets LAMMPS select the distributed graph without changing model paths.
+  // A model variant stores one executable form of the physical model. Keeping
+  // variants in one bundle lets the adapter select one without changing paths.
   message ModelVariant {
-    // Runtime selector used by pair_style's comm on/off option. "default" and
-    // "comm" are reserved names and may each occur at most once.
+    // Canonical runtime selector for one communication and Newton combination.
     string name = 1;
-    // Complete StableHLO module; LAMMPS never retraces or rewrites variants.
-    string mlir_module = 2;
+    // Serialized StableHLO/VHLO portable artifact. The adapter never retraces
+    // a stored variant.
+    bytes mlir_module_serialized = 2;
     NeighborList neighbor_list = 3;
     bool uses_communication = 4;
-    // Maximum width sizes LAMMPS buffers once during pair initialization.
+    // Maximum packed scalar width used to size adapter buffers.
     int32 communication_buffer_width = 5;
-    // Forward sites are stored in execution order. The runtime always checks
-    // their count and the corresponding ordered widths.
-    int32 communication_forward_sites = 6;
-    repeated int32 communication_widths = 7;
-    reserved 8;
+    // JAX XlaCallModule calling convention for this serialized module.
+    uint32 calling_convention_version = 6;
+    reserved 7;
+    // The serialized module contains implementations for the listed platforms.
+    // Variants select model behavior, and the runtime selects a compatible
+    // platform.
+    repeated string platforms = 10;
+    repeated ParticleField particle_fields = 8;
+    repeated GlobalField global_fields = 9;
+    // Whether the executable expects Newton pair force communication.
+    bool newton_pair = 11;
   }
 
-  // Empty for legacy files. New exporters write at least a "default" variant.
+  enum OutputScope {
+    OUTPUT_SCOPE_UNSPECIFIED = 0;
+    PARTICLE = 1;
+    LOCAL = 2;
+    GLOBAL = 3;
+  }
+
+  message OutputField {
+    string name = 1;
+    OutputScope scope = 2;
+    reserved 3;
+    // Logical result shape. PARTICLE outputs omit the leading atom dimension.
+    // LOCAL and GLOBAL outputs store the complete configuration shape.
+    repeated uint64 dimensions = 4;
+    // Total number of scalar values in one output value. Adapters such as
+    // LAMMPS use the count to allocate and copy output buffers.
+    uint64 components = 5;
+    // Whether a configuration output scales with system size. Engine adapters
+    // use this for normalization; it does not change the reduction scope.
+    bool extensive = 6;
+  }
+
+  // Exporters always write comm-off/Newton-off and comm-off/Newton-on
+  // variants. Communication-capable models also write a
+  // comm-on/Newton-on variant. The canonical names make selection explicit.
   repeated ModelVariant variants = 9;
+
+  // Identifies the serialized model schema used by the connector.
+  uint32 format_version = 10;
+
+  enum ParticleDtype {
+    PARTICLE_DTYPE_UNSPECIFIED = 0;
+    INT32 = 1;
+    FLOAT32 = 2;
+  }
+
+  message ParticleField {
+    string name = 1;
+    ParticleDtype dtype = 2;
+    // Number of scalar values per particle. The current schema requires 1.
+    uint32 components = 3;
+  }
+
+  // Mirrors comm_off_newton_on for metadata-only readers.
+  repeated ParticleField particle_fields = 11;
+  // Number of scalar components per particle quantity, aligned with
+  // `quantities`. A scalar per-particle quantity has one component.
+  repeated uint32 quantity_components = 12;
+
+  enum GlobalDtype {
+    GLOBAL_DTYPE_UNSPECIFIED = 0;
+    GLOBAL_FLOAT32 = 1;
+    GLOBAL_FLOAT64 = 2;
+    GLOBAL_INT32 = 3;
+  }
+
+  message GlobalField {
+    string name = 1;
+    GlobalDtype dtype = 2;
+  }
+
+  // Mirrors comm_off_newton_on for metadata-only readers.
+  repeated GlobalField global_fields = 13;
+
+  // Mirrors comm_off_newton_on for metadata-only readers.
+  uint32 calling_convention_version = 14;
+
+  // Mirrors comm_off_newton_on for metadata-only readers.
+  repeated string platforms = 15;
+
+  // Typed model outputs in StableHLO result order.
+  repeated OutputField output_fields = 16;
+
+  // The physical model cannot be evaluated without model communication.
+  bool requires_communication = 17;
 
 }

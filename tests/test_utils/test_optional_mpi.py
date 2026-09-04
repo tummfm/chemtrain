@@ -1,4 +1,4 @@
-"""Regression tests for running chemtrain without optional MPI packages."""
+"""Regression tests for using ChemTrain without optional MPI packages."""
 
 import importlib
 import importlib.abc
@@ -80,42 +80,9 @@ def test_serial_mpi_utilities_and_explicit_error_without_dependencies(missing_mp
         parallel.resolve_parallelism("mpi")
 
 
-def test_mpi_packages_are_loaded_lazily(monkeypatch):
-    """Reload chemtrain utilities without importing optional MPI packages."""
-    class RejectMPI(importlib.abc.MetaPathFinder):
-        def find_spec(self, fullname, path=None, target=None):
-            del path, target
-            if fullname == "mpi4py" or fullname.startswith("mpi4py."):
-                raise AssertionError("mpi4py must not be imported")
-            if fullname == "mpi4jax" or fullname.startswith("mpi4jax."):
-                raise AssertionError("mpi4jax must not be imported")
-            return None
-
-    blocked = RejectMPI()
-    saved_modules = {
-        name: module
-        for name, module in sys.modules.items()
-        if name == "mpi4py"
-        or name.startswith("mpi4py.")
-        or name == "mpi4jax"
-        or name.startswith("mpi4jax.")
-    }
-    for name in saved_modules:
-        del sys.modules[name]
-    monkeypatch.setattr(sys, "meta_path", [blocked, *sys.meta_path])
-
-    try:
-        importlib.reload(util)
-        assert util._import_optional.cache_info().currsize == 0
-    finally:
-        sys.meta_path.remove(blocked)
-        for name in tuple(sys.modules):
-            if (
-                name == "mpi4py"
-                or name.startswith("mpi4py.")
-                or name == "mpi4jax"
-                or name.startswith("mpi4jax.")
-            ):
-                del sys.modules[name]
-        sys.modules.update(saved_modules)
-        importlib.reload(util)
+def test_mpi_packages_are_loaded_lazily(missing_mpi):
+    """Reloading utilities leaves optional MPI dependencies unloaded."""
+    assert "mpi4py" not in sys.modules
+    assert "mpi4jax" not in sys.modules
+    assert util._import_optional.cache_info().currsize == 0
+    assert util.get_mpi4jax() is None
