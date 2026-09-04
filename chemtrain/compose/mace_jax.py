@@ -612,29 +612,26 @@ def mace_jax_neighborlist(
         jax_model = _build_jax_model(
             config,
             equivariance_config=equivariance_config,
-            init_normalize2mom_consts=False,
         )
     except TypeError as exc:
         if "equivariance_config" in str(exc):
-            jax_model = _build_jax_model(
-                config,
-                init_normalize2mom_consts=False,
-            )
+            jax_model = _build_jax_model(config)
         else:
             raise
 
-    # Prepare template data and initialize JAX model parameters
-    template_data = _prepare_template_data(config)
-    template_vars = jax_model.init(jax.random.PRNGKey(0), template_data)
-    del template_data  # Unused
+    # Newer MACE-JAX models are initialized NNX modules. Split the immutable
+    # graph definition from its state and expose the state through Chemtrain's
+    # historical variables-dict interface.
+    graphdef, state = nnx.split(jax_model)
+    template_vars = _state_to_legacy_variables(state)
+    template_state = {
+        key: value for key, value in template_vars.items() if key != "params"
+    }
 
     cueq_enabled = (
         equivariance_config is not None
         and equivariance_config.backend == "cueq"
     )
-
-    # We need a different __call__ method
-    jax_model.__class__ = JaxMACE
 
     edges_per_particle = float(config["avg_num_neighbors"]) * float(max_edge_multiplier)
 
@@ -642,15 +639,40 @@ def mace_jax_neighborlist(
         (vectors,) = edge_feats
         species, mask = node_feats
 
-        return jax_model.apply(
-            params,
-            vectors,
-            senders,
-            receivers,
-            species,
-            mask,
-            num_species=config["num_species"],
-        )
+        data = {
+            "edge_index": jnp.stack([senders, receivers], axis=0),
+            "node_attrs": jax.nn.one_hot(
+                species,
+                num_classes=config["num_species"],
+                dtype=vectors.dtype,
+            ) * mask[:, None],
+            "node_attrs_index": species,
+            "positions": jnp.zeros((species.shape[0], 3), dtype=vectors.dtype),
+            "cell": jnp.eye(3, dtype=vectors.dtype)[None, :, :],
+            "shifts": vectors,
+            "ptr": jnp.asarray((0, species.shape[0]), dtype=jnp.int32),
+            "num_species": config["num_species"],
+            "batch": jnp.zeros(species.shape, dtype=jnp.int32),
+            "unit_shifts": jnp.zeros((vectors.shape[0], 3), dtype=vectors.dtype),
+            "head": jnp.asarray([0], dtype=jnp.int32),
+        }
+
+        if isinstance(params, dict) and "params" in params:
+            model_params = _legacy_params_to_nnx_params(params["params"])
+            model_state = {
+                key: value for key, value in params.items() if key != "params"
+            }
+        else:
+            # Chemtrain optimizers conventionally receive and return only the
+            # trainable ``variables["params"]`` subtree. Reattach the fixed
+            # NNX configuration/state captured during model construction.
+            model_params = _legacy_params_to_nnx_params(params)
+            model_state = template_state
+        if model_state:
+            out, _ = graphdef.apply(model_params, model_state)(data)
+        else:
+            out, _ = graphdef.apply(model_params)(data)
+        return out["node_energy"] * mask
 
     # CuEq models require graph batching; other backends opt in explicitly.
     if use_custom_batch_fn or cueq_enabled:
@@ -691,4 +713,4 @@ def mace_jax_neighborlist(
         else:
             return jnp.sum(per_atom_energies)
 
-    return jax.tree.map(jnp.asarray, template_vars), jax.jit(apply_fn), config
+    return template_vars, jax.jit(apply_fn), config
