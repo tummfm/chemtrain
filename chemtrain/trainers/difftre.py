@@ -290,7 +290,7 @@ class DifftreParallel(tt.MLETrainerTemplate):
             max_retry=self.max_neighbor_retries,
         )
         self.weights = jax.jit(batched_weights)
-        self._gen_init_traj = jax.jit(gen_init_traj)
+        self._gen_init_traj = gen_init_traj
 
         if allowed_reduction is not None:
             self._adaptive_step_size = difftre.init_step_size_adaption(
